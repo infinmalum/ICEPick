@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=icepick
+Exec=icepick
+Icon=icepick
+Categories=Development;
+Terminal=false
+Keywords=wails
+Version=1.0
+StartupNotify=false
