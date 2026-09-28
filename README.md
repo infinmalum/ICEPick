@@ -2,6 +2,8 @@
 
 ICEPick 是从原项目拆出的本地桌面 Agent。当前阶段有 Wails 3 + Go + React/TypeScript/Vite 桌面入口、本地配置与 SQLite 会话存储、任务取消基础模块。Agent 循环、模型适配和工具尚待迁移，详见 [迁移计划](MIGRATION_PLAN.md)。
 
+仓库只跟踪桌面应用所需文件。Wails 生成的 Android/iOS 模板以及可重新生成的图标和桌面入口文件已从版本控制排除；当前只验证了 Linux 构建。
+
 ## 运行
 
 需要 Go 1.24+、Node.js、npm、Wails 3 CLI，以及当前平台的 Wails 桌面依赖。在本目录执行：
