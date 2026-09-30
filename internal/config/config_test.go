@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -23,5 +24,41 @@ func TestLoadDefaultsAndInvalidConfig(t *testing.T) {
 	}
 	if _, err := Load(path); err == nil {
 		t.Fatal("invalid JSON accepted")
+	}
+}
+
+func TestLMStudioConfigRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	want := Config{Model: Model{Provider: "lmstudio", BaseURL: "http://127.0.0.1:1234/v1", Name: "local-model"}}
+	if err := Save(path, want); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("config permissions: %v, %v", info, err)
+	}
+	got, err := Load(path)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("round trip: %+v, %v", got, err)
+	}
+	if err := os.WriteFile(path, []byte(`{"model":{"provider":"lmstudio"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err = Load(path)
+	if err != nil || got.Model.BaseURL != "http://127.0.0.1:1234/v1" {
+		t.Fatalf("provider default: %+v, %v", got, err)
+	}
+}
+
+func TestModelAddressMustBeLocal(t *testing.T) {
+	for _, endpoint := range []string{
+		"https://example.com/v1",
+		"http://127.0.0.1.evil.com:1234/v1",
+		"http://user@127.0.0.1:1234/v1",
+		"http://127.0.0.1:1234/other",
+	} {
+		if err := (Model{Provider: "lmstudio", BaseURL: endpoint}).Validate(); err == nil {
+			t.Errorf("accepted nonlocal/invalid endpoint %q", endpoint)
+		}
 	}
 }

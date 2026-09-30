@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,7 +26,15 @@ func UserPaths() Paths {
 }
 
 type Config struct {
-	Model Model `json:"model"`
+	Model      Model       `json:"model"`
+	MCPServers []MCPServer `json:"mcpServers,omitempty"`
+}
+
+// MCPServer describes an explicitly enabled stdio MCP server process.
+type MCPServer struct {
+	Name    string   `json:"name"`
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
 }
 
 type Model struct {
@@ -34,11 +44,35 @@ type Model struct {
 }
 
 func Default() Config {
-	return Config{Model: Model{Provider: "ollama", BaseURL: "http://127.0.0.1:11434/v1"}}
+	return Config{Model: DefaultModel("ollama")}
 }
 
-// Load reads a user-level config. A missing file gets safe local defaults;
-// nothing is sent to the configured endpoint until the model adapter exists.
+func DefaultModel(provider string) Model {
+	if provider == "lmstudio" {
+		return Model{Provider: provider, BaseURL: "http://127.0.0.1:1234/v1"}
+	}
+	return Model{Provider: "ollama", BaseURL: "http://127.0.0.1:11434/v1"}
+}
+
+func (m Model) Validate() error {
+	if m.Provider != "ollama" && m.Provider != "lmstudio" {
+		return fmt.Errorf("暂不支持模型提供方 %q", m.Provider)
+	}
+	u, err := url.Parse(m.BaseURL)
+	if err != nil || u.Scheme != "http" || u.User != nil || strings.ContainsAny(m.BaseURL, "?#") || strings.TrimRight(u.Path, "/") != "/v1" {
+		return errors.New("模型地址必须是本机 HTTP 服务的 /v1 地址")
+	}
+	host := u.Hostname()
+	if host != "localhost" && (net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback()) {
+		return errors.New("模型地址必须指向本机")
+	}
+	if u.Port() == "" {
+		return errors.New("模型地址必须包含端口")
+	}
+	return nil
+}
+
+// Load reads a user-level config. A missing file gets safe local defaults.
 func Load(path string) (Config, error) {
 	result := Default()
 	data, err := os.ReadFile(path)
@@ -48,16 +82,57 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("读取配置: %w", err)
 	}
-	if err := json.Unmarshal(data, &result); err != nil {
+	var saved Config
+	if err := json.Unmarshal(data, &saved); err != nil {
 		return Config{}, fmt.Errorf("解析配置: %w", err)
 	}
-	if result.Model.Provider != "ollama" {
-		return Config{}, fmt.Errorf("暂不支持模型提供方 %q", result.Model.Provider)
+	if saved.Model.Provider != "" {
+		result.Model = DefaultModel(saved.Model.Provider)
+		result.Model.Provider = saved.Model.Provider
 	}
-	if !strings.HasPrefix(result.Model.BaseURL, "http://127.0.0.1:") && !strings.HasPrefix(result.Model.BaseURL, "http://localhost:") {
-		return Config{}, errors.New("当前阶段模型地址必须指向本机 HTTP 服务")
+	if saved.Model.BaseURL != "" {
+		result.Model.BaseURL = saved.Model.BaseURL
+	}
+	result.Model.Name = saved.Model.Name
+	result.MCPServers = saved.MCPServers
+	if err := result.Model.Validate(); err != nil {
+		return Config{}, err
 	}
 	return result, nil
+}
+
+func Save(path string, cfg Config) error {
+	if err := cfg.Model.Validate(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 func EnsureDirs(paths Paths) error {

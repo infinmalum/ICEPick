@@ -6,9 +6,13 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"icepick/internal/agent"
 	"icepick/internal/config"
+	"icepick/internal/mcptools"
+	"icepick/internal/model"
+	"icepick/internal/skills"
 	"icepick/internal/storage"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -20,6 +24,7 @@ var assets embed.FS
 func main() {
 	paths := config.UserPaths()
 	var initErr error
+	modelConfig := config.Default()
 	if err := config.EnsureDirs(paths); err != nil {
 		initErr = err
 	} else {
@@ -32,7 +37,7 @@ func main() {
 		}
 	}
 	if initErr == nil {
-		_, initErr = config.Load(paths.Config)
+		modelConfig, initErr = config.Load(paths.Config)
 	}
 	var store *storage.Store
 	if initErr == nil {
@@ -49,12 +54,29 @@ func main() {
 	}
 	runs := agent.NewRuns(store)
 	defer runs.Close()
+	catalog, err := skills.Discover(filepath.Join(filepath.Dir(paths.Config), "skills"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	toolHub, err := mcptools.NewLocal(context.Background(), catalog)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer toolHub.Close()
+	for _, server := range modelConfig.MCPServers {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := toolHub.ConnectCommand(ctx, server.Name, server.Command, server.Args)
+		cancel()
+		if err != nil {
+			log.Printf("MCP %s: %v", server.Name, err)
+		}
+	}
 
 	app := application.New(application.Options{
 		Name:        "ICEPick",
 		Description: "Local desktop agent",
 		Services: []application.Service{
-			application.NewService(&StatusService{store: store, initErr: initErr}),
+			application.NewService(&StatusService{store: store, initErr: initErr, configPath: paths.Config, config: modelConfig, runs: runs, tools: toolHub, skills: catalog, chat: model.ChatClient{}}),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
