@@ -59,4 +59,29 @@ h1 { margin: 17px 0 12px; font-size: clamp(42px, 5vw, 66px); line-height: 1.1; }
 .hint { color: #607985; line-height: 1.6; margin: 18px 0 0; }
 .error { color: #b42318; overflow-wrap: anywhere; }
 .next-step { color: #607985; margin-top: 24px; font-size: 13px; }
+.approval-panel { border: 1px solid #e9dcc2; background: #fdf9ee; border-radius: 10px; padding: 14px 16px; margin-bottom: 6px; }
+.approval-panel .card-title { font-size: 14px; margin-bottom: 12px; color: #7a5d13; }
+.approval-row { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; border-top: 1px solid #f0e6cd; padding: 10px 0; }
+.approval-info { min-width: 0; }
+.approval-info code { font-size: 13px; color: #5d4512; font-weight: 650; }
+.approval-info pre { margin: 6px 0 0; font-size: 12px; color: #6b6b52; white-space: pre-wrap; overflow-wrap: anywhere; }
+.approval-actions { display: flex; flex-direction: column; gap: 8px; flex: 0 0 auto; }
+.approval-actions button { border: 1px solid #007d8b; border-radius: 8px; padding: 8px 13px; background: #007d8b; color: #fff; cursor: pointer; font: inherit; font-size: 13px; font-weight: 650; }
+.approval-actions button.secondary { background: #fff; color: #007d8b; }
+.approval-actions button:disabled { opacity: .55; cursor: default; }
 @media (max-width: 760px) { .sidebar { width: 185px; flex-basis: 185px; } .content { padding: 52px 30px; } }
+.agent-profile-hint { display: block; font-size: 11px; color: #8a8672; font-weight: 500; }
+.profile-run-hint { border-left: 3px solid #007d8b; padding-left: 10px; }
+
+.credential-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.credential-row strong { min-width: 130px; }
+.credential-state { font-size: 12px; color: #b34; }
+.credential-state.ok { color: #1a7f4b; }
+.credential-row input[type="password"] { flex: 1; min-width: 160px; padding: 6px 8px; border: 1px solid #d8e0e8; border-radius: 6px; }
+.grant-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.grant-row code { background: #f2f6f9; padding: 2px 6px; border-radius: 4px; }
+.grant-scopes { flex: 1; font-size: 13px; color: #46606f; }
+.scope-checks { display: flex; gap: 12px; flex-wrap: wrap; margin: 6px 0; }
+.message-assistant.streaming p { color: #33566b; }
+.message-assistant.streaming::after { content: "▍"; animation: blink 1s steps(2, start) infinite; color: #7fa3b8; }
+@keyframes blink { to { visibility: hidden; } }

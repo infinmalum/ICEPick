@@ -111,6 +111,16 @@ func (c *Catalog) SummaryFor(enabled []string) string {
 	return strings.Join(lines, "\n")
 }
 
+// Installed reports whether a skill with that name exists in the catalog;
+// profile validation uses it to reject references to missing resources.
+func (c *Catalog) Installed(name string) bool {
+	if c == nil {
+		return false
+	}
+	_, ok := c.items[name]
+	return ok
+}
+
 func (c *Catalog) Load(name string) (string, error) {
 	item, ok := c.items[name]
 	if !ok {

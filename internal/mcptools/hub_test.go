@@ -17,7 +17,7 @@ func TestLocalMCPToolDiscoveryAndCall(t *testing.T) {
 	}
 	defer hub.Close()
 	tools, err := hub.Definitions(context.Background())
-	if err != nil || len(tools) != 1 || tools[0].Function.Name != "local__current_time" {
+	if err != nil || len(tools) != 2 || tools[0].Function.Name != "local__current_time" || tools[1].Function.Name != "local__read_file" {
 		t.Fatalf("tools: %+v, %v", tools, err)
 	}
 	result, err := hub.Call(context.Background(), "local__current_time", "{}")
@@ -48,7 +48,7 @@ func TestLoadAgentSkillThroughMCP(t *testing.T) {
 	}
 	defer hub.Close()
 	tools, err := hub.Definitions(context.Background())
-	if err != nil || len(tools) != 2 {
+	if err != nil || len(tools) != 3 {
 		t.Fatalf("tools: %+v, %v", tools, err)
 	}
 	result, err := hub.Call(context.Background(), "local__load_skill", `{"name":"review-code"}`)

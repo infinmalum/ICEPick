@@ -32,9 +32,33 @@ type Config struct {
 
 // MCPServer describes an explicitly enabled stdio MCP server process.
 type MCPServer struct {
-	Name    string   `json:"name"`
-	Command string   `json:"command"`
-	Args    []string `json:"args,omitempty"`
+	Name       string   `json:"name"`
+	Command    string   `json:"command"`
+	Args       []string `json:"args,omitempty"`
+	WorkingDir string   `json:"workingDir,omitempty"`
+	// Env lists environment variable NAMES the server process may inherit
+	// from ICEPick. Values are read from the host environment at launch and
+	// never stored in the config file; when the list is empty only PATH and
+	// HOME are passed, so secrets never reach MCP processes by default.
+	Env []string `json:"env,omitempty"`
+	// TimeoutSeconds bounds the initial connect/handshake; 0 means the
+	// 10-second default.
+	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
+}
+
+func (m MCPServer) validate() error {
+	if strings.TrimSpace(m.Name) == "" || strings.Contains(m.Name, "__") || m.Name == "local" {
+		return fmt.Errorf("MCP 服务名称无效: %q", m.Name)
+	}
+	if strings.TrimSpace(m.Command) == "" {
+		return fmt.Errorf("MCP 服务 %q 缺少启动命令", m.Name)
+	}
+	for _, name := range m.Env {
+		if name == "" || strings.ContainsAny(name, " =") {
+			return fmt.Errorf("MCP 服务 %q 的环境允许列表只能包含变量名", m.Name)
+		}
+	}
+	return nil
 }
 
 type Model struct {
@@ -43,20 +67,91 @@ type Model struct {
 	Name     string `json:"name"`
 }
 
+// LocalProviders are the key-less OpenAI-compatible local servers.
+var LocalProviders = []string{"ollama", "lmstudio"}
+
+// RemoteProviders are the official hosted APIs; they require a separately
+// stored credential and all their traffic passes the data exfiltration check.
+var RemoteProviders = []string{"openai", "anthropic", "gemini"}
+
+// IsProvider reports whether the provider name is supported at all.
+func IsProvider(p string) bool {
+	for _, known := range append(append([]string{}, LocalProviders...), RemoteProviders...) {
+		if known == p {
+			return true
+		}
+	}
+	return false
+}
+
+// IsRemoteProvider reports whether the provider is a hosted API that needs a
+// credential and the exfiltration check.
+func IsRemoteProvider(p string) bool {
+	for _, known := range RemoteProviders {
+		if known == p {
+			return true
+		}
+	}
+	return false
+}
+
+// DefaultBaseURL is the official endpoint of a remote provider. An empty
+// stored BaseURL means "use this default".
+func DefaultBaseURL(provider string) string {
+	switch provider {
+	case "openai":
+		return "https://api.openai.com/v1"
+	case "anthropic":
+		return "https://api.anthropic.com"
+	case "gemini":
+		return "https://generativelanguage.googleapis.com"
+	default:
+		return ""
+	}
+}
+
+// EffectiveBaseURL resolves the endpoint a request will actually be sent to:
+// the stored override, or the provider's official endpoint. The exfiltration
+// check compares against this origin, never against the provider name.
+func (m Model) EffectiveBaseURL() string {
+	if m.BaseURL != "" {
+		return m.BaseURL
+	}
+	return DefaultBaseURL(m.Provider)
+}
+
 func Default() Config {
 	return Config{Model: DefaultModel("ollama")}
 }
 
 func DefaultModel(provider string) Model {
-	if provider == "lmstudio" {
+	switch provider {
+	case "openai":
+		return Model{Provider: provider, BaseURL: DefaultBaseURL(provider)}
+	case "anthropic":
+		return Model{Provider: provider, BaseURL: DefaultBaseURL(provider)}
+	case "gemini":
+		return Model{Provider: provider, BaseURL: DefaultBaseURL(provider)}
+	case "lmstudio":
 		return Model{Provider: provider, BaseURL: "http://127.0.0.1:1234/v1"}
+	default:
+		return Model{Provider: "ollama", BaseURL: "http://127.0.0.1:11434/v1"}
 	}
-	return Model{Provider: "ollama", BaseURL: "http://127.0.0.1:11434/v1"}
 }
 
 func (m Model) Validate() error {
-	if m.Provider != "ollama" && m.Provider != "lmstudio" {
+	if !IsProvider(m.Provider) {
 		return fmt.Errorf("暂不支持模型提供方 %q", m.Provider)
+	}
+	if IsRemoteProvider(m.Provider) {
+		if m.BaseURL == "" {
+			return nil
+		}
+		u, err := url.Parse(m.BaseURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || strings.ContainsAny(m.BaseURL, "?#") {
+			return errors.New("远端模型地址必须是有效的 http(s) 地址")
+		}
+		return nil
 	}
 	u, err := url.Parse(m.BaseURL)
 	if err != nil || u.Scheme != "http" || u.User != nil || strings.ContainsAny(m.BaseURL, "?#") || strings.TrimRight(u.Path, "/") != "/v1" {
@@ -95,6 +190,11 @@ func Load(path string) (Config, error) {
 	}
 	result.Model.Name = saved.Model.Name
 	result.MCPServers = saved.MCPServers
+	for _, server := range result.MCPServers {
+		if err := server.validate(); err != nil {
+			return Config{}, err
+		}
+	}
 	if err := result.Model.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -104,6 +204,11 @@ func Load(path string) (Config, error) {
 func Save(path string, cfg Config) error {
 	if err := cfg.Model.Validate(); err != nil {
 		return err
+	}
+	for _, server := range cfg.MCPServers {
+		if err := server.validate(); err != nil {
+			return err
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err

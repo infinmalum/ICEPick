@@ -1,19 +1,13 @@
 package main
 
 import (
-	"context"
 	"embed"
 	"log"
 	"os"
-	"path/filepath"
-	"time"
 
-	"icepick/internal/agent"
-	"icepick/internal/config"
-	"icepick/internal/mcptools"
-	"icepick/internal/model"
-	"icepick/internal/skills"
-	"icepick/internal/storage"
+	"icepick/internal/app"
+	"icepick/internal/cli"
+	"icepick/internal/host"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
@@ -22,61 +16,28 @@ import (
 var assets embed.FS
 
 func main() {
-	paths := config.UserPaths()
-	var initErr error
-	modelConfig := config.Default()
-	if err := config.EnsureDirs(paths); err != nil {
-		initErr = err
-	} else {
-		logFile, err := os.OpenFile(filepath.Join(paths.Data, "icepick.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-		if err != nil {
-			initErr = err
-		} else {
-			defer logFile.Close()
-			log.SetOutput(logFile)
-		}
+	// With arguments this binary is the CLI: `icepick serve` boots the
+	// headless host (with IPC), everything else talks to the running host of
+	// the data directory. Without arguments it is the desktop app.
+	args := os.Args[1:]
+	if len(args) > 0 {
+		os.Exit(cli.Run(args))
 	}
-	if initErr == nil {
-		modelConfig, initErr = config.Load(paths.Config)
-	}
-	var store *storage.Store
-	if initErr == nil {
-		store, initErr = storage.Open(filepath.Join(paths.Data, "icepick.db"))
-	}
-	if store != nil {
-		defer store.Close()
-		if initErr == nil {
-			initErr = store.RecoverInterrupted(context.Background())
-		}
-	}
-	if initErr != nil {
-		log.Printf("startup: %v", initErr)
-	}
-	runs := agent.NewRuns(store)
-	defer runs.Close()
-	catalog, err := skills.Discover(filepath.Join(filepath.Dir(paths.Config), "skills"))
-	if err != nil {
-		log.Fatal(err)
-	}
-	toolHub, err := mcptools.NewLocal(context.Background(), catalog)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer toolHub.Close()
-	for _, server := range modelConfig.MCPServers {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err := toolHub.ConnectCommand(ctx, server.Name, server.Command, server.Args)
-		cancel()
-		if err != nil {
-			log.Printf("MCP %s: %v", server.Name, err)
-		}
-	}
+	runDesktop()
+}
 
-	app := application.New(application.Options{
+func runDesktop() {
+	h, err := host.Start()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer h.Close()
+
+	wails := application.New(application.Options{
 		Name:        "ICEPick",
 		Description: "Local desktop agent",
 		Services: []application.Service{
-			application.NewService(&StatusService{store: store, initErr: initErr, configPath: paths.Config, config: modelConfig, runs: runs, tools: toolHub, skills: catalog, chat: model.ChatClient{}}),
+			application.NewService(&StatusService{svc: h.Service}),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
@@ -86,7 +47,14 @@ func main() {
 		},
 	})
 
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
+	// Bridge post-commit service events (including streamed deltas) to the
+	// webview; the frontend deduplicates by sequence when needed.
+	stopEvents := h.Service.Subscribe(func(evt app.Event) {
+		wails.Event.EmitEvent(&application.CustomEvent{Name: "icepick:service-event", Data: evt})
+	})
+	defer stopEvents()
+
+	wails.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:            "ICEPick",
 		Width:            1100,
 		Height:           720,
@@ -96,7 +64,7 @@ func main() {
 		URL:              "/",
 	})
 
-	if err := app.Run(); err != nil {
+	if err := wails.Run(); err != nil {
 		log.Fatal(err)
 	}
 }

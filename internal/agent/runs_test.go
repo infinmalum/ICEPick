@@ -20,7 +20,7 @@ func TestCancelPersistsAndSignals(t *testing.T) {
 		t.Fatal(err)
 	}
 	runs := NewRuns(store)
-	run, runCtx, err := runs.Start(ctx, session.ID)
+	run, runCtx, _, err := runs.Start(ctx, session.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestCancelPersistsAndSignals(t *testing.T) {
 	if err := runs.Cancel(run.ID); err == nil {
 		t.Fatal("second cancellation accepted")
 	}
-	second, secondCtx, err := runs.Start(ctx, session.ID)
+	second, secondCtx, _, err := runs.Start(ctx, session.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,6 +1,7 @@
 package model
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -51,21 +52,28 @@ type ChatResponse struct {
 	Usage        Usage
 }
 
+// ChatClient is the key-less OpenAI-compatible client for the local Ollama
+// and LM Studio servers. It speaks the same /v1 protocol in non-streaming and
+// streaming form; the agent loop owns tool validation, execution and
+// follow-up turns.
 type ChatClient struct {
 	Client *http.Client
 }
 
+func (c ChatClient) httpClient() *http.Client {
+	if c.Client != nil {
+		return c.Client
+	}
+	return &http.Client{
+		Timeout:       5 * time.Minute,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
 // Chat uses the common non-streaming endpoint supported by Ollama and LM Studio.
-// The agent loop owns tool validation, execution, and follow-up turns.
 func (c ChatClient) Chat(ctx context.Context, source config.Model, messages []Message, tools []Tool) (ChatResponse, error) {
-	if err := source.Validate(); err != nil {
+	if err := validateRequest(source, messages); err != nil {
 		return ChatResponse{}, err
-	}
-	if source.Name == "" {
-		return ChatResponse{}, errors.New("请先选择模型 ID")
-	}
-	if len(messages) == 0 {
-		return ChatResponse{}, errors.New("消息列表不能为空")
 	}
 	request := struct {
 		Model    string    `json:"model"`
@@ -77,19 +85,12 @@ func (c ChatClient) Chat(ctx context.Context, source config.Model, messages []Me
 	if err != nil {
 		return ChatResponse{}, fmt.Errorf("编码模型请求: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(source.BaseURL, "/")+"/chat/completions", bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(source.EffectiveBaseURL(), "/")+"/chat/completions", bytes.NewReader(data))
 	if err != nil {
 		return ChatResponse{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := c.Client
-	if client == nil {
-		client = &http.Client{
-			Timeout:       5 * time.Minute,
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		}
-	}
-	resp, err := client.Do(req)
+	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return ChatResponse{}, fmt.Errorf("模型请求失败: %w", err)
 	}
@@ -111,4 +112,114 @@ func (c ChatClient) Chat(ctx context.Context, source config.Model, messages []Me
 		return ChatResponse{}, errors.New("模型回答没有 choices")
 	}
 	return ChatResponse{Message: payload.Choices[0].Message, FinishReason: payload.Choices[0].FinishReason, Usage: payload.Usage}, nil
+}
+
+// chatStreamChunk is one SSE payload of the /chat/completions stream.
+type chatStreamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				Index    int64  `json:"index"`
+				ID       string `json:"id"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage *Usage `json:"usage"`
+}
+
+// ChatStream consumes the streaming endpoint supported by Ollama and LM
+// Studio, delivering every text delta to onDelta as it arrives and merging
+// the full message in memory for the final response.
+func (c ChatClient) ChatStream(ctx context.Context, source config.Model, messages []Message, tools []Tool, onDelta func(string) error) (ChatResponse, error) {
+	if err := validateRequest(source, messages); err != nil {
+		return ChatResponse{}, err
+	}
+	request := struct {
+		Model    string         `json:"model"`
+		Messages []Message      `json:"messages"`
+		Tools    []Tool         `json:"tools,omitempty"`
+		Stream   bool           `json:"stream"`
+		Options  *streamOptions `json:"stream_options,omitempty"`
+	}{Model: source.Name, Messages: messages, Tools: tools, Stream: true}
+	if onDelta != nil {
+		request.Options = &streamOptions{IncludeUsage: true}
+	}
+	data, err := json.Marshal(request)
+	if err != nil {
+		return ChatResponse{}, fmt.Errorf("编码模型请求: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(source.EffectiveBaseURL(), "/")+"/chat/completions", bytes.NewReader(data))
+	if err != nil {
+		return ChatResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return ChatResponse{}, fmt.Errorf("模型请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ChatResponse{}, fmt.Errorf("模型服务返回 HTTP %d", resp.StatusCode)
+	}
+	merger := &deltaMerger{}
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4<<20)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		payload := bytes.TrimSpace(line[len("data:"):])
+		if bytes.Equal(payload, []byte("[DONE]")) {
+			break
+		}
+		var chunk chatStreamChunk
+		if err := json.Unmarshal(payload, &chunk); err != nil {
+			return ChatResponse{}, fmt.Errorf("解析模型流: %w", err)
+		}
+		if len(chunk.Choices) > 0 {
+			choice := chunk.Choices[0]
+			if choice.Delta.Content != "" {
+				if err := merger.addText(choice.Delta.Content, onDelta); err != nil {
+					return ChatResponse{}, err
+				}
+			}
+			for _, call := range choice.Delta.ToolCalls {
+				merger.addToolCall(int(call.Index), call.ID, call.Function.Name, call.Function.Arguments)
+			}
+			if choice.FinishReason != "" {
+				merger.finish = choice.FinishReason
+			}
+		}
+		if chunk.Usage != nil {
+			merger.usage = *chunk.Usage
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return ChatResponse{}, fmt.Errorf("读取模型流: %w", err)
+	}
+	return merger.response(), nil
+}
+
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
+func validateRequest(source config.Model, messages []Message) error {
+	if err := source.Validate(); err != nil {
+		return err
+	}
+	if source.Name == "" {
+		return errors.New("请先选择模型 ID")
+	}
+	if len(messages) == 0 {
+		return errors.New("消息列表不能为空")
+	}
+	return nil
 }

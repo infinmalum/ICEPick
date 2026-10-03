@@ -1,351 +1,192 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"strings"
-	"sync"
-
-	"icepick/internal/agent"
+	"icepick/internal/app"
 	"icepick/internal/config"
-	"icepick/internal/mcptools"
-	"icepick/internal/model"
-	"icepick/internal/skills"
 	"icepick/internal/storage"
 )
 
-type AppStatus struct {
-	Name            string       `json:"name"`
-	StorageReady    bool         `json:"storageReady"`
-	AgentReady      bool         `json:"agentReady"`
-	ModelConnected  bool         `json:"modelConnected"`
-	Model           config.Model `json:"model"`
-	AvailableModels []string     `json:"availableModels"`
-	Message         string       `json:"message"`
-}
+// StatusService is the Wails binding surface. It owns no run state: every
+// method delegates to the UI-agnostic app service so the CLI/IPC client
+// (P3c) drives the exact same code path.
+type StatusService struct{ svc *app.Service }
 
-type StatusService struct {
-	store      *storage.Store
-	initErr    error
-	configPath string
-	mu         sync.RWMutex
-	config     config.Config
-	discovery  model.Discovery
-	runs       *agent.Runs
-	tools      *mcptools.Hub
-	skills     *skills.Catalog
-	chat       agent.ChatModel
-	taskMu     sync.Mutex
-	running    map[string]string
-}
+type AppStatus = app.AppStatus
 
-func (s *StatusService) GetStatus() AppStatus {
-	s.mu.RLock()
-	source := s.config.Model
-	s.mu.RUnlock()
-	status := AppStatus{Name: "ICEPick", StorageReady: s.initErr == nil && s.store != nil, AgentReady: s.initErr == nil && s.store != nil && source.Name != "" && s.tools != nil, Model: source, AvailableModels: []string{}}
-	if s.initErr != nil {
-		status.Message = "本地数据初始化失败：" + s.initErr.Error()
-		return status
-	}
-	models, err := s.discovery.List(context.Background(), source)
-	if err != nil {
-		status.Message = "模型未连接：" + err.Error()
-		return status
-	}
-	status.ModelConnected = true
-	status.AvailableModels = models
-	if len(models) == 0 {
-		status.Message = "模型服务已连接，但未发现模型。请在模型服务中加载模型。"
-	} else {
-		status.Message = fmt.Sprintf("模型服务已连接，发现 %d 个模型。选好模型后可发送任务。", len(models))
-	}
-	return status
-}
+func (s *StatusService) GetStatus() AppStatus { return s.svc.GetStatus() }
 
 func (s *StatusService) SaveModelConfig(next config.Model) (AppStatus, error) {
-	if err := s.checkReady(); err != nil {
-		return AppStatus{}, err
-	}
-	s.mu.RLock()
-	updated := s.config
-	s.mu.RUnlock()
-	updated.Model = next
-	if err := config.Save(s.configPath, updated); err != nil {
-		return AppStatus{}, err
-	}
-	s.mu.Lock()
-	s.config.Model = next
-	s.mu.Unlock()
-	return s.GetStatus(), nil
+	return s.svc.SaveModelConfig(next)
 }
 
-func (s *StatusService) checkReady() error {
-	if s.initErr != nil {
-		return s.initErr
-	}
-	if s.store == nil {
-		return errors.New("本地数据库未就绪")
-	}
-	return nil
+// ListProfiles returns every profile (the shareable, versioned combinations),
+// built-in default first.
+func (s *StatusService) ListProfiles() ([]storage.Profile, error) {
+	return s.svc.ListProfiles()
+}
+
+// CreateProfile saves a new profile: blank template when fromID is empty,
+// otherwise an independent copy of the referenced profile.
+func (s *StatusService) CreateProfile(name, fromID string) (storage.Profile, error) {
+	return s.svc.CreateProfile(name, fromID)
+}
+
+// UpdateProfile saves a new combination atomically and checks that the
+// selected skills and MCP servers actually exist on this host.
+func (s *StatusService) UpdateProfile(p storage.Profile) (storage.Profile, error) {
+	return s.svc.UpdateProfile(p)
+}
+
+// RestoreProfileDefault resets the built-in default profile to the shipped
+// combination.
+func (s *StatusService) RestoreProfileDefault(revision int) (storage.Profile, error) {
+	return s.svc.RestoreProfileDefault(revision)
+}
+
+// DeleteProfile removes a profile after the user reassigned its referencing
+// agents.
+func (s *StatusService) DeleteProfile(id string) error {
+	return s.svc.DeleteProfile(id)
+}
+
+// ListAgents returns the agent instances with their current profile
+// reference and machine policy.
+func (s *StatusService) ListAgents() ([]storage.Agent, error) {
+	return s.svc.ListAgents()
+}
+
+// GetAgentProfile resolves one agent's current profile combination.
+func (s *StatusService) GetAgentProfile(agentID string) (storage.AgentProfile, error) {
+	return s.svc.GetAgentProfile(agentID)
+}
+
+// CreateAgent registers a new instance referencing an existing profile; the
+// new agent initializes its own independent machine policy.
+func (s *StatusService) CreateAgent(name, profileID string) (storage.Agent, error) {
+	return s.svc.CreateAgent(name, profileID)
+}
+
+// UpdateAgent saves the agent-owned name and machine-local policy.
+func (s *StatusService) UpdateAgent(agentID, name string, policy storage.AgentPolicy) (storage.Agent, error) {
+	return s.svc.UpdateAgent(agentID, name, policy)
+}
+
+// SwitchAgentProfile points an agent at another profile without touching its
+// sessions, history or policy.
+func (s *StatusService) SwitchAgentProfile(agentID, profileID string) (storage.Agent, error) {
+	return s.svc.SwitchAgentProfile(agentID, profileID)
+}
+
+// DeleteAgent removes an instance that no longer owns sessions.
+func (s *StatusService) DeleteAgent(agentID string) error {
+	return s.svc.DeleteAgent(agentID)
 }
 
 func (s *StatusService) ListSessions() ([]storage.Session, error) {
-	return s.ListAgentSessions(storage.DefaultAgentID)
-}
-
-func (s *StatusService) ListAgents() ([]storage.AgentProfile, error) {
-	if err := s.checkReady(); err != nil {
-		return nil, err
-	}
-	return s.store.ListAgents(context.Background())
-}
-
-func (s *StatusService) CreateAgent(name, fromID string) (storage.AgentProfile, error) {
-	if err := s.checkReady(); err != nil {
-		return storage.AgentProfile{}, err
-	}
-	if fromID == "" {
-		p := storage.BlankProfile()
-		p.Name = strings.TrimSpace(name)
-		return s.store.CreateAgent(context.Background(), "", p)
-	}
-	p, err := s.store.CreateAgent(context.Background(), fromID, storage.AgentProfile{})
-	if err != nil {
-		return p, err
-	}
-	if strings.TrimSpace(name) != "" {
-		p.Name = strings.TrimSpace(name)
-		return s.store.UpdateAgent(context.Background(), p)
-	}
-	return p, nil
-}
-
-func (s *StatusService) UpdateAgent(p storage.AgentProfile) (storage.AgentProfile, error) {
-	if err := s.checkReady(); err != nil {
-		return storage.AgentProfile{}, err
-	}
-	return s.store.UpdateAgent(context.Background(), p)
-}
-
-func (s *StatusService) RestoreAgentPreset(id string, revision int) (storage.AgentProfile, error) {
-	if err := s.checkReady(); err != nil {
-		return storage.AgentProfile{}, err
-	}
-	return s.store.RestorePreset(context.Background(), id, revision)
+	return s.svc.ListSessions()
 }
 
 func (s *StatusService) ListAgentSessions(agentID string) ([]storage.Session, error) {
-	if err := s.checkReady(); err != nil {
-		return nil, err
-	}
-	return s.store.ListAgentSessions(context.Background(), agentID)
+	return s.svc.ListAgentSessions(agentID)
 }
 
 func (s *StatusService) CreateSession() (storage.Session, error) {
-	return s.CreateAgentSession(storage.DefaultAgentID)
+	return s.svc.CreateSession()
 }
 
 func (s *StatusService) CreateAgentSession(agentID string) (storage.Session, error) {
-	if err := s.checkReady(); err != nil {
-		return storage.Session{}, err
-	}
-	return s.store.CreateAgentSession(context.Background(), agentID, "新会话")
+	return s.svc.CreateAgentSession(agentID)
 }
 
+// ListMessages returns the display projection of a session: persisted
+// messages plus one synthetic entry per tool call so the transcript shows
+// tool activity without storing free-form tool rows again.
 func (s *StatusService) ListMessages(agentID, sessionID string) ([]storage.Message, error) {
-	if err := s.checkReady(); err != nil {
-		return nil, err
-	}
-	if err := s.checkSessionAgent(agentID, sessionID); err != nil {
-		return nil, err
-	}
-	return s.store.ListMessages(context.Background(), sessionID)
+	return s.svc.ListMessages(agentID, sessionID)
+}
+
+func (s *StatusService) ListToolCalls(agentID, sessionID string) ([]storage.ToolCall, error) {
+	return s.svc.ListToolCalls(agentID, sessionID)
+}
+
+// ResolveToolCall records a user disposition for a result-unknown call.
+func (s *StatusService) ResolveToolCall(agentID, callID, state, result, note string) (storage.ToolCall, error) {
+	return s.svc.ResolveToolCall(agentID, callID, state, result, note)
+}
+
+// ApproveToolCall grants one pending tool call; the approval binds to that
+// exact call and its arguments.
+func (s *StatusService) ApproveToolCall(agentID, callID string) (storage.ToolCall, error) {
+	return s.svc.ApproveToolCall(agentID, callID)
+}
+
+// DenyToolCall refuses one pending tool call; the denial is returned to the
+// model as a tool error.
+func (s *StatusService) DenyToolCall(agentID, callID, note string) (storage.ToolCall, error) {
+	return s.svc.DenyToolCall(agentID, callID, note)
+}
+
+// ListExfilGrants shows the destinations data may be sent to and the scopes
+// each grant covers.
+func (s *StatusService) ListExfilGrants() ([]storage.ExfilGrant, error) {
+	return s.svc.ListExfilGrants()
+}
+
+// GrantExfil authorizes sending the listed data scopes to one endpoint.
+func (s *StatusService) GrantExfil(destination string, scopes []string) (storage.ExfilGrant, error) {
+	return s.svc.GrantExfil(destination, scopes)
+}
+
+// RevokeExfil removes the authorization for one destination.
+func (s *StatusService) RevokeExfil(destination string) error {
+	return s.svc.RevokeExfil(destination)
+}
+
+// SaveCredential stores one remote provider's API key in the protected data
+// directory. The key is write-only: no binding ever returns it.
+func (s *StatusService) SaveCredential(provider, apiKey string) error {
+	return s.svc.SaveCredential(provider, apiKey)
+}
+
+// DeleteCredential removes one remote provider's stored key.
+func (s *StatusService) DeleteCredential(provider string) error {
+	return s.svc.DeleteCredential(provider)
+}
+
+// ListCredentialStatus reports which remote providers have a stored key.
+func (s *StatusService) ListCredentialStatus() ([]app.CredentialStatus, error) {
+	return s.svc.ListCredentialStatus()
+}
+
+// PendingStreamText returns the streamed-but-uncommitted assistant text of a
+// run, so a reconnecting client can pick the live transcript back up.
+func (s *StatusService) PendingStreamText(agentID, runID string) (string, error) {
+	return s.svc.PendingStreamText(agentID, runID)
+}
+
+// ListMCPEndpoints shows each attached MCP server's source, process command,
+// tool list and fingerprints, with a change marker when a fingerprint no
+// longer matches the registry.
+func (s *StatusService) ListMCPEndpoints() ([]app.MCPEndpointStatus, error) {
+	return s.svc.ListMCPEndpoints()
 }
 
 func (s *StatusService) ListRuns(agentID, sessionID string) ([]storage.Run, error) {
-	if err := s.checkReady(); err != nil {
-		return nil, err
-	}
-	if err := s.checkSessionAgent(agentID, sessionID); err != nil {
-		return nil, err
-	}
-	return s.store.ListRuns(context.Background(), sessionID)
+	return s.svc.ListRuns(agentID, sessionID)
 }
 
 func (s *StatusService) GetRun(agentID, id string) (storage.Run, error) {
-	if err := s.checkReady(); err != nil {
-		return storage.Run{}, err
-	}
-	run, err := s.store.GetRun(context.Background(), id)
-	if err != nil {
-		return storage.Run{}, err
-	}
-	if err := s.checkSessionAgent(agentID, run.SessionID); err != nil {
-		return storage.Run{}, err
-	}
-	return run, nil
-}
-
-func (s *StatusService) checkSessionAgent(agentID, sessionID string) error {
-	if agentID == "" {
-		return errors.New("请选择 Agent")
-	}
-	session, err := s.store.GetSession(context.Background(), sessionID)
-	if err != nil {
-		return err
-	}
-	if session.AgentID != agentID {
-		return errors.New("会话不属于所选 Agent")
-	}
-	return nil
+	return s.svc.GetRun(agentID, id)
 }
 
 func (s *StatusService) StartTask(sessionID, input string) (storage.Run, error) {
-	return s.StartAgentTask(storage.DefaultAgentID, sessionID, input)
+	return s.svc.StartTask(sessionID, input)
 }
 
 func (s *StatusService) StartAgentTask(agentID, sessionID, input string) (storage.Run, error) {
-	if err := s.checkReady(); err != nil {
-		return storage.Run{}, err
-	}
-	input = strings.TrimSpace(input)
-	if input == "" || len(input) > 10000 {
-		return storage.Run{}, errors.New("任务内容长度必须在 1 到 10000 字节之间")
-	}
-	profile, err := s.store.AgentForSession(context.Background(), sessionID)
-	if err != nil {
-		return storage.Run{}, err
-	}
-	if agentID == "" || agentID != profile.ID {
-		return storage.Run{}, errors.New("会话不属于所选 Agent")
-	}
-	s.mu.RLock()
-	source := s.config.Model
-	s.mu.RUnlock()
-	if profile.Model.Provider != "" {
-		source = profile.Model
-	}
-	if source.Name == "" {
-		return storage.Run{}, errors.New("请先选择模型 ID")
-	}
-	if s.runs == nil || s.tools == nil || s.chat == nil {
-		return storage.Run{}, errors.New("Agent 尚未初始化")
-	}
-	s.taskMu.Lock()
-	defer s.taskMu.Unlock()
-	if s.running == nil {
-		s.running = map[string]string{}
-	}
-	if previous := s.running[sessionID]; previous != "" {
-		prior, err := s.store.GetRun(context.Background(), previous)
-		if err != nil || prior.Status == "running" {
-			return storage.Run{}, errors.New("该会话已有运行中的任务")
-		}
-		delete(s.running, sessionID)
-	}
-	item, runCtx, err := s.runs.StartAtRevision(context.Background(), sessionID, profile.Revision)
-	if err != nil {
-		return storage.Run{}, err
-	}
-	if _, err := s.store.AddMessage(context.Background(), sessionID, "user", input); err != nil {
-		_ = s.runs.Finish(item.ID, "failed", err.Error())
-		return storage.Run{}, err
-	}
-	s.running[sessionID] = item.ID
-	go s.executeTask(runCtx, item.ID, sessionID, source, profile)
-	return item, nil
-}
-
-func (s *StatusService) executeTask(ctx context.Context, runID, sessionID string, source config.Model, profile storage.AgentProfile) {
-	defer func() {
-		s.taskMu.Lock()
-		if s.running[sessionID] == runID {
-			delete(s.running, sessionID)
-		}
-		s.taskMu.Unlock()
-	}()
-	stored, err := s.store.ListMessages(ctx, sessionID)
-	if err != nil {
-		_ = s.runs.Finish(runID, "failed", err.Error())
-		return
-	}
-	history := []model.Message{{Role: "system", Content: profile.SystemPrompt}}
-	if summary := s.skills.SummaryFor(profile.EnabledSkills); summary != "" {
-		history[0].Content += "\n可用 Agent Skills（仅元数据）：\n" + summary + "\n相关任务先调用 local__load_skill 读取完整 SKILL.md。"
-	}
-	for _, item := range stored {
-		if item.Role == "user" || item.Role == "assistant" {
-			history = append(history, model.Message{Role: item.Role, Content: item.Content})
-		}
-	}
-	allowedTools := []string{}
-	for _, name := range profile.AllowedTools {
-		if name == "local__current_time" || name == "local__load_skill" {
-			allowedTools = append(allowedTools, name)
-		}
-	}
-	engine := agent.Engine{Model: s.chat, Tools: s.tools, AllowedTools: allowedTools, CanCall: func(name, arguments string) bool {
-		current, err := s.store.GetAgent(context.Background(), profile.ID)
-		if err != nil {
-			return false
-		}
-		found := false
-		for _, tool := range current.AllowedTools {
-			if tool == name {
-				found = true
-				break
-			}
-		}
-		if !found || (name != "local__current_time" && name != "local__load_skill") {
-			return false
-		}
-		if name == "local__load_skill" {
-			var args struct {
-				Name string `json:"name"`
-			}
-			if json.Unmarshal([]byte(arguments), &args) != nil {
-				return false
-			}
-			for _, skill := range current.EnabledSkills {
-				if skill == args.Name {
-					return true
-				}
-			}
-			return false
-		}
-		return true
-	}, OnTool: func(name, result string) error {
-		_, err := s.store.AddMessage(context.Background(), sessionID, "tool", name+": "+result)
-		return err
-	}}
-	answer, err := engine.Run(ctx, source, history)
-	if errors.Is(ctx.Err(), context.Canceled) {
-		return
-	}
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		_ = s.runs.Finish(runID, "failed", "任务超过 10 分钟上限")
-		return
-	}
-	if err != nil {
-		_ = s.runs.Finish(runID, "failed", err.Error())
-		return
-	}
-	if _, err := s.store.AddMessage(context.Background(), sessionID, "assistant", answer); err != nil {
-		_ = s.runs.Finish(runID, "failed", err.Error())
-		return
-	}
-	_ = s.runs.Finish(runID, "completed", "")
+	return s.svc.StartAgentTask(agentID, sessionID, input)
 }
 
 func (s *StatusService) CancelTask(agentID, id string) error {
-	if err := s.checkReady(); err != nil {
-		return err
-	}
-	if _, err := s.GetRun(agentID, id); err != nil {
-		return err
-	}
-	return s.runs.Cancel(id)
+	return s.svc.CancelTask(agentID, id)
 }

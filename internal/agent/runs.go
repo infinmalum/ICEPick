@@ -22,29 +22,22 @@ func NewRuns(store *storage.Store) *Runs {
 	return &Runs{store: store, active: map[string]context.CancelFunc{}}
 }
 
-func (r *Runs) Start(ctx context.Context, sessionID string) (storage.Run, context.Context, error) {
-	return r.StartAtRevision(ctx, sessionID, 0)
-}
-
-func (r *Runs) StartAtRevision(ctx context.Context, sessionID string, revision int) (storage.Run, context.Context, error) {
+// Start creates the run and resolves the owning Agent's current Profile in
+// one transaction. The returned resolved profile is the snapshot the run
+// must execute with; later profile edits affect only subsequent runs.
+func (r *Runs) Start(ctx context.Context, sessionID string) (storage.Run, context.Context, storage.AgentProfile, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return storage.Run{}, nil, err
+		return storage.Run{}, nil, storage.AgentProfile{}, err
 	}
-	var item storage.Run
-	var err error
-	if revision > 0 {
-		item, err = r.store.CreateRunAtRevision(ctx, sessionID, revision)
-	} else {
-		item, err = r.store.CreateRun(ctx, sessionID)
-	}
+	item, resolved, err := r.store.CreateRun(ctx, sessionID)
 	if err != nil {
-		return storage.Run{}, nil, err
+		return storage.Run{}, nil, storage.AgentProfile{}, err
 	}
 	runCtx, cancel := context.WithTimeout(ctx, RunTimeout)
 	r.active[item.ID] = cancel
-	return item, runCtx, nil
+	return item, runCtx, resolved, nil
 }
 
 func (r *Runs) Cancel(id string) error {
