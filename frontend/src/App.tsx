@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Events } from '@wailsio/runtime'
 import { StatusService, type AppStatus } from '../bindings/icepick'
-import type { Agent, AgentPolicy, ExfilGrant, Message, Profile, Run, Session, ToolCall } from '../bindings/icepick/internal/storage'
-import type { CredentialStatus, MCPEndpointStatus } from '../bindings/icepick/internal/app'
+import type { Agent, AgentPolicy, ExfilGrant, Memory, Message, Profile, Run, Session, SessionSummary, ToolCall } from '../bindings/icepick/internal/storage'
+import type { CredentialStatus, MCPEndpointStatus, SessionPlanView } from '../bindings/icepick/internal/app'
 
 type ModelDraft = { provider: string; baseUrl: string; name: string }
 
@@ -59,6 +59,13 @@ function App() {
   const [grantBusy, setGrantBusy] = useState(false)
   const [grantError, setGrantError] = useState('')
   const [streamText, setStreamText] = useState('')
+  const [memories, setMemories] = useState<Memory[]>([])
+  const [memoryDraft, setMemoryDraft] = useState('')
+  const [memoryEdit, setMemoryEdit] = useState<{ id: string; content: string } | null>(null)
+  const [memoryBusy, setMemoryBusy] = useState(false)
+  const [memoryError, setMemoryError] = useState('')
+  const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null)
+  const [sessionPlan, setSessionPlan] = useState<SessionPlanView | null>(null)
 
   useEffect(() => {
     StatusService.GetStatus()
@@ -71,8 +78,31 @@ function App() {
     StatusService.ListProfiles().then((items) => setProfiles(items ?? [])).catch((reason: unknown) => setError(String(reason)))
     StatusService.ListMCPEndpoints().then((items) => setMcpServers(items ?? [])).catch((reason: unknown) => setError(String(reason)))
     StatusService.ListCredentialStatus().then((items) => setCredStatus(items ?? [])).catch((reason: unknown) => setCredError(String(reason)))
-    StatusService.ListExfilGrants().then((items) => setGrants(items ?? [])).catch((reason: unknown) => setGrantError(String(reason)))
   }, [])
+
+  useEffect(() => {
+ let current=true; setGrants([]); setGrantError('');
+ StatusService.ListExfilGrants(agentID).then(items=>{if(current)setGrants(items ?? [])}).catch(reason=>{if(current)setGrantError(String(reason))});
+ return ()=>{current=false};
+ }, [agentID])
+
+  // Long-term memory belongs to the agent; reload whenever the agent changes.
+  useEffect(() => {
+    let current = true
+    setMemories([]); setMemoryError(''); setMemoryEdit(null)
+    StatusService.ListMemories(agentID).then((items) => { if (current) setMemories(items ?? []) }).catch((reason) => { if (current) setMemoryError(String(reason)) })
+    return () => { current = false }
+  }, [agentID])
+
+  // The compaction summary and the resumable plan are session facts; they
+  // can appear or change while a run compacts or updates the plan.
+  function refreshSessionKnowledge(id: string) {
+    StatusService.GetSessionSummary(agentID, id).then((value) => setSessionSummary(value)).catch(() => setSessionSummary(null))
+    StatusService.GetSessionPlan(agentID, id).then((value) => setSessionPlan(value)).catch(() => setSessionPlan(null))
+  }
+
+  const activeAgentID = useRef(agentID)
+  activeAgentID.current = agentID
 
   const activeAgent = agents.find((item) => item.id === agentID) ?? null
 
@@ -125,6 +155,7 @@ function App() {
         setLoadingSession(false)
       })
       .catch((reason: unknown) => { if (!cancelled) { setTaskError(String(reason)); setLoadingSession(false) } })
+    refreshSessionKnowledge(selected)
     return () => { cancelled = true }
   }, [agentID, selected])
 
@@ -147,6 +178,7 @@ function App() {
         setToolCalls(calls ?? [])
         setStreamText(pending ?? '')
         setRuns((current) => [run, ...current.filter((item) => item.id !== run.id)])
+        refreshSessionKnowledge(selected)
         if (run.status !== 'running') setActiveRun(null)
       } catch (reason) {
         if (!cancelled) setTaskError(String(reason))
@@ -383,8 +415,10 @@ function App() {
     if (!grantForm.destination.trim() || grantForm.scopes.length === 0) return
     setGrantBusy(true)
     try {
-      await StatusService.GrantExfil(grantForm.destination, grantForm.scopes)
-      setGrants((await StatusService.ListExfilGrants()) ?? [])
+      await StatusService.GrantExfil(agentID,grantForm.destination, grantForm.scopes)
+      const updated = (await StatusService.ListExfilGrants(agentID)) ?? []
+      if (activeAgentID.current !== agentID) return
+      setGrants(updated)
       setGrantForm({ destination: '', scopes: [] })
       setGrantError('')
     } catch (reason) { setGrantError(String(reason)) } finally { setGrantBusy(false) }
@@ -394,8 +428,10 @@ function App() {
     if (!window.confirm(`撤销向 ${destination} 发送会话数据的授权？后续远端发送将被拒绝。`)) return
     setGrantBusy(true)
     try {
-      await StatusService.RevokeExfil(destination)
-      setGrants((await StatusService.ListExfilGrants()) ?? [])
+      await StatusService.RevokeExfil(agentID,destination)
+      const updated = (await StatusService.ListExfilGrants(agentID)) ?? []
+      if (activeAgentID.current !== agentID) return
+      setGrants(updated)
       setGrantError('')
     } catch (reason) { setGrantError(String(reason)) } finally { setGrantBusy(false) }
   }
@@ -412,6 +448,62 @@ function App() {
     } finally {
       setCreating(false)
     }
+  }
+
+  async function addMemory(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!memoryDraft.trim()) return
+    setMemoryBusy(true)
+    try {
+      await StatusService.AddMemory(agentID, memoryDraft)
+      setMemories((await StatusService.ListMemories(agentID)) ?? [])
+      setMemoryDraft('')
+      setMemoryError('')
+    } catch (reason) { setMemoryError(String(reason)) } finally { setMemoryBusy(false) }
+  }
+
+  async function saveMemoryEdit() {
+    if (!memoryEdit || !memoryEdit.content.trim()) return
+    setMemoryBusy(true)
+    try {
+      await StatusService.UpdateMemory(agentID, memoryEdit.id, memoryEdit.content)
+      setMemories((await StatusService.ListMemories(agentID)) ?? [])
+      setMemoryEdit(null)
+      setMemoryError('')
+    } catch (reason) { setMemoryError(String(reason)) } finally { setMemoryBusy(false) }
+  }
+
+  async function deleteMemory(id: string) {
+    if (!window.confirm('删除这条记忆？删除后不可恢复。')) return
+    setMemoryBusy(true)
+    try {
+      await StatusService.DeleteMemory(agentID, id)
+      setMemories((await StatusService.ListMemories(agentID)) ?? [])
+      setMemoryError('')
+    } catch (reason) { setMemoryError(String(reason)) } finally { setMemoryBusy(false) }
+  }
+
+  async function exportMemory() {
+    try {
+      const markdown = await StatusService.ExportMemories(agentID)
+      const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `icepick-memory-${agentID}.md`
+      anchor.click()
+      URL.revokeObjectURL(url)
+      setMemoryError('')
+    } catch (reason) { setMemoryError(String(reason)) }
+  }
+
+  async function clearPlan() {
+    if (!selected) return
+    try {
+      await StatusService.ClearSessionPlan(agentID, selected)
+      setSessionPlan(null)
+      setTaskError('')
+    } catch (reason) { setTaskError(String(reason)) }
   }
 
   async function sendTask(event: React.FormEvent<HTMLFormElement>) {
@@ -513,6 +605,7 @@ function App() {
               <option value="manual">全人工</option><option value="semi">半自动</option><option value="automatic">全自动</option>
             </select></label>
             <label className="checkbox-label"><input type="checkbox" checked={agentDraft.policy.permissions.unrestricted} onChange={(event) => updatePermissions({ unrestricted: event.target.checked })} />不限工作区、命令和网络目标</label>
+            <label className="checkbox-label"><input type="checkbox" checked={agentDraft.policy.memory} onChange={(event) => updatePolicy({ memory: event.target.checked })} />允许使用长期记忆（与 Profile 偏好同时开启才生效）</label>
             {!agentDraft.policy.permissions.unrestricted && <><label>允许的工作区路径（每行一个）<textarea rows={2} value={(agentDraft.policy.permissions.workspacePaths ?? []).join('\n')} onChange={(event) => updatePermissions({ workspacePaths: event.target.value.split('\n').map((path) => path.trim()).filter(Boolean) })} /></label><label>允许的命令（每行一个）<textarea rows={2} value={(agentDraft.policy.permissions.commands ?? []).join('\n')} onChange={(event) => updatePermissions({ commands: event.target.value.split('\n').map((cmd) => cmd.trim()).filter(Boolean) })} /></label><label>允许的网络目标（每行一个）<textarea rows={2} value={(agentDraft.policy.permissions.networkHosts ?? []).join('\n')} onChange={(event) => updatePermissions({ networkHosts: event.target.value.split('\n').map((host) => host.trim()).filter(Boolean) })} /></label></>}
             <div className="model-actions"><button type="submit" disabled={agentBusy}>保存 Agent（名称与策略）</button><button type="button" className="secondary" disabled={agentBusy || agentDraft.id === 'default'} onClick={deleteAgent}>删除 Agent</button></div>
           </form>
@@ -567,7 +660,10 @@ function App() {
             </select></label>
             {profileDraft.data.model.provider && <><label>Profile 模型地址{remoteProviders.includes(profileDraft.data.model.provider as (typeof remoteProviders)[number]) ? '（留空使用官方端点）' : ''}
               <input value={profileDraft.data.model.baseUrl} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, model: { ...profileDraft.data.model, baseUrl: event.target.value } } })} placeholder={providerDefaults[profileDraft.data.model.provider] ?? ''} /></label><label>Profile 模型 ID<input value={profileDraft.data.model.name} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, model: { ...profileDraft.data.model, name: event.target.value } } })} /></label></>}
+            <label>人格<textarea value={profileDraft.data.persona} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, persona: event.target.value } })} /></label>
             <label>上下文预算（token）<input type="number" min={1024} max={1000000} value={profileDraft.data.contextBudget} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, contextBudget: Number(event.target.value) } })} /></label>
+            <label className="checkbox-label"><input type="checkbox" checked={profileDraft.data.memoryEnabled} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, memoryEnabled: event.target.checked } })} />启用长期记忆（运行开始时检索，模型可用 local__memory_save 写入）</label>
+            <label className="checkbox-label"><input type="checkbox" checked={profileDraft.data.planEnabled} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, planEnabled: event.target.checked } })} />启用任务规划（模型用 local__update_plan 维护可恢复计划）</label>
             <label className="checkbox-label"><input type="checkbox" checked={profileDraft.data.delegation.enabled} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, delegation: { ...profileDraft.data.delegation, enabled: event.target.checked } } })} />允许委派子 Agent（尚未接通）</label>
             {profileDraft.data.delegation.enabled && <label>最大委派深度<input type="number" min={0} max={4} value={profileDraft.data.delegation.maxDepth} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, delegation: { ...profileDraft.data.delegation, maxDepth: Number(event.target.value) } } })} /></label>}
             <div className="model-actions"><button type="submit" disabled={profileBusy}>保存 Profile</button></div>
@@ -629,8 +725,8 @@ function App() {
         </section>
 
         <section className="session-card">
-          <div className="card-title">数据外发授权</div>
-          <p className="hint">远端模型发送前会核对本会话累计数据范围与该端点的授权；本机模型不经过此检查。未知范围必须显式授权。</p>
+          <div className="card-title">数据外发授权 · {activeAgent?.name ?? '未选择 Agent'}</div>
+          <p className="hint">授权仅用于当前 Agent。远端发送检查会话累计来源、提示词及工具定义；本机处理也保留来源限制，供之后切换远端时检查。旧版全局授权需在每个 Agent 下重新设置。</p>
           {(grants ?? []).length === 0 && <p className="hint">还没有外发授权。配置远端模型并首次发送时，会在此提示需要授权。</p>}
           {(grants ?? []).map((grant) => (
             <div className="grant-row" key={grant.destination}>
@@ -660,8 +756,63 @@ function App() {
         </section>
 
         <section className="session-card">
+          <div className="card-title">长期记忆 · {activeAgent?.name ?? '未选择 Agent'}</div>
+          <p className="hint">记忆按 Agent 归属：切换 Profile 不清空、共享 Profile 不共享、复制 Profile 不携带。记忆会注入后续运行的提示词，其数据范围计入外发检查；关闭记忆只停止读写，内容保留到你手动删除。</p>
+          {(memories ?? []).length === 0 && <p className="hint">还没有长期记忆。Agent 在运行中可调用 local__memory_save 保存，也可以在下方手动添加。</p>}
+          {(memories ?? []).map((memory) => (
+            <div className="memory-row" key={memory.id}>
+              {memoryEdit && memoryEdit.id === memory.id ? (
+                <div className="memory-edit">
+                  <textarea rows={2} value={memoryEdit.content} onChange={(event) => setMemoryEdit({ id: memory.id, content: event.target.value })} />
+                  <div className="model-actions">
+                    <button type="button" disabled={memoryBusy || !memoryEdit.content.trim()} onClick={saveMemoryEdit}>保存修改</button>
+                    <button type="button" className="secondary" onClick={() => setMemoryEdit(null)}>取消</button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <p className="memory-content">{memory.content}</p>
+                  <span className={`memory-meta ${memory.scope === 'credential' || memory.scope === 'unknown' ? 'sensitive' : ''}`}>{scopeLabels[memory.scope] ?? memory.scope} · {memory.source === 'model' ? '模型保存' : '手动添加'}</span>
+                  <span className="memory-actions">
+                    <button type="button" className="secondary" onClick={() => setMemoryEdit({ id: memory.id, content: memory.content })}>编辑</button>
+                    <button type="button" className="secondary" disabled={memoryBusy} onClick={() => deleteMemory(memory.id)}>删除</button>
+                  </span>
+                </>
+              )}
+            </div>
+          ))}
+          <form className="model-form" onSubmit={addMemory}>
+            <label>添加记忆<textarea rows={2} value={memoryDraft} onChange={(event) => setMemoryDraft(event.target.value)} placeholder="例如：回复尽量使用简体中文" /></label>
+            <div className="model-actions">
+              <button type="submit" disabled={memoryBusy || !memoryDraft.trim()}>添加记忆</button>
+              <button type="button" className="secondary" disabled={memoryBusy || (memories ?? []).length === 0} onClick={exportMemory}>导出 Markdown</button>
+            </div>
+          </form>
+          {memoryError && <p className="error">{memoryError}</p>}
+        </section>
+
+        <section className="session-card">
           <div className="card-title">{selected ? sessions.find((item) => item.id === selected)?.title : '空会话'}</div>
           {!selected ? <p className="hint">先新建或选择会话。</p> : <>
+            {sessionSummary && <details className="summary-banner" open>
+              <summary>已压缩历史 · 覆盖至消息 #{sessionSummary.coversSeq} · 范围 {scopeLabels[sessionSummary.scope] ?? sessionSummary.scope}（原文仍在下方记录中）</summary>
+              <pre className="summary-text">{sessionSummary.summary}</pre>
+            </details>}
+            {sessionPlan && sessionPlan.steps && <div className="plan-panel">
+              <div className="plan-head">
+                <span className="card-title">当前计划</span>
+                <button type="button" className="secondary" onClick={clearPlan}>清除计划</button>
+              </div>
+              <ul className="plan-steps">
+                {sessionPlan.steps.map((step, index) => (
+                  <li key={index} className={`plan-step plan-${step.status}`}>
+                    <span className="plan-marker">{step.status === 'done' ? '✓' : step.status === 'in_progress' ? '▶' : '·'}</span>
+                    {step.title}{step.note && <span className="plan-note">（{step.note}）</span>}
+                  </li>
+                ))}
+              </ul>
+              <p className="hint">计划由模型通过 local__update_plan 维护，重启后可恢复；计划本身不授予权限，工具调用仍走审批。</p>
+            </div>}
             {(pendingCalls.length > 0 || unknownCalls.length > 0) && (
               <div className="approval-panel">
                 <div className="card-title">待处理工具调用</div>
@@ -712,7 +863,7 @@ function App() {
           </>}
         </section>
 
-        <p className="next-step">内置 MCP 工具：local__current_time、local__read_file、local__load_skill。工具调用受权限网关与审批约束；远端模型发送前会检查数据外发授权。</p>
+        <p className="next-step">内置工具：local__current_time、local__read_file、local__load_skill、local__memory_save、local__update_plan。工具调用受权限网关与审批约束；远端模型发送前会检查数据外发授权；长会话超预算时自动压缩旧轮次并保留原文。</p>
       </main>
     </div>
   )

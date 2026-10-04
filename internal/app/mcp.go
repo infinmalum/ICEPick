@@ -41,13 +41,12 @@ func (s *Service) SyncMCPEndpoints(ctx context.Context) error {
 	if s.store == nil || s.endpoints == nil {
 		return nil
 	}
-	// Populate the per-endpoint tool lists and schema hashes first.
-	if _, err := s.tools.Definitions(ctx); err != nil {
-		return err
-	}
 	infos := s.endpoints.EndpointInfos()
 	changed := map[string]bool{}
 	for _, info := range infos {
+		if info.SchemaSHA256 == "" {
+			continue
+		}
 		stored, err := s.store.GetMCPEndpoint(ctx, info.Name)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
@@ -64,7 +63,9 @@ func (s *Service) SyncMCPEndpoints(ctx context.Context) error {
 		}
 	}
 	s.mu.Lock()
-	s.mcpChanged = changed
+	for name, value := range changed {
+		s.mcpChanged[name] = value
+	}
 	s.mu.Unlock()
 	return nil
 }

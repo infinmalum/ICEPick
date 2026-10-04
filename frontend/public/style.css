@@ -85,3 +85,22 @@ h1 { margin: 17px 0 12px; font-size: clamp(42px, 5vw, 66px); line-height: 1.1; }
 .message-assistant.streaming p { color: #33566b; }
 .message-assistant.streaming::after { content: "▍"; animation: blink 1s steps(2, start) infinite; color: #7fa3b8; }
 @keyframes blink { to { visibility: hidden; } }
+
+.memory-row { display: flex; align-items: baseline; gap: 10px; padding: 8px 0; border-bottom: 1px dashed #e4e9ee; flex-wrap: wrap; }
+.memory-content { flex: 1 1 320px; margin: 0; white-space: pre-wrap; }
+.memory-meta { font-size: 12px; color: #46606f; background: #f2f6f9; border-radius: 10px; padding: 2px 8px; }
+.memory-meta.sensitive { color: #b34; background: #fbeeef; }
+.memory-actions { display: flex; gap: 6px; }
+.memory-edit { flex: 1 1 100%; }
+.memory-edit textarea { width: 100%; }
+.summary-banner { border: 1px solid #d8e0e8; border-left: 3px solid #7fa3b8; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; background: #f7fafc; }
+.summary-banner summary { cursor: pointer; font-size: 13px; color: #33566b; font-weight: 600; }
+.summary-text { white-space: pre-wrap; font: inherit; margin: 8px 0 0; color: #46606f; }
+.plan-panel { border: 1px solid #d8e0e8; border-left: 3px solid #007d8b; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
+.plan-head { display: flex; align-items: center; justify-content: space-between; }
+.plan-steps { list-style: none; margin: 6px 0; padding: 0; }
+.plan-step { padding: 2px 0; font-size: 14px; }
+.plan-step.plan-done { color: #1a7f4b; }
+.plan-step.plan-in_progress { color: #007d8b; }
+.plan-marker { display: inline-block; width: 18px; }
+.plan-note { color: #8a8672; font-size: 13px; }

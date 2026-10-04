@@ -155,7 +155,7 @@ func (s *Service) validateProfileResources(data storage.ProfileData) error {
 		s.mu.RLock()
 		cfg := s.config
 		s.mu.RUnlock()
-		configured := map[string]bool{}
+		configured := map[string]bool{"local": true}
 		for _, server := range cfg.MCPServers {
 			configured[server.Name] = true
 		}

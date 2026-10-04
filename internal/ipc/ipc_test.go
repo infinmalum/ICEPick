@@ -331,3 +331,59 @@ func TestUnknownMethodRejected(t *testing.T) {
 		t.Fatalf("unknown method accepted: %v", err)
 	}
 }
+
+// The P4 knowledge surface is reachable over IPC with the same ownership
+// checks the desktop UI goes through: memory CRUD stays inside one agent,
+// and summary/plan reads report their absence as errors.
+func TestMemoryAndPlanOverIPC(t *testing.T) {
+	svc, _ := newTestHost(t, &chatScript{}, &blockingTools{})
+	dataDir := startServer(t, svc)
+	client := mustConnect(t, dataDir)
+
+	other, err := svc.CreateAgent("other", storage.DefaultProfileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mine storage.Memory
+	if err := client.Call("memory.add", map[string]any{"agentId": storage.DefaultAgentID, "content": "用户偏好简短回答"}, &mine); err != nil {
+		t.Fatalf("memory.add: %v", err)
+	}
+	if mine.Source != storage.MemorySourceUser || mine.Scope != storage.ScopePersonal {
+		t.Fatalf("memory: %+v", mine)
+	}
+	var list []storage.Memory
+	if err := client.Call("memory.list", map[string]any{"agentId": other.ID}, &list); err != nil || len(list) != 0 {
+		t.Fatalf("cross-agent leak: %+v %v", list, err)
+	}
+	var updated storage.Memory
+	if err := client.Call("memory.update", map[string]any{"agentId": storage.DefaultAgentID, "id": mine.ID, "content": "偏好一句话回答"}, &updated); err != nil {
+		t.Fatalf("memory.update: %v", err)
+	}
+	if updated.Content != "偏好一句话回答" {
+		t.Fatalf("update: %+v", updated)
+	}
+	if err := client.Call("memory.delete", map[string]any{"agentId": other.ID, "id": mine.ID}, nil); err == nil {
+		t.Fatal("cross-agent delete allowed")
+	}
+	if err := client.Call("memory.delete", map[string]any{"agentId": storage.DefaultAgentID, "id": mine.ID}, nil); err != nil {
+		t.Fatalf("memory.delete: %v", err)
+	}
+
+	session, err := svc.CreateSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Call("summaries.get", map[string]any{"agentId": storage.DefaultAgentID, "sessionId": session.ID}, nil); err == nil {
+		t.Fatal("absent summary accepted")
+	}
+	if err := client.Call("plans.get", map[string]any{"agentId": storage.DefaultAgentID, "sessionId": session.ID}, nil); err == nil {
+		t.Fatal("absent plan accepted")
+	}
+	var plan app.SessionPlanView
+	if err := client.Call("plans.get", map[string]any{"agentId": storage.DefaultAgentID, "sessionId": "no-such"}, &plan); err == nil {
+		t.Fatal("foreign session plan accepted")
+	}
+	if err := client.Call("plans.clear", map[string]any{"agentId": storage.DefaultAgentID, "sessionId": session.ID}, nil); err != nil {
+		t.Fatalf("plans.clear: %v", err)
+	}
+}

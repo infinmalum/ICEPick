@@ -4,13 +4,18 @@ ICEPick 是一个本地优先、领域无关的 Agent 宿主。它使用 Go 和 
 
 ## 当前功能
 
-- Profile 与 Agent 分离：Profile 保存可共享的提示词、模型与能力组合（可复制/编辑/恢复），Agent 持有稳定身份、会话与本机授权（审批模式 + 资源范围），支持切换 Profile 与 Run 级快照。
+- Profile 与 Agent 分离：Profile 保存可共享的提示词、模型与能力组合（可复制/编辑/恢复），Agent 持有稳定身份、会话与本机授权（审批模式 + 资源范围 + 记忆授权），支持切换 Profile 与 Run 级快照。
 - 按 Agent 隔离会话、消息和任务记录；支持多轮对话、工具调用、流式输出与取消任务。
 - 统一接入 MCP 服务和 Agent Skills，由 Profile 选择启用范围，与 Agent 授权取交集执行。
 - 工具执行统一经权限网关：effect/sensitivity 分类、全人工/半自动/全自动三模式审批（绑定调用与参数哈希）、工作区硬边界、MCP 指纹变化暂停自动执行、每轮模型发送前的数据外发授权检查（桌面端可管理外发授权与远端凭据）。
+- 上下文压缩（P4）：会话超过 Profile 上下文预算时自动把最旧的完整轮次归纳为摘要（保留当前任务与未闭合工具调用，原文不删），摘要继承数据范围并继续受外发检查约束；会话视图可查看摘要与覆盖区间。
+- 逐 Agent 长期记忆（P4）：记忆按 `agent_id` 隔离，Profile 偏好与 Agent 授权同时开启才生效；运行开始时注入（来源与范围标注，范围计入外发检查），模型可经 `local__memory_save`（需审批）写入；桌面记忆面板与 `icepick memory` 命令提供查看/编辑/添加/删除/导出。
+- 任务规划（P4）：模型经 `local__update_plan` 维护可恢复的计划，重启后随会话恢复并在下一运行注入；计划面板可查看与清除，计划不授予任何权限。
 - CLI/IPC：桌面端或 `icepick serve` 构成每数据目录唯一宿主；`icepick` 命令行经本机 IPC 驱动与桌面相同的服务契约。
 
-当前可运行的工具限于内置只读工具。外部 MCP 工具执行、长期记忆、上下文压缩、子 Agent、Jev 和 A2A 等功能尚未交付（见实施计划 P4–P7）。默认 Agent 虽已保存“全部服务和 Skills、权限范围不限、半自动审批”的配置，运行时仍受上述限制。
+当前可运行的工具限于内置只读工具与记忆/计划簿记工具。外部 MCP 工具执行、子 Agent、Jev 和 A2A 等功能尚未交付（见实施计划 P5–P7）。默认 Agent 虽已保存“全部服务和 Skills、权限范围不限、半自动审批”的配置，运行时仍受上述限制；长期记忆默认关闭，需在 Profile 偏好与 Agent 授权中分别开启。
+
+升级到数据库 v9/v10 会拆分 Profile 配置并保留原 ID、会话和运行快照。旧全局外发授权保留供核对，但需按 Agent 重新授权；旧历史来源不全时按 unknown 处理。外部 MCP 改为任务首次使用所选服务时启动。
 
 ## 运行
 
@@ -28,7 +33,7 @@ wails3 build
 
 产物在 `bin/icepick`。目前只验证了 Linux 构建。依赖使用 Go/npm 的用户级持久缓存；若需自定义缓存，应放在本项目 `.cache/`，不要放在系统临时目录。
 
-无需模型或密钥也可启动；界面会显示“模型未连接”。要运行任务，先在“模型服务”选择提供方并保存模型 ID：本机 Ollama/LM Studio 确保服务已连接；远端 OpenAI/Anthropic/Gemini 需在“远端凭据”面板保存 API 密钥（保存在数据目录内的 0600 文件，不会回显），并按需在“数据外发授权”面板允许该端点。本机模型调用支持流式输出，界面会实时显示生成文本。
+无需模型或密钥也可启动；界面会显示“模型未连接”。要运行任务，先在“模型服务”选择提供方并保存模型 ID：本机 Ollama/LM Studio 确保服务已连接；远端 OpenAI/Anthropic/Gemini 需在“远端凭据”面板保存 API 密钥（保存在数据目录内的 0600 文件，不会回显），并按需在当前 Agent 的“数据外发授权”面板允许该端点。本机模型调用支持流式输出，界面会实时显示生成文本。
 
 配置文件保存在用户 XDG 配置目录的 `ICEPick/config.json`；未创建时默认使用 Ollama 的 `http://127.0.0.1:11434/v1`。本机模型地址必须指向本机 HTTP 服务。数据库 `icepick.db`、日志 `icepick.log`、凭据 `credentials.json` 与 IPC 套接字位于用户 XDG 数据目录的 `ICEPick/` 下。
 
@@ -44,6 +49,7 @@ bin/icepick agents list      # Agent 列表（create/switch/update/delete）
 bin/icepick sessions create <agentID>          # 新建会话
 bin/icepick tasks start <agentID> <sessionID> "任务内容" --wait   # 执行任务（--wait 跟随并处理审批）
 bin/icepick approvals list   # 待审批与结果未知调用
+bin/icepick memory list <agentID>   # 长期记忆（add/edit/delete/export）
 bin/icepick logs 100         # 查看宿主日志
 bin/icepick help             # 完整命令列表
 ```
@@ -68,8 +74,8 @@ go test ./...
 - `statusservice.go`：模型配置、Profile/Agent、会话、任务与凭据 Wails 服务。
 - `internal/config/`：本地配置、提供方校验与凭据存储。
 - `internal/model/`：统一模型客户端（本地兼容 + OpenAI/Anthropic/Gemini 官方 SDK 适配、流式）与模型发现。
-- `internal/agent/`：共享的 Agent 多轮循环、流式回调、取消和轮次上限。
-- `internal/app/`：界面无关的应用服务（运行编排、权限网关、外发检查、流缓冲）。
+- `internal/agent/`：共享的 Agent 多轮循环、流式回调、上下文压缩、取消和轮次上限。
+- `internal/app/`：界面无关的应用服务（运行编排、权限网关、外发检查、流缓冲、记忆与摘要服务）。
 - `internal/host/`：桌面与无头宿主共用的启动链路。
 - `internal/ipc/`：本机 IPC 服务器/客户端（JSON 行协议、令牌 + 同 UID 校验）。
 - `internal/cli/`：命令行客户端。

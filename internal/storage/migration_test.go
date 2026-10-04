@@ -100,7 +100,7 @@ func downgradeToV7(t *testing.T, store *Store) {
 		updated          string
 	}
 	var rows []legacyRow
-	iter, err := store.db.QueryContext(ctx, `SELECT a.id, a.name, p.config, p.revision, CASE WHEN p.is_default THEN p.id ELSE '' END, p.created_at, p.updated_at, a.policy FROM agents a JOIN profiles p ON p.id = a.profile_id`)
+	iter, err := store.db.QueryContext(ctx, `SELECT a.id, a.name, p.config, p.revision, CASE WHEN p.is_default THEN p.id ELSE '' END, p.created_at, p.updated_at, a.policy FROM agents a JOIN resolved_profiles p ON p.id = a.profile_id`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,6 +166,14 @@ func downgradeToV7(t *testing.T, store *Store) {
 	for _, statement := range []struct {
 		sql string
 	}{
+		{`DROP TABLE session_context_scopes`},
+		{`DROP VIEW resolved_profiles`},
+		{`DROP TABLE profile_components`},
+		{`DROP TABLE exfil_grants`},
+		{`DROP TABLE agent_memories`},
+		{`DROP TABLE session_summaries`},
+		{`DROP TABLE session_plans`},
+		{`ALTER TABLE legacy_exfil_grants RENAME TO exfil_grants`},
 		{`DROP TABLE agents`},
 		{`DROP TABLE profiles`},
 		{`ALTER TABLE runs DROP COLUMN profile_id`},
@@ -297,7 +305,7 @@ func TestMigrateV7ApprovalColumnsAndPolicyTables(t *testing.T) {
 	if err := store.FinishToolCall(ctx, calls[0].ID, CallSucceeded, "12:00", "", ScopeWorkspace); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetExfilGrant(ctx, ExfilGrant{Destination: "http://m.example.com:9", Scopes: []string{ScopePersonal}}); err != nil {
+	if err := store.SetExfilGrant(ctx, ExfilGrant{AgentID: DefaultAgentID, Destination: "http://m.example.com:9", Scopes: []string{ScopePersonal}}); err != nil {
 		t.Fatal(err)
 	}
 }

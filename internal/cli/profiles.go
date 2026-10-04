@@ -134,7 +134,7 @@ func cmdProfiles(client *ipc.Client, args []string) int {
 func editProfile(client *ipc.Client, args []string) int {
 	parsed, err := parseCLI(args)
 	if err != nil || parsed.arg(0) == "" {
-		return usage("用法: profiles edit <id> [--name N] [--description D] [--prompt P] [--model 提供方/模型ID] [--base-url URL] [--budget N]")
+		return usage("用法: profiles edit <id> [--name N] [--description D] [--persona P] [--prompt P] [--model 提供方/模型ID] [--base-url URL] [--budget N]")
 	}
 	var profile storage.Profile
 	if err := client.Call("profiles.get", map[string]any{"id": parsed.arg(0)}, &profile); err != nil {
@@ -145,6 +145,9 @@ func editProfile(client *ipc.Client, args []string) int {
 	}
 	if v := parsed.value("description"); v != "" {
 		profile.Data.Description = v
+	}
+	if v := parsed.value("persona"); v != "" {
+		profile.Data.Persona = v
 	}
 	if v := parsed.value("prompt"); v != "" {
 		profile.Data.SystemPrompt = v

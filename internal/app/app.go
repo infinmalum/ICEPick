@@ -420,13 +420,25 @@ func (s *Service) StartAgentTask(agentID, sessionID, input string) (storage.Run,
 		_ = s.runs.Finish(item.ID, "failed", "请先选择模型 ID")
 		return storage.Run{}, errors.New("请先选择模型 ID")
 	}
+	var initialGrant storage.ExfilGrant
+	if origin, local, err := endpointOrigin(source.EffectiveBaseURL()); err != nil {
+		_ = s.runs.Finish(item.ID, "failed", err.Error())
+		return storage.Run{}, err
+	} else if !local {
+		var grantErr error
+		initialGrant, _, grantErr = s.store.GetExfilGrant(context.Background(), agentID, origin)
+		if grantErr != nil {
+			_ = s.runs.Finish(item.ID, "failed", grantErr.Error())
+			return storage.Run{}, grantErr
+		}
+	}
 	s.running[sessionID] = item.ID
 	s.publish(Event{Type: "run.started", SessionID: sessionID, RunID: item.ID})
-	go s.executeTask(runCtx, item.ID, sessionID, source, resolved)
+	go s.executeTask(runCtx, item.ID, sessionID, source, resolved, initialGrant)
 	return item, nil
 }
 
-func (s *Service) executeTask(ctx context.Context, runID, sessionID string, source config.Model, profile storage.AgentProfile) {
+func (s *Service) executeTask(ctx context.Context, runID, sessionID string, source config.Model, profile storage.AgentProfile, initialGrant storage.ExfilGrant) {
 	defer func() {
 		s.taskMu.Lock()
 		if s.running[sessionID] == runID {
@@ -435,13 +447,37 @@ func (s *Service) executeTask(ctx context.Context, runID, sessionID string, sour
 		s.taskMu.Unlock()
 		s.clearStream(runID)
 	}()
-	history, err := s.buildHistory(sessionID, profile)
+	history, err := s.buildRunContext(sessionID, profile)
 	if err != nil {
 		_ = s.runs.Finish(runID, "failed", err.Error())
 		return
 	}
-	definitions, err := s.tools.Definitions(ctx)
+	runTools := s.tools
+	if hub, ok := s.tools.(*mcptools.Hub); ok {
+		all, names := profile.AllMCPServers, profile.EnabledMCPServers
+		if len(profile.AllowedTools) > 0 {
+			all = false
+			names = nil
+			seen := map[string]bool{}
+			for _, tool := range profile.AllowedTools {
+				if profile.AllowsTool(tool) {
+					server := serverOf(tool)
+					if !seen[server] {
+						names = append(names, server)
+						seen[server] = true
+					}
+				}
+			}
+		}
+		runTools = hub.ForServers(all, names)
+	}
+	runner := bookkeepingTools{inner: runTools, svc: s, profile: profile, sessionID: sessionID}
+	definitions, err := runner.Definitions(ctx)
 	if err != nil {
+		_ = s.runs.Finish(runID, "failed", err.Error())
+		return
+	}
+	if err := s.SyncMCPEndpoints(ctx); err != nil {
 		_ = s.runs.Finish(runID, "failed", err.Error())
 		return
 	}
@@ -451,16 +487,22 @@ func (s *Service) executeTask(ctx context.Context, runID, sessionID string, sour
 			allowedTools = append(allowedTools, definition.Function.Name)
 		}
 	}
+	guarded := guardedChat{inner: s.chat, payloadCheck: func(c context.Context, m []model.Message, t []model.Tool) error {
+		return s.checkPayload(c, source, profile.AgentID, sessionID, m, t)
+	}, check: func(checkCtx context.Context) error {
+		// Every model request re-checks the exfiltration scope: tool
+		// results and policy changes since the previous turn apply.
+		if err := s.exfilCheck(checkCtx, sessionID, source, profile); err != nil {
+			return err
+		}
+		return s.checkInitialGrant(checkCtx, sessionID, source, profile, initialGrant)
+	}}
 	engine := agent.Engine{
-		Model: guardedChat{inner: s.chat, check: func(checkCtx context.Context) error {
-			// Every model request re-checks the exfiltration scope: tool
-			// results and policy changes since the previous turn apply.
-			return s.exfilCheck(checkCtx, sessionID, source, profile)
-		}},
-		Tools:        s.tools,
+		Model:        guarded,
+		Tools:        runner,
 		Recorder:     runRecorder{svc: s, runID: runID, sessionID: sessionID, classifier: s.classifierFor(profile)},
 		AllowedTools: allowedTools,
-		Gate:         toolGate{svc: s, agentID: profile.AgentID},
+		Gate:         toolGate{svc: s, agentID: profile.AgentID, snapshot: &profile, runID: runID},
 		Approver:     s,
 		OnDelta: func(text string) error {
 			// Streamed fragments are broadcast live and merged in host
@@ -468,11 +510,14 @@ func (s *Service) executeTask(ctx context.Context, runID, sessionID string, sour
 			s.appendStream(runID, sessionID, text)
 			return nil
 		},
+		Compactor:      sessionCompactor{svc: s, runID: runID, sessionID: sessionID, chat: guarded},
+		ContextBudget:  profile.ContextBudget,
+		InitialSummary: history.summary,
 	}
 	s.mu.RLock()
 	engine.ApprovalTimeout = s.ApprovalTimeout
 	s.mu.RUnlock()
-	_, err = engine.Run(ctx, source, history)
+	_, err = engine.Run(ctx, source, history.history)
 	s.publish(Event{Type: "run.updated", SessionID: sessionID, RunID: runID, Detail: "模型循环结束"})
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return

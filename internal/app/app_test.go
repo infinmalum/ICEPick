@@ -316,7 +316,9 @@ func TestPartialToolBatchNotReplayed(t *testing.T) {
 // user disposition.
 func TestCancelDuringExecutionBlocksUntilResolved(t *testing.T) {
 	release := make(chan struct{})
+	started := make(chan struct{})
 	tools := &scriptTools{defs: timeToolDef(), respond: func(name, _ string) (string, error) {
+		close(started)
 		<-release
 		return "", context.Canceled
 	}}
@@ -334,12 +336,10 @@ func TestCancelDuringExecutionBlocksUntilResolved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for len(tools.calls) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("tool call never started")
-		}
-		time.Sleep(5 * time.Millisecond)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("tool call never started")
 	}
 	if err := svc.CancelTask(storage.DefaultAgentID, run.ID); err != nil {
 		t.Fatal(err)

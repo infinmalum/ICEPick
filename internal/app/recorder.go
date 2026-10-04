@@ -100,10 +100,20 @@ func (r runRecorder) FinishTool(ctx context.Context, callID, state, result, errT
 	if err != nil {
 		return err
 	}
-	scope := ""
-	if state == storage.CallSucceeded {
-		_, sens := r.classifier.Classify(row.ToolName, row.Arguments)
-		scope = string(sens)
-	}
+	_, sens := r.classifier.Classify(row.ToolName, row.Arguments)
+	scope := string(sens)
 	return r.svc.store.FinishToolCall(ctx, row.ID, state, result, errText, scope)
+}
+
+// SaveSummary persists a compaction summary. The engine counts coverage on
+// its own history window, which starts after the summary the session
+// already had when the run began; the stored boundary is absolute, so the
+// recorder adds that base back.
+func (r runRecorder) SaveSummary(ctx context.Context, covered int, summary string) error {
+	base, err := r.svc.store.SummaryCoveredEntries(ctx, r.sessionID)
+	if err != nil {
+		return err
+	}
+	_, err = r.svc.store.SaveSessionSummaryCovering(ctx, r.sessionID, base+covered, summary)
+	return err
 }

@@ -32,13 +32,14 @@ func ValidScope(scope string) bool { return validScopes[scope] }
 // may do; it only records that the user accepted this data leaving the
 // machine for that endpoint.
 type ExfilGrant struct {
+	AgentID     string   `json:"agentId"`
 	Destination string   `json:"destination"`
 	Scopes      []string `json:"scopes"`
 	CreatedAt   string   `json:"createdAt"`
 }
 
-func (s *Store) ListExfilGrants(ctx context.Context) ([]ExfilGrant, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT destination, scopes, created_at FROM exfil_grants ORDER BY destination`)
+func (s *Store) ListExfilGrants(ctx context.Context, agentID string) ([]ExfilGrant, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT agent_id, destination, scopes, created_at FROM exfil_grants WHERE agent_id=? ORDER BY destination`, agentID)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +58,7 @@ func (s *Store) ListExfilGrants(ctx context.Context) ([]ExfilGrant, error) {
 func scanGrant(scanner interface{ Scan(...any) error }) (ExfilGrant, error) {
 	var item ExfilGrant
 	var payload string
-	if err := scanner.Scan(&item.Destination, &payload, &item.CreatedAt); err != nil {
+	if err := scanner.Scan(&item.AgentID, &item.Destination, &payload, &item.CreatedAt); err != nil {
 		return ExfilGrant{}, err
 	}
 	if err := json.Unmarshal([]byte(payload), &item.Scopes); err != nil {
@@ -66,8 +67,8 @@ func scanGrant(scanner interface{ Scan(...any) error }) (ExfilGrant, error) {
 	return item, nil
 }
 
-func (s *Store) GetExfilGrant(ctx context.Context, destination string) (ExfilGrant, bool, error) {
-	item, err := scanGrant(s.db.QueryRowContext(ctx, `SELECT destination, scopes, created_at FROM exfil_grants WHERE destination = ?`, destination))
+func (s *Store) GetExfilGrant(ctx context.Context, agentID, destination string) (ExfilGrant, bool, error) {
+	item, err := scanGrant(s.db.QueryRowContext(ctx, `SELECT agent_id, destination, scopes, created_at FROM exfil_grants WHERE agent_id=? AND destination = ?`, agentID, destination))
 	if errors.Is(err, sql.ErrNoRows) {
 		return ExfilGrant{}, false, nil
 	}
@@ -79,7 +80,7 @@ func (s *Store) GetExfilGrant(ctx context.Context, destination string) (ExfilGra
 
 // SetExfilGrant upserts the authorization for one destination.
 func (s *Store) SetExfilGrant(ctx context.Context, grant ExfilGrant) error {
-	if grant.Destination == "" || len(grant.Scopes) == 0 {
+	if grant.AgentID == "" || grant.Destination == "" || len(grant.Scopes) == 0 {
 		return errors.New("外发授权需要目的地和至少一个数据范围")
 	}
 	for _, scope := range grant.Scopes {
@@ -91,13 +92,13 @@ func (s *Store) SetExfilGrant(ctx context.Context, grant ExfilGrant) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO exfil_grants (destination, scopes, created_at) VALUES (?, ?, ?)
-		ON CONFLICT(destination) DO UPDATE SET scopes = excluded.scopes`, grant.Destination, string(payload), now())
+	_, err = s.db.ExecContext(ctx, `INSERT INTO exfil_grants (agent_id,destination, scopes, created_at) VALUES (?, ?, ?, ?)
+		ON CONFLICT(agent_id,destination) DO UPDATE SET scopes = excluded.scopes`, grant.AgentID, grant.Destination, string(payload), now())
 	return err
 }
 
-func (s *Store) DeleteExfilGrant(ctx context.Context, destination string) error {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM exfil_grants WHERE destination = ?`, destination)
+func (s *Store) DeleteExfilGrant(ctx context.Context, agentID, destination string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM exfil_grants WHERE agent_id=? AND destination = ?`, agentID, destination)
 	if err != nil {
 		return err
 	}
@@ -117,8 +118,7 @@ func (s *Store) SessionDataScopes(ctx context.Context, sessionID string) (hasUse
 		return false, nil, err
 	}
 	hasUserInput = userCount > 0
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT c.source_scope FROM tool_calls c JOIN runs r ON r.id = c.run_id
-		WHERE r.session_id = ? AND c.state = 'succeeded' AND c.source_scope <> '' ORDER BY c.source_scope`, sessionID)
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT CASE WHEN c.source_scope='' THEN 'unknown' ELSE c.source_scope END FROM tool_calls c JOIN runs r ON r.id=c.run_id WHERE r.session_id=? UNION SELECT scope FROM session_context_scopes WHERE session_id=?`, sessionID, sessionID)
 	if err != nil {
 		return hasUserInput, nil, err
 	}
@@ -178,4 +178,20 @@ func (s *Store) ListMCPEndpoints(ctx context.Context) ([]MCPEndpoint, error) {
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+// AccumulateContextScopes preserves restrictions across Profile switches,
+// summaries and subsequent Runs without tracking per-word provenance.
+func (s *Store) AccumulateContextScopes(ctx context.Context, sessionID string, scopes []string) error {
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		for _, scope := range scopes {
+			if !ValidScope(scope) {
+				return fmt.Errorf("无效来源范围 %q", scope)
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO session_context_scopes(session_id,scope) VALUES(?,?)`, sessionID, scope); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }

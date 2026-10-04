@@ -61,6 +61,7 @@ func usage(errDetail string) int {
   icepick sessions list [agentID] | create [agentID] | show <sessionID> --agent <agentID>
   icepick tasks start <agentID> <sessionID> <任务内容…> [--wait] | status <runID> --agent <agentID> | cancel <runID> --agent <agentID>
   icepick approvals list [agentID] | approve <callID> --agent <agentID> | deny <callID> [原因] --agent <agentID>
+  icepick memory list <agentID> | add <agentID> <内容…> | edit <agentID> <id> <内容…> | delete <agentID> <id> | export <agentID> [--out <文件>]
   icepick logs [行数]`)
 	return code
 }
@@ -124,6 +125,8 @@ func dispatch(client *ipc.Client, args []string) int {
 		return cmdTasks(client, args[1:])
 	case "approvals":
 		return cmdApprovals(client, args[1:])
+	case "memory":
+		return cmdMemory(client, args[1:])
 	case "logs":
 		return cmdLogs(args[1:])
 	case "events":

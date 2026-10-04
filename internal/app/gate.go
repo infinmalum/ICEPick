@@ -12,20 +12,36 @@ import (
 	"icepick/internal/storage"
 )
 
-// toolGate implements agent.ToolGate against the current agent profile (the
-// authoritative revision is re-read on every decision so policy tightening
-// applies immediately), the effect/sensitivity registry and the MCP endpoint
-// fingerprint state. The gate only decides; execution-layer boundaries are
-// enforced by the tools themselves.
+// toolGate combines immutable Run capabilities with live Agent restrictions.
 type toolGate struct {
-	svc     *Service
-	agentID string
+	svc      *Service
+	agentID  string
+	snapshot *storage.AgentProfile
+	runID    string
 }
 
 var _ agent.ToolGate = toolGate{}
 
+// Resolve only live authorization; Profile choices belong to the Run snapshot.
+func (g toolGate) effectiveProfile(ctx context.Context) (storage.AgentProfile, error) {
+	if g.snapshot == nil {
+		return g.svc.store.ResolvedAgentProfile(ctx, g.agentID)
+	}
+	a, err := g.svc.store.GetAgent(ctx, g.agentID)
+	if err != nil {
+		return storage.AgentProfile{}, err
+	}
+	p := *g.snapshot
+	p.Policy = a.Policy
+	rank := map[string]int{"automatic": 0, "semi": 1, "manual": 2}
+	if rank[g.snapshot.Policy.ApprovalMode] > rank[p.Policy.ApprovalMode] {
+		p.Policy.ApprovalMode = g.snapshot.Policy.ApprovalMode
+	}
+	return p, nil
+}
+
 func (g toolGate) Gate(ctx context.Context, req agent.ToolRequest) agent.Decision {
-	profile, err := g.svc.store.ResolvedAgentProfile(ctx, g.agentID)
+	profile, err := g.effectiveProfile(ctx)
 	if err != nil {
 		return agent.Decision{Deny: "读取 Agent 配置失败: " + err.Error()}
 	}
@@ -63,11 +79,29 @@ func (g toolGate) Gate(ctx context.Context, req agent.ToolRequest) agent.Decisio
 // denies: approvals can expire through policy changes, never through
 // relaxation here.
 func (g toolGate) Recheck(ctx context.Context, req agent.ToolRequest) agent.Decision {
-	profile, err := g.svc.store.ResolvedAgentProfile(ctx, g.agentID)
+	profile, err := g.effectiveProfile(ctx)
 	if err != nil {
 		return agent.Decision{Deny: "读取 Agent 配置失败: " + err.Error()}
 	}
-	return agent.Decision{Deny: g.hardLimits(ctx, profile, req)}
+	if deny := g.hardLimits(ctx, profile, req); deny != "" {
+		return agent.Decision{Deny: deny}
+	}
+	if g.runID != "" {
+		decision := g.Gate(ctx, req)
+		if decision.Deny != "" {
+			return decision
+		}
+		if decision.Confirm != "" {
+			call, err := g.svc.store.FindRunToolCall(ctx, g.runID, req.CallID)
+			if err != nil {
+				return agent.Decision{Deny: "无法复核批准来源"}
+			}
+			if call.ApprovalSource != storage.ApprovalUser {
+				return agent.Decision{Deny: "执行前策略已收紧，原自动批准不再有效"}
+			}
+		}
+	}
+	return agent.Decision{}
 }
 
 // hardLimits returns the non-negotiable refusals: the tool must be offered
@@ -75,8 +109,22 @@ func (g toolGate) Recheck(ctx context.Context, req agent.ToolRequest) agent.Deci
 // stay inside the workspace boundary when one is configured. A user
 // confirmation can never override these.
 func (g toolGate) hardLimits(ctx context.Context, profile storage.AgentProfile, req agent.ToolRequest) string {
+	if g.snapshot != nil && req.Tool == "local__read_file" && !g.snapshot.Policy.Permissions.Unrestricted {
+		var args struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal([]byte(req.Arguments), &args) != nil || !withinAny(args.Path, g.snapshot.Policy.Permissions.WorkspacePaths) {
+			return "路径超出任务开始时允许的工作区范围"
+		}
+	}
 	if !profile.AllowsTool(req.Tool) {
 		return fmt.Sprintf("未被当前 Agent 允许的工具调用 %q", req.Tool)
+	}
+	if req.Tool == "local__memory_save" && !memoryAllowed(profile) {
+		return "该 Agent 未启用长期记忆写入"
+	}
+	if req.Tool == "local__update_plan" && !profile.PlanEnabled {
+		return "该 Profile 未启用规划"
 	}
 	if req.Tool == "local__load_skill" {
 		var args struct {

@@ -56,6 +56,15 @@ func (c Classifier) Classify(name, arguments string) (Effect, Sensitivity) {
 	case "local__load_skill":
 		// Skill bodies are user-installed instruction files on this machine.
 		return EffectRead, SensWorkspace
+	case "local__memory_save":
+		// The saved content derives from the session context, whose
+		// sensitivity cannot be decided statically; unknown keeps the write
+		// out of automatic execution everywhere.
+		return EffectWrite, SensUnknown
+	case "local__update_plan":
+		// Plan state is host-local bookkeeping: nothing is read and nothing
+		// leaves the machine.
+		return EffectPure, SensPublic
 	case "local__read_file":
 		var args struct {
 			Path string `json:"path"`

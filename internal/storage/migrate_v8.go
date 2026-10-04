@@ -26,6 +26,11 @@ type legacyAgentProfile struct {
 	ApprovalMode      string           `json:"approvalMode"`
 	Delegation        DelegationPolicy `json:"delegation"`
 	ContextBudget     int              `json:"contextBudget"`
+	// Only the freshly written default record (v3) carries these; records
+	// from older binaries lack the keys and default to false, which keeps
+	// upgraded databases on the conservative side.
+	MemoryEnabled bool `json:"memoryEnabled"`
+	PlanEnabled   bool `json:"planEnabled"`
 }
 
 // migrateProfilesV8 splits agent_profiles into profiles (the shareable
@@ -86,6 +91,8 @@ func migrateProfilesV8(ctx context.Context, tx *sql.Tx) error {
 				EnabledSkills:     old.EnabledSkills,
 				Delegation:        DelegationPolicy{Enabled: old.Delegation.Enabled, MaxDepth: old.Delegation.MaxDepth},
 				ContextBudget:     old.ContextBudget,
+				MemoryEnabled:     old.MemoryEnabled,
+				PlanEnabled:       old.PlanEnabled,
 			},
 			policy:   AgentPolicy{ApprovalMode: old.ApprovalMode, Permissions: old.Permissions},
 			revision: revision, createdAt: createdAt, updatedAt: updatedAt,

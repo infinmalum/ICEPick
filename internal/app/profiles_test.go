@@ -161,6 +161,8 @@ func TestInFlightRunKeepsProfileSnapshot(t *testing.T) {
 	// Edit the shared profile while the run waits for approval.
 	target := findProfile(t, svc, profile.ID)
 	target.Data.SystemPrompt = "新提示词"
+	target.Data.AllMCPServers = false
+	target.Data.EnabledMCPServers = nil
 	if _, err := svc.UpdateProfile(target); err != nil {
 		t.Fatal(err)
 	}

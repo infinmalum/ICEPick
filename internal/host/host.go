@@ -10,7 +10,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"time"
 
 	"icepick/internal/agent"
 	"icepick/internal/app"
@@ -95,17 +94,9 @@ func Start() (*Host, error) {
 		return nil, err
 	}
 	host.Hub = hub
-	for _, server := range host.Config.MCPServers {
-		timeout := server.TimeoutSeconds
-		if timeout <= 0 {
-			timeout = 10
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
-		err := hub.ConnectCommand(ctx, server)
-		cancel()
-		if err != nil {
-			log.Printf("MCP %s: %v", server.Name, err)
-		}
+	if err := hub.Configure(host.Config.MCPServers); err != nil {
+		host.Close()
+		return nil, err
 	}
 
 	// The unified model client dispatches by provider: key-less local

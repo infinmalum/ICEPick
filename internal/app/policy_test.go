@@ -323,7 +323,7 @@ func TestExfilCheckAndGrants(t *testing.T) {
 	if err := svc.exfilCheck(ctx, session.ID, remote, profile); err == nil || !strings.Contains(err.Error(), "数据外发被拒绝") {
 		t.Fatalf("remote send without grant accepted: %v", err)
 	}
-	if _, err := svc.GrantExfil("http://api.example.com:8080/v1", []string{storage.ScopePersonal}); err != nil {
+	if _, err := svc.GrantExfil(storage.DefaultAgentID, "http://api.example.com:8080/v1", []string{storage.ScopePersonal}); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.exfilCheck(ctx, session.ID, remote, profile); err != nil {
@@ -352,7 +352,7 @@ func TestExfilCheckAndGrants(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "credential") {
 		t.Fatalf("send after credential-scoped result accepted: %v", err)
 	}
-	if err := svc.RevokeExfil("http://api.example.com:8080"); err != nil {
+	if err := svc.RevokeExfil(storage.DefaultAgentID, "http://api.example.com:8080"); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.exfilCheck(ctx, session.ID, remote, profile); err == nil {

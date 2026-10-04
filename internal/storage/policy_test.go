@@ -8,37 +8,37 @@ import (
 func TestExfilGrantCRUDAndValidation(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
-	if err := store.SetExfilGrant(ctx, ExfilGrant{Destination: "http://api.example.com:8080", Scopes: []string{ScopePersonal}}); err != nil {
+	if err := store.SetExfilGrant(ctx, ExfilGrant{AgentID: DefaultAgentID, Destination: "http://api.example.com:8080", Scopes: []string{ScopePersonal}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetExfilGrant(ctx, ExfilGrant{Destination: "", Scopes: []string{ScopePersonal}}); err == nil {
+	if err := store.SetExfilGrant(ctx, ExfilGrant{AgentID: DefaultAgentID, Destination: "", Scopes: []string{ScopePersonal}}); err == nil {
 		t.Fatal("empty destination accepted")
 	}
-	if err := store.SetExfilGrant(ctx, ExfilGrant{Destination: "http://api.example.com:8080", Scopes: nil}); err == nil {
+	if err := store.SetExfilGrant(ctx, ExfilGrant{AgentID: DefaultAgentID, Destination: "http://api.example.com:8080", Scopes: nil}); err == nil {
 		t.Fatal("empty scopes accepted")
 	}
-	if err := store.SetExfilGrant(ctx, ExfilGrant{Destination: "http://x:1", Scopes: []string{"galaxy"}}); err == nil {
+	if err := store.SetExfilGrant(ctx, ExfilGrant{AgentID: DefaultAgentID, Destination: "http://x:1", Scopes: []string{"galaxy"}}); err == nil {
 		t.Fatal("unknown scope accepted")
 	}
 	// Upsert extends the scope list in place.
-	if err := store.SetExfilGrant(ctx, ExfilGrant{Destination: "http://api.example.com:8080", Scopes: []string{ScopePersonal, ScopeWorkspace}}); err != nil {
+	if err := store.SetExfilGrant(ctx, ExfilGrant{AgentID: DefaultAgentID, Destination: "http://api.example.com:8080", Scopes: []string{ScopePersonal, ScopeWorkspace}}); err != nil {
 		t.Fatal(err)
 	}
-	grant, found, err := store.GetExfilGrant(ctx, "http://api.example.com:8080")
+	grant, found, err := store.GetExfilGrant(ctx, DefaultAgentID, "http://api.example.com:8080")
 	if err != nil || !found || len(grant.Scopes) != 2 {
 		t.Fatalf("grant: %+v found=%v %v", grant, found, err)
 	}
-	items, err := store.ListExfilGrants(ctx)
+	items, err := store.ListExfilGrants(ctx, DefaultAgentID)
 	if err != nil || len(items) != 1 {
 		t.Fatalf("list: %+v %v", items, err)
 	}
-	if err := store.DeleteExfilGrant(ctx, "http://other.example.com"); err == nil {
+	if err := store.DeleteExfilGrant(ctx, DefaultAgentID, "http://other.example.com"); err == nil {
 		t.Fatal("deleting unknown grant accepted")
 	}
-	if err := store.DeleteExfilGrant(ctx, "http://api.example.com:8080"); err != nil {
+	if err := store.DeleteExfilGrant(ctx, DefaultAgentID, "http://api.example.com:8080"); err != nil {
 		t.Fatal(err)
 	}
-	if _, found, _ := store.GetExfilGrant(ctx, "http://api.example.com:8080"); found {
+	if _, found, _ := store.GetExfilGrant(ctx, DefaultAgentID, "http://api.example.com:8080"); found {
 		t.Fatal("grant survived deletion")
 	}
 }

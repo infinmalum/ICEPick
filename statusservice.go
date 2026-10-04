@@ -128,18 +128,18 @@ func (s *StatusService) DenyToolCall(agentID, callID, note string) (storage.Tool
 
 // ListExfilGrants shows the destinations data may be sent to and the scopes
 // each grant covers.
-func (s *StatusService) ListExfilGrants() ([]storage.ExfilGrant, error) {
-	return s.svc.ListExfilGrants()
+func (s *StatusService) ListExfilGrants(agentID string) ([]storage.ExfilGrant, error) {
+	return s.svc.ListExfilGrants(agentID)
 }
 
 // GrantExfil authorizes sending the listed data scopes to one endpoint.
-func (s *StatusService) GrantExfil(destination string, scopes []string) (storage.ExfilGrant, error) {
-	return s.svc.GrantExfil(destination, scopes)
+func (s *StatusService) GrantExfil(agentID, destination string, scopes []string) (storage.ExfilGrant, error) {
+	return s.svc.GrantExfil(agentID, destination, scopes)
 }
 
 // RevokeExfil removes the authorization for one destination.
-func (s *StatusService) RevokeExfil(destination string) error {
-	return s.svc.RevokeExfil(destination)
+func (s *StatusService) RevokeExfil(agentID, destination string) error {
+	return s.svc.RevokeExfil(agentID, destination)
 }
 
 // SaveCredential stores one remote provider's API key in the protected data
@@ -162,6 +162,49 @@ func (s *StatusService) ListCredentialStatus() ([]app.CredentialStatus, error) {
 // run, so a reconnecting client can pick the live transcript back up.
 func (s *StatusService) PendingStreamText(agentID, runID string) (string, error) {
 	return s.svc.PendingStreamText(agentID, runID)
+}
+
+// ListMemories returns one agent's long-term memories, newest first.
+func (s *StatusService) ListMemories(agentID string) ([]storage.Memory, error) {
+	return s.svc.ListMemories(agentID)
+}
+
+// AddMemory records a user-authored memory for the agent.
+func (s *StatusService) AddMemory(agentID, content string) (storage.Memory, error) {
+	return s.svc.AddMemory(agentID, content)
+}
+
+// UpdateMemory edits the content of one memory.
+func (s *StatusService) UpdateMemory(agentID, id, content string) (storage.Memory, error) {
+	return s.svc.UpdateMemory(agentID, id, content)
+}
+
+// DeleteMemory removes one memory after the user's explicit decision.
+func (s *StatusService) DeleteMemory(agentID, id string) error {
+	return s.svc.DeleteMemory(agentID, id)
+}
+
+// ExportMemories renders the agent's memory as a portable markdown document
+// that keeps the source and scope annotations.
+func (s *StatusService) ExportMemories(agentID string) (string, error) {
+	return s.svc.ExportMemories(agentID)
+}
+
+// GetSessionSummary returns the session's compaction summary with its
+// covered range and scope; an absent summary is an error.
+func (s *StatusService) GetSessionSummary(agentID, sessionID string) (storage.SessionSummary, error) {
+	return s.svc.GetSessionSummary(agentID, sessionID)
+}
+
+// GetSessionPlan returns the session's resumable plan with parsed steps.
+func (s *StatusService) GetSessionPlan(agentID, sessionID string) (app.SessionPlanView, error) {
+	return s.svc.GetSessionPlan(agentID, sessionID)
+}
+
+// ClearSessionPlan removes the session's plan; it never touches approvals,
+// permissions or history.
+func (s *StatusService) ClearSessionPlan(agentID, sessionID string) error {
+	return s.svc.ClearSessionPlan(agentID, sessionID)
 }
 
 // ListMCPEndpoints shows each attached MCP server's source, process command,

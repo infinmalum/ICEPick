@@ -18,7 +18,7 @@ import (
 
 // currentVersion is the schema version this binary writes. Opening a database
 // with a higher version is refused so an old binary never writes a new schema.
-const currentVersion = 8
+const currentVersion = 10
 
 type Store struct {
 	db   *sql.DB
@@ -225,6 +225,16 @@ func (s *Store) migrate() (bool, error) {
 		if err := s.withTx(context.Background(), func(tx *sql.Tx) error {
 			return migrateProfilesV8(context.Background(), tx)
 		}); err != nil {
+			return false, err
+		}
+	}
+	if version < 9 {
+		if err := s.withTx(context.Background(), func(tx *sql.Tx) error { return migrateComponentsV9(context.Background(), tx) }); err != nil {
+			return false, err
+		}
+	}
+	if version < 10 {
+		if err := s.withTx(context.Background(), func(tx *sql.Tx) error { return migrateMemoryV10(context.Background(), tx) }); err != nil {
 			return false, err
 		}
 	}
@@ -468,7 +478,7 @@ func (s *Store) CreateRun(ctx context.Context, sessionID string) (Run, AgentProf
 		}
 		var agentID, profileID, name, configJSON, policyJSON string
 		var revision int
-		if err := tx.QueryRowContext(ctx, `SELECT a.id, a.profile_id, p.name, p.config, p.revision, a.policy FROM sessions s JOIN agents a ON a.id = s.agent_id JOIN profiles p ON p.id = a.profile_id WHERE s.id = ?`, sessionID).
+		if err := tx.QueryRowContext(ctx, `SELECT a.id, a.profile_id, p.name, p.config, p.revision, a.policy FROM sessions s JOIN agents a ON a.id = s.agent_id JOIN resolved_profiles p ON p.id = a.profile_id WHERE s.id = ?`, sessionID).
 			Scan(&agentID, &profileID, &name, &configJSON, &revision, &policyJSON); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return errors.New("会话没有可用的 Agent 或 Profile")

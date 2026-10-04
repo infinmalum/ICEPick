@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -47,11 +48,13 @@ type memRecorder struct {
 	approvals  []string
 	begins     []string
 	finishes   []string // "callID state result errText"
+	summaries  []string // "covered summary"
 	modelErr   error
 	beginErr   error
 	finishErr  error
 	resolveErr error
 	approveErr error
+	summaryErr error
 }
 
 func (r *memRecorder) ModelRequest(context.Context, config.Model, []model.Message, []model.Tool) (string, error) {
@@ -95,6 +98,14 @@ func (r *memRecorder) FinishTool(_ context.Context, callID, state, result, errTe
 		return r.finishErr
 	}
 	r.finishes = append(r.finishes, callID+" "+state+" "+result+" "+errText)
+	return nil
+}
+
+func (r *memRecorder) SaveSummary(_ context.Context, covered int, summary string) error {
+	if r.summaryErr != nil {
+		return r.summaryErr
+	}
+	r.summaries = append(r.summaries, fmt.Sprintf("%d %s", covered, summary))
 	return nil
 }
 
@@ -410,7 +421,7 @@ func TestEngineFinalGuardBlocksAfterApproval(t *testing.T) {
 	if err != nil || answer != "了解" {
 		t.Fatalf("answer=%q err=%v", answer, err)
 	}
-	if len(tools.called) != 0 || len(rec.begins) != 0 || len(rec.finishes) != 1 || !strings.Contains(rec.finishes[0], "审批后策略变化") {
+	if len(tools.called) != 0 || len(rec.begins) != 0 || len(rec.finishes) != 1 || !strings.Contains(rec.finishes[0], "路径超出工作区范围") {
 		t.Fatalf("final guard not enforced: %+v %+v", tools.called, rec.finishes)
 	}
 }

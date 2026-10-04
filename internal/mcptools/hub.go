@@ -50,8 +50,11 @@ type endpoint struct {
 }
 
 type Hub struct {
-	mu        sync.RWMutex
-	endpoints []endpoint
+	closed     bool
+	startMu    sync.Mutex
+	configured map[string]config.MCPServer
+	mu         sync.RWMutex
+	endpoints  []endpoint
 }
 
 func NewLocal(ctx context.Context, catalog *skills.Catalog) (*Hub, error) {
@@ -204,11 +207,17 @@ func resolveBinary(command string) (string, string, error) {
 }
 
 func (h *Hub) Definitions(ctx context.Context) ([]model.Tool, error) {
+	return h.definitions(ctx, func(string) bool { return true })
+}
+func (h *Hub) definitions(ctx context.Context, enabled func(string) bool) ([]model.Tool, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var definitions []model.Tool
 	for i := range h.endpoints {
 		ep := &h.endpoints[i]
+		if !enabled(ep.name) {
+			continue
+		}
 		schemaHasher := sha256.New()
 		ep.tools = nil
 		for tool, err := range ep.session.Tools(ctx, nil) {
@@ -247,6 +256,18 @@ func (h *Hub) EndpointInfos() []EndpointInfo {
 			Tools: append([]string(nil), ep.tools...),
 		})
 	}
+	for name, cfg := range h.configured {
+		found := false
+		for _, ep := range h.endpoints {
+			if ep.name == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			infos = append(infos, EndpointInfo{Name: name, Command: cfg.Command, Args: cfg.Args})
+		}
+	}
 	return infos
 }
 
@@ -273,6 +294,9 @@ func (h *Hub) Call(ctx context.Context, name, arguments string) (string, error) 
 	}
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: parts[1], Arguments: args})
 	if err != nil {
+		if parts[0] != "local" {
+			return "", &UnknownOutcomeError{Err: err}
+		}
 		return "", err
 	}
 	var texts []string
@@ -296,6 +320,8 @@ func (h *Hub) Call(ctx context.Context, name, arguments string) (string, error) 
 }
 
 func (h *Hub) Close() error {
+	h.startMu.Lock()
+	defer h.startMu.Unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var first error
@@ -305,5 +331,13 @@ func (h *Hub) Close() error {
 		}
 	}
 	h.endpoints = nil
+	h.closed = true
 	return first
 }
+
+// UnknownOutcomeError means an external dispatch has no authoritative reply.
+type UnknownOutcomeError struct{ Err error }
+
+func (e *UnknownOutcomeError) Error() string        { return e.Err.Error() }
+func (e *UnknownOutcomeError) Unwrap() error        { return e.Err }
+func (e *UnknownOutcomeError) OutcomeUnknown() bool { return true }

@@ -38,15 +38,14 @@ func TestVersionFourPresetsMergeIntoDefault(t *testing.T) {
 	for _, id := range []string{"chat", "work"} {
 		data := defaultProfileData()
 		data.SystemPrompt = "提示词 " + id
-		configJSON, err := json.Marshal(data)
-		if err != nil {
-			t.Fatal(err)
-		}
 		policyJSON, err := json.Marshal(AgentPolicy{ApprovalMode: "semi", Permissions: PermissionScope{Unrestricted: true}})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO profiles (id, name, config, revision, is_default, created_at, updated_at) VALUES (?,?,?,?,0,?,?)`, id, id, string(configJSON), 1, now(), now()); err != nil {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO profiles (id, name, revision, is_default, created_at, updated_at) VALUES (?,?,?,0,?,?)`, id, id, 1, now(), now()); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.withTx(ctx, func(tx *sql.Tx) error { return saveProfileComponents(ctx, tx, id, data) }); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.db.ExecContext(ctx, `INSERT INTO agents (id, name, profile_id, policy, created_at, updated_at) VALUES (?,?,?,?,?,?)`, id, id, id, string(policyJSON), now(), now()); err != nil {

@@ -37,6 +37,7 @@ type DelegationPolicy struct {
 // history, secrets or authorization, so copying a Profile is safe by
 // construction.
 type ProfileData struct {
+	Persona           string           `json:"persona"`
 	Description       string           `json:"description"`
 	SystemPrompt      string           `json:"systemPrompt"`
 	Model             config.Model     `json:"model"`
@@ -47,15 +48,25 @@ type ProfileData struct {
 	EnabledSkills     []string         `json:"enabledSkills"`
 	Delegation        DelegationPolicy `json:"delegation"`
 	ContextBudget     int              `json:"contextBudget"`
+	// MemoryEnabled is the Profile's preference for per-Agent long-term
+	// memory: retrieval at run start and the memory_save tool. It only takes
+	// effect together with the Agent's own authorization.
+	MemoryEnabled bool `json:"memoryEnabled"`
+	// PlanEnabled is the Profile's preference for the optional plan
+	// capability: the update_plan tool and the plan prompt fragment.
+	PlanEnabled bool `json:"planEnabled"`
 }
 
 // AgentPolicy is the machine-local policy that belongs to an Agent instance,
-// not to any Profile: the approval mode and the resource authorization. A new
-// Agent initializes its own copy; referencing a Profile never copies another
-// instance's authorization.
+// not to any Profile: the approval mode, the resource authorization and the
+// long-term memory authorization. A new Agent initializes its own copy;
+// referencing a Profile never copies another instance's authorization.
 type AgentPolicy struct {
 	ApprovalMode string          `json:"approvalMode"`
 	Permissions  PermissionScope `json:"permissions"`
+	// Memory authorizes this Agent to use long-term memory at all. It
+	// defaults to false: existing and new Agents opt in explicitly.
+	Memory bool `json:"memory"`
 }
 
 // Profile is one named, versioned combination. Editing bumps the revision and
@@ -100,7 +111,9 @@ func BlankProfile() ProfileData {
 }
 
 // defaultProfileData is the built-in default combination: a short generic
-// instruction, shared catalogs enabled, no role presets.
+// instruction, shared catalogs enabled, no role presets. Memory and plan
+// bookkeeping are part of the shipped default; upgrading databases keep
+// their stored runtime component until the user edits or restores it.
 func defaultProfileData() ProfileData {
 	d := BlankProfile()
 	d.Description = "通用助手；使用已接入的工具和 Skills"
@@ -108,11 +121,13 @@ func defaultProfileData() ProfileData {
 	d.AllMCPServers = true
 	d.AllSkills = true
 	d.Delegation = DelegationPolicy{Enabled: true, MaxDepth: 1}
+	d.MemoryEnabled = true
+	d.PlanEnabled = true
 	return d
 }
 
 func validateProfileData(d ProfileData) error {
-	if len(d.SystemPrompt) > 32000 || len(d.Description) > 500 {
+	if len(d.Persona) > 32000 || len(d.SystemPrompt) > 32000 || len(d.Description) > 500 {
 		return errors.New("系统提示词或说明过长")
 	}
 	if d.Model.Provider != "" {
@@ -196,7 +211,7 @@ func scanProfile(scanner interface{ Scan(...any) error }) (Profile, error) {
 }
 
 func (s *Store) ListProfiles(ctx context.Context) ([]Profile, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, config, revision, is_default, created_at, updated_at FROM profiles ORDER BY CASE id WHEN 'default' THEN 0 ELSE 1 END, created_at, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, config, revision, is_default, created_at, updated_at FROM resolved_profiles ORDER BY CASE id WHEN 'default' THEN 0 ELSE 1 END, created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +228,7 @@ func (s *Store) ListProfiles(ctx context.Context) ([]Profile, error) {
 }
 
 func (s *Store) GetProfile(ctx context.Context, id string) (Profile, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, name, config, revision, is_default, created_at, updated_at FROM profiles WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, name, config, revision, is_default, created_at, updated_at FROM resolved_profiles WHERE id = ?`, id)
 	p, err := scanProfile(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Profile{}, errors.New("Profile 不存在")
@@ -236,20 +251,21 @@ func (s *Store) CreateProfile(ctx context.Context, name string, data ProfileData
 	if err != nil {
 		return Profile{}, err
 	}
-	configJSON, err := json.Marshal(data)
-	if err != nil {
-		return Profile{}, err
-	}
 	created := now()
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO profiles (id, name, config, revision, is_default, created_at, updated_at) VALUES (?,?,?,?,0,?,?)`, id, name, string(configJSON), 1, created, created); err != nil {
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO profiles(id,name,revision,is_default,created_at,updated_at) VALUES(?,?,1,0,?,?)`, id, name, created, created); err != nil {
+			return err
+		}
+		return saveProfileComponents(ctx, tx, id, data)
+	})
+	if err != nil {
 		return Profile{}, err
 	}
 	return s.GetProfile(ctx, id)
 }
 
-// UpdateProfile saves a new combination atomically: one row update guarded by
-// the optimistic revision, so concurrent editors cannot interleave halves of
-// two combinations.
+// UpdateProfile publishes component changes in one revision-checked transaction.
+// Unchanged components are not rewritten.
 func (s *Store) UpdateProfile(ctx context.Context, p Profile) (Profile, error) {
 	if p.ID == "" || p.Revision < 1 {
 		return Profile{}, errors.New("Profile ID 或版本无效")
@@ -264,20 +280,22 @@ func (s *Store) UpdateProfile(ctx context.Context, p Profile) (Profile, error) {
 	if err := validateProfileData(p.Data); err != nil {
 		return Profile{}, err
 	}
-	configJSON, err := json.Marshal(p.Data)
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `UPDATE profiles SET name=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?`, strings.TrimSpace(p.Name), now(), p.ID, p.Revision)
+		if err != nil {
+			return err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return errors.New("Profile 已被其他操作修改，请刷新后重试")
+		}
+		return saveProfileComponents(ctx, tx, p.ID, p.Data)
+	})
 	if err != nil {
 		return Profile{}, err
-	}
-	updated := now()
-	result, err := s.db.ExecContext(ctx, `UPDATE profiles SET name=?, config=?, revision=?, updated_at=? WHERE id=? AND revision=?`,
-		strings.TrimSpace(p.Name), string(configJSON), old.Revision+1, updated, p.ID, old.Revision)
-	if err != nil {
-		return Profile{}, err
-	}
-	if n, err := result.RowsAffected(); err != nil {
-		return Profile{}, err
-	} else if n == 0 {
-		return Profile{}, errors.New("Profile 已被其他操作修改，请刷新后重试")
 	}
 	return s.GetProfile(ctx, p.ID)
 }
@@ -472,7 +490,7 @@ func (s *Store) DeleteAgent(ctx context.Context, id string) error {
 }
 
 // ResolvedAgentProfile joins the Agent with its current Profile: the view a
-// run executes with and the gate re-reads on every decision.
+// new Run snapshots. Running gates read only the live Agent policy.
 func (s *Store) ResolvedAgentProfile(ctx context.Context, agentID string) (AgentProfile, error) {
 	agent, err := s.GetAgent(ctx, agentID)
 	if err != nil {
@@ -513,6 +531,8 @@ func legacyDefaultConfig() string {
 		ApprovalMode:  "semi",
 		Delegation:    DelegationPolicy{Enabled: true, MaxDepth: 1},
 		ContextBudget: 8192,
+		MemoryEnabled: true,
+		PlanEnabled:   true,
 	})
 	if err != nil {
 		panic(err)

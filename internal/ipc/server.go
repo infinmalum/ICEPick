@@ -461,27 +461,109 @@ func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 		return s.svc.ResolveToolCall(params.AgentID, params.CallID, params.State, params.Result, params.Note)
 
 	case "exfil.list":
-		return s.svc.ListExfilGrants()
+		var params struct {
+			AgentID string `json:"agentId"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.svc.ListExfilGrants(params.AgentID)
 	case "exfil.grant":
 		var params struct {
+			AgentID     string   `json:"agentId"`
 			Destination string   `json:"destination"`
 			Scopes      []string `json:"scopes"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return s.svc.GrantExfil(params.Destination, params.Scopes)
+		return s.svc.GrantExfil(params.AgentID, params.Destination, params.Scopes)
 	case "exfil.revoke":
 		var params struct {
+			AgentID     string `json:"agentId"`
 			Destination string `json:"destination"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return nil, s.svc.RevokeExfil(params.Destination)
+		return nil, s.svc.RevokeExfil(params.AgentID, params.Destination)
 
 	case "credentials.status":
 		return s.svc.ListCredentialStatus()
+
+	case "memory.list":
+		var params struct {
+			AgentID string `json:"agentId"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.svc.ListMemories(params.AgentID)
+	case "memory.add":
+		var params struct {
+			AgentID string `json:"agentId"`
+			Content string `json:"content"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.svc.AddMemory(params.AgentID, params.Content)
+	case "memory.update":
+		var params struct {
+			AgentID string `json:"agentId"`
+			ID      string `json:"id"`
+			Content string `json:"content"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.svc.UpdateMemory(params.AgentID, params.ID, params.Content)
+	case "memory.delete":
+		var params struct {
+			AgentID string `json:"agentId"`
+			ID      string `json:"id"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		return nil, s.svc.DeleteMemory(params.AgentID, params.ID)
+	case "memory.export":
+		var params struct {
+			AgentID string `json:"agentId"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.svc.ExportMemories(params.AgentID)
+
+	case "summaries.get":
+		var params struct {
+			AgentID   string `json:"agentId"`
+			SessionID string `json:"sessionId"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.svc.GetSessionSummary(params.AgentID, params.SessionID)
+
+	case "plans.get":
+		var params struct {
+			AgentID   string `json:"agentId"`
+			SessionID string `json:"sessionId"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.svc.GetSessionPlan(params.AgentID, params.SessionID)
+	case "plans.clear":
+		var params struct {
+			AgentID   string `json:"agentId"`
+			SessionID string `json:"sessionId"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		return nil, s.svc.ClearSessionPlan(params.AgentID, params.SessionID)
 
 	default:
 		return nil, fmt.Errorf("未知 IPC 方法 %q", request.Method)

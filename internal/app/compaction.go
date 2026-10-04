@@ -1,0 +1,202 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+
+	"icepick/internal/agent"
+	"icepick/internal/config"
+	"icepick/internal/model"
+	"icepick/internal/storage"
+)
+
+// sessionCompactor implements the engine Compactor for one run. The summary
+// request is an ordinary model send: it goes through the same guarded client
+// (payload and exfiltration checks — the folded range carries tool results
+// with their data scopes) and is recorded as a model step, so the audit
+// trail shows exactly what was summarized.
+type sessionCompactor struct {
+	svc       *Service
+	runID     string
+	sessionID string
+	chat      agent.ChatModel
+}
+
+var _ agent.Compactor = sessionCompactor{}
+
+func (c sessionCompactor) Summarize(ctx context.Context, source config.Model, older []model.Message) (string, error) {
+	previous, found, err := c.svc.store.GetSessionSummary(ctx, c.sessionID)
+	if err != nil {
+		return "", err
+	}
+	messages := []model.Message{
+		{Role: "system", Content: "你是会话摘要器。把既有摘要与新对话合并为一份供后续对话使用的紧凑摘要：保留任务目标、已完成的步骤、关键工具结果和未决问题；按时间顺序陈述事实，不加评价；不超过 1200 字。"},
+		{Role: "user", Content: summaryRequest(previous.Summary, found, older)},
+	}
+	payload, err := json.Marshal(modelRequestSnapshot{Model: source, Messages: messages})
+	if err != nil {
+		return "", err
+	}
+	step, err := c.svc.store.BeginModelStep(ctx, c.runID, string(payload))
+	if err != nil {
+		return "", err
+	}
+	answer, chatErr := c.chat.Chat(ctx, source, messages, nil)
+	if err := c.svc.store.CompleteModelStep(ctx, step.ID, chatErr); err != nil {
+		return "", err
+	}
+	if chatErr != nil {
+		return "", chatErr
+	}
+	summary := strings.TrimSpace(answer.Message.Content)
+	if summary == "" {
+		return "", errors.New("模型返回了空摘要")
+	}
+	if len(summary) > 16384 {
+		summary = summary[:16384] + "\n[摘要过长，已截断]"
+	}
+	return summary, nil
+}
+
+// summaryRequest renders the folded range as flat text. The content is the
+// same data the run already sends to this endpoint every turn; the session
+// scope check applies to the summary send like to any other.
+func summaryRequest(previous string, hasPrevious bool, older []model.Message) string {
+	var b strings.Builder
+	b.WriteString("请把以下对话压缩为一份摘要。")
+	if hasPrevious && previous != "" {
+		b.WriteString("\n\n[既有摘要（与其合并，不要重复叙述）：]\n" + previous)
+	}
+	b.WriteString("\n\n[待合并的对话：]")
+	for _, m := range older {
+		switch m.Role {
+		case "user":
+			fmt.Fprintf(&b, "\n用户：%s", m.Content)
+		case "assistant":
+			if m.Content != "" {
+				fmt.Fprintf(&b, "\n助手：%s", m.Content)
+			}
+			for _, call := range m.ToolCalls {
+				fmt.Fprintf(&b, "\n助手调用工具 %s（%s）", call.Function.Name, call.Function.Arguments)
+			}
+		case "tool":
+			fmt.Fprintf(&b, "\n工具结果(%s)：%s", m.ToolCallID, m.Content)
+		}
+	}
+	return b.String()
+}
+
+// The two bookkeeping tools are host-backed: memory save writes to the
+// owning agent's memory store, plan updates replace the session's plan.
+// They live in the app layer (not the MCP hub) because availability follows
+// the profile preference and the agent's own authorization, and dispatching
+// them needs the run's agent/session scope.
+var (
+	memorySaveDefinition = func() model.Tool {
+		t := model.Tool{Type: "function"}
+		t.Function.Name = "local__memory_save"
+		t.Function.Description = "把值得跨会话记住的事实或偏好保存到本 Agent 的长期记忆；只保存稳定的事实，不保存临时状态"
+		t.Function.Parameters = json.RawMessage(`{"type":"object","properties":{"content":{"type":"string","description":"要记住的内容，一句话到几句话"}},"required":["content"]}`)
+		return t
+	}()
+
+	updatePlanDefinition = func() model.Tool {
+		t := model.Tool{Type: "function"}
+		t.Function.Name = "local__update_plan"
+		t.Function.Description = "创建或更新当前任务计划（整体替换）。每步给出简短标题和状态：pending / in_progress / done"
+		t.Function.Parameters = json.RawMessage(`{"type":"object","properties":{"steps":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","done"]},"note":{"type":"string"}},"required":["title","status"]}}},"required":["steps"]}`)
+		return t
+	}()
+)
+
+// bookkeepingTools extends a run's tool executor with the two built-ins and
+// keeps their definitions aligned with what the gate will actually accept.
+type bookkeepingTools struct {
+	inner     agent.ToolExecutor
+	svc       *Service
+	profile   storage.AgentProfile
+	sessionID string
+}
+
+var _ agent.ToolExecutor = bookkeepingTools{}
+
+func (t bookkeepingTools) Definitions(ctx context.Context) ([]model.Tool, error) {
+	definitions, err := t.inner.Definitions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if memoryAllowed(t.profile) && t.profile.AllowsTool(memorySaveDefinition.Function.Name) {
+		definitions = append(definitions, memorySaveDefinition)
+	}
+	if t.profile.PlanEnabled && t.profile.AllowsTool(updatePlanDefinition.Function.Name) {
+		definitions = append(definitions, updatePlanDefinition)
+	}
+	return definitions, nil
+}
+
+func (t bookkeepingTools) Call(ctx context.Context, name, arguments string) (string, error) {
+	switch name {
+	case "local__memory_save":
+		if !memoryAllowed(t.profile) {
+			return "", errors.New("该 Agent 未启用长期记忆写入")
+		}
+		var args struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+			return "", errors.New("memory_save 参数必须是 JSON 对象")
+		}
+		content := strings.TrimSpace(args.Content)
+		if content == "" || len(content) > storage.MaxMemoryContent {
+			return "", fmt.Errorf("记忆内容长度必须在 1 到 %d 字节之间", storage.MaxMemoryContent)
+		}
+		// The memory inherits the most restrictive scope accumulated in the
+		// session it was derived from; injecting it into a later session
+		// accumulates that scope there.
+		scope, err := t.svc.sessionScopeMax(ctx, t.sessionID, t.profile)
+		if err != nil {
+			return "", err
+		}
+		if _, err := t.svc.store.AddAgentMemory(ctx, t.profile.AgentID, content, storage.MemorySourceModel, t.sessionID, scope); err != nil {
+			return "", err
+		}
+		return "已保存到长期记忆。", nil
+	case "local__update_plan":
+		if !t.profile.PlanEnabled {
+			return "", errors.New("该 Profile 未启用规划")
+		}
+		var args struct {
+			Steps []storage.PlanStep `json:"steps"`
+		}
+		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+			return "", errors.New("update_plan 参数必须是 JSON 对象")
+		}
+		if _, err := t.svc.store.SetSessionPlan(ctx, t.sessionID, args.Steps); err != nil {
+			return "", err
+		}
+		return "计划已更新。", nil
+	default:
+		return t.inner.Call(ctx, name, arguments)
+	}
+}
+
+// sessionScopeMax folds the session's accumulated data scopes into the
+// single most restrictive token; a session always carries user input, so it
+// never returns empty.
+func (s *Service) sessionScopeMax(ctx context.Context, sessionID string, profile storage.AgentProfile) (string, error) {
+	scopes, err := s.sessionScopes(ctx, sessionID, profile)
+	if err != nil {
+		return "", err
+	}
+	scope := ""
+	for _, item := range scopes {
+		scope = storage.MaxScope(scope, item)
+	}
+	if scope == "" {
+		scope = storage.ScopePersonal
+	}
+	return scope, nil
+}

@@ -57,6 +57,10 @@ type Recorder interface {
 	// FinishTool records a terminal outcome (succeeded, failed, cancelled,
 	// execution_unknown) for the call.
 	FinishTool(ctx context.Context, callID, state, result, errText string) error
+	// SaveSummary persists a compaction summary covering the oldest
+	// `covered` entries of the run's history window. A non-nil error aborts
+	// the run: an unpersisted summary would be re-derived and re-sent.
+	SaveSummary(ctx context.Context, covered int, summary string) error
 }
 
 // ToolRequest identifies one model-requested tool invocation at the gate.
@@ -104,6 +108,18 @@ type Engine struct {
 	// streamed text fragment for live broadcast; the final message is still
 	// only committed through Recorder.Assistant.
 	OnDelta func(text string) error
+
+	// Compactor folds older complete turns into a persisted summary when
+	// the history approaches the model window. It only acts together with a
+	// positive ContextBudget: an unknown window (0) never compacts.
+	Compactor Compactor
+	// ContextBudget is the model context window in tokens, declared by the
+	// run's profile.
+	ContextBudget int
+	// InitialSummary is the summary that already covers history before this
+	// run's window; the engine mirrors it into the system prompt and keeps
+	// it current as it compacts further.
+	InitialSummary string
 
 	// ApprovalTimeout bounds how long a call may sit waiting for a user
 	// decision; 0 means the 5-minute default.
@@ -170,9 +186,36 @@ func (e Engine) Run(ctx context.Context, source config.Model, history []model.Me
 	}
 	definitions = visible
 	totalOutput := 0
+	baseSystem := ""
+	if len(messages) > 0 && messages[0].Role == "system" {
+		baseSystem = messages[0].Content
+	}
+	summary := e.InitialSummary
+	applySummary := func() {
+		content := baseSystem
+		if summary != "" {
+			if content != "" {
+				content += "\n\n"
+			}
+			content += summaryBlock(summary)
+		}
+		switch {
+		case len(messages) > 0 && messages[0].Role == "system":
+			messages[0].Content = content
+		case content != "":
+			messages = append([]model.Message{{Role: "system", Content: content}}, messages...)
+		}
+	}
+	applySummary()
 	for turn := 0; turn < maxTurns; turn++ {
 		if err := ctx.Err(); err != nil {
 			return "", err
+		}
+		if e.Compactor != nil && e.ContextBudget > 0 {
+			if err := e.compactTurn(ctx, rec, source, &messages, &summary, definitions); err != nil {
+				return "", fmt.Errorf("上下文压缩: %w", err)
+			}
+			applySummary()
 		}
 		stepID, err := rec.ModelRequest(ctx, source, messages, definitions)
 		if err != nil {
@@ -265,23 +308,22 @@ func (e Engine) dispatch(ctx context.Context, rec Recorder, allowed map[string]b
 			if denied != "" {
 				return denied, CallStateFailed, nil
 			}
-			// Approved: the final guard re-validates the call — a decision
-			// made earlier must survive the current policy, and the durable
-			// approved state plus its argument hash are re-verified by the
-			// begin transition below.
-			if recheck := e.Gate.Recheck(ctx, req); recheck.Deny != "" {
-				denial := "审批后策略变化：" + recheck.Deny
-				if err := rec.FinishTool(ctx, call.ID, "failed", "", denial); err != nil {
-					return "", "", fmt.Errorf("记录工具拒绝失败: %w", err)
-				}
-				return "工具错误：" + denial, CallStateFailed, nil
-			}
+
 		} else {
 			// Auto-approved by policy: persist the approval so the audit
 			// trail shows who allowed the call.
 			if err := rec.ApproveAuto(ctx, call.ID); err != nil {
 				return "", "", fmt.Errorf("记录自动批准失败: %w", err)
 			}
+		}
+	}
+	if e.Gate != nil {
+		req := ToolRequest{CallID: call.ID, Tool: name, Arguments: arguments}
+		if d := e.Gate.Recheck(ctx, req); d.Deny != "" {
+			if err := rec.FinishTool(ctx, call.ID, "failed", "", d.Deny); err != nil {
+				return "", "", err
+			}
+			return "工具错误：" + d.Deny, CallStateFailed, nil
 		}
 	}
 	// The executing state must be durable before the tool runs; a failure
@@ -300,11 +342,11 @@ func (e Engine) dispatch(ctx context.Context, rec Recorder, allowed map[string]b
 			return "", "", fmt.Errorf("保存工具结果失败: %w", err)
 		}
 		return result, CallStateSucceeded, nil
-	case errors.Is(callErr, context.Canceled), errors.Is(callErr, context.DeadlineExceeded):
+	case errors.Is(callErr, context.Canceled), errors.Is(callErr, context.DeadlineExceeded), isUnknownOutcome(callErr):
 		// Cancellation or timeout cannot prove the external operation did
 		// not take effect, so the outcome stays unknown.
 		finishCtx := context.WithoutCancel(ctx)
-		if err := rec.FinishTool(finishCtx, call.ID, "execution_unknown", "", "任务取消或超时时工具仍在执行，结果未知"); err != nil {
+		if err := rec.FinishTool(finishCtx, call.ID, "execution_unknown", "", "工具执行后未收到确定结果："+callErr.Error()); err != nil {
 			return "", "", fmt.Errorf("记录未知结果失败: %w", err)
 		}
 		return "", "", callErr
@@ -375,3 +417,11 @@ func (noopRecorder) ApproveAuto(context.Context, string) error { return nil }
 func (noopRecorder) BeginTool(context.Context, string) error { return nil }
 
 func (noopRecorder) FinishTool(context.Context, string, string, string, string) error { return nil }
+
+func (noopRecorder) SaveSummary(context.Context, int, string) error { return nil }
+
+// An executor marks errors occurring after external dispatch with this contract.
+func isUnknownOutcome(err error) bool {
+	var outcome interface{ OutcomeUnknown() bool }
+	return errors.As(err, &outcome) && outcome.OutcomeUnknown()
+}

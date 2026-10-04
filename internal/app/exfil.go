@@ -21,8 +21,9 @@ import (
 // before the inner call on both the plain and the streaming path, so a
 // denied send never reaches an adapter.
 type guardedChat struct {
-	inner agent.ChatModel
-	check func(context.Context) error
+	inner        agent.ChatModel
+	check        func(context.Context) error
+	payloadCheck func(context.Context, []model.Message, []model.Tool) error
 }
 
 var (
@@ -31,6 +32,11 @@ var (
 )
 
 func (g guardedChat) Chat(ctx context.Context, source config.Model, messages []model.Message, tools []model.Tool) (model.ChatResponse, error) {
+	if g.payloadCheck != nil {
+		if err := g.payloadCheck(ctx, messages, tools); err != nil {
+			return model.ChatResponse{}, err
+		}
+	}
 	if err := g.check(ctx); err != nil {
 		return model.ChatResponse{}, err
 	}
@@ -38,6 +44,11 @@ func (g guardedChat) Chat(ctx context.Context, source config.Model, messages []m
 }
 
 func (g guardedChat) ChatStream(ctx context.Context, source config.Model, messages []model.Message, tools []model.Tool, onDelta func(string) error) (model.ChatResponse, error) {
+	if g.payloadCheck != nil {
+		if err := g.payloadCheck(ctx, messages, tools); err != nil {
+			return model.ChatResponse{}, err
+		}
+	}
 	if err := g.check(ctx); err != nil {
 		return model.ChatResponse{}, err
 	}
@@ -83,7 +94,7 @@ func (s *Service) exfilCheck(ctx context.Context, sessionID string, source confi
 	if len(scopes) == 0 {
 		return nil
 	}
-	grant, found, err := s.store.GetExfilGrant(ctx, origin)
+	grant, found, err := s.store.GetExfilGrant(ctx, profile.AgentID, origin)
 	if err != nil {
 		return err
 	}
@@ -116,7 +127,7 @@ func (s *Service) sessionScopes(ctx context.Context, sessionID string, profile s
 		return nil, err
 	}
 	set := map[string]bool{}
-	if hasUser {
+	if hasUser || profile.SystemPrompt != "" || profile.Persona != "" {
 		set[storage.ScopePersonal] = true
 	}
 	for _, scope := range toolScopes {
@@ -143,7 +154,7 @@ func (s *Service) sessionScopes(ctx context.Context, sessionID string, profile s
 // one destination. The destination is normalized to its endpoint origin; a
 // provider name is never sufficient — the actual endpoint is what the send
 // check compares against.
-func (s *Service) GrantExfil(destination string, scopes []string) (storage.ExfilGrant, error) {
+func (s *Service) GrantExfil(agentID, destination string, scopes []string) (storage.ExfilGrant, error) {
 	if err := s.checkReady(); err != nil {
 		return storage.ExfilGrant{}, err
 	}
@@ -162,22 +173,25 @@ func (s *Service) GrantExfil(destination string, scopes []string) (storage.Exfil
 		}
 		cleaned = append(cleaned, scope)
 	}
-	grant := storage.ExfilGrant{Destination: origin, Scopes: cleaned, CreatedAt: ""}
+	grant := storage.ExfilGrant{AgentID: agentID, Destination: origin, Scopes: cleaned, CreatedAt: ""}
 	if err := s.store.SetExfilGrant(context.Background(), grant); err != nil {
 		return storage.ExfilGrant{}, err
 	}
-	saved, _, err := s.store.GetExfilGrant(context.Background(), origin)
+	saved, _, err := s.store.GetExfilGrant(context.Background(), agentID, origin)
 	return saved, err
 }
 
-func (s *Service) ListExfilGrants() ([]storage.ExfilGrant, error) {
+func (s *Service) ListExfilGrants(agentID string) ([]storage.ExfilGrant, error) {
 	if err := s.checkReady(); err != nil {
 		return nil, err
 	}
-	return s.store.ListExfilGrants(context.Background())
+	if _, err := s.store.GetAgent(context.Background(), agentID); err != nil {
+		return nil, err
+	}
+	return s.store.ListExfilGrants(context.Background(), agentID)
 }
 
-func (s *Service) RevokeExfil(destination string) error {
+func (s *Service) RevokeExfil(agentID, destination string) error {
 	if err := s.checkReady(); err != nil {
 		return err
 	}
@@ -185,5 +199,75 @@ func (s *Service) RevokeExfil(destination string) error {
 	if err != nil {
 		return fmt.Errorf("目的地必须是 http(s) 端点地址: %w", err)
 	}
-	return s.store.DeleteExfilGrant(context.Background(), origin)
+	return s.store.DeleteExfilGrant(context.Background(), agentID, origin)
+}
+
+// External tool descriptions/schemas are untrusted input, including before any
+// tool call. They require explicit unknown-source authorization for this Agent.
+func (s *Service) checkPayload(ctx context.Context, source config.Model, agentID, sessionID string, messages []model.Message, tools []model.Tool) error {
+	origin, local, err := endpointOrigin(source.EffectiveBaseURL())
+	if err != nil {
+		return err
+	}
+	required := map[string]bool{}
+	for _, m := range messages {
+		if m.Role == "system" && m.Content != "" {
+			required[storage.ScopePersonal] = true
+		}
+		for _, c := range m.ToolCalls {
+			if c.Function.Arguments != "" {
+				required[storage.ScopeUnknown] = true
+			}
+		}
+	}
+	for _, t := range tools {
+		if !strings.HasPrefix(t.Function.Name, "local__") {
+			required[storage.ScopeUnknown] = true
+		}
+	}
+	scopes := make([]string, 0, len(required))
+	for scope := range required {
+		scopes = append(scopes, scope)
+	}
+	if err := s.store.AccumulateContextScopes(ctx, sessionID, scopes); err != nil {
+		return err
+	}
+	if local {
+		return nil
+	}
+	grant, found, err := s.store.GetExfilGrant(ctx, agentID, origin)
+	if err != nil {
+		return err
+	}
+	for _, v := range grant.Scopes {
+		delete(required, v)
+	}
+	if len(required) > 0 || !found {
+		return fmt.Errorf("数据外发被拒绝：实际请求包含未授权的提示词、工具参数或外部工具定义")
+	}
+	return nil
+}
+
+func (s *Service) checkInitialGrant(ctx context.Context, sessionID string, source config.Model, profile storage.AgentProfile, initial storage.ExfilGrant) error {
+	_, local, err := endpointOrigin(source.EffectiveBaseURL())
+	if err != nil {
+		return err
+	}
+	if local {
+		return nil
+	}
+	scopes, err := s.sessionScopes(ctx, sessionID, profile)
+	if err != nil {
+		return err
+	}
+	allowed := map[string]bool{}
+	for _, scope := range initial.Scopes {
+		allowed[scope] = true
+	}
+	for _, scope := range scopes {
+		if !allowed[scope] {
+			return fmt.Errorf("数据外发范围超出本次任务开始时的授权，请在新任务中使用新增授权")
+		}
+	}
+	return nil
 }

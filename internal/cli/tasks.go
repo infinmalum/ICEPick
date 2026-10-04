@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"icepick/internal/app"
 	"icepick/internal/ipc"
 	"icepick/internal/storage"
 )
@@ -64,6 +65,23 @@ func cmdSessions(client *ipc.Client, args []string) int {
 		var messages []storage.Message
 		if err := client.Call("sessions.messages", map[string]any{"agentId": agentID, "sessionId": sessionID}, &messages); err != nil {
 			return fail("sessions.messages", err)
+		}
+		// The compaction summary and the resumable plan are part of what a
+		// session carries; show them before the raw transcript.
+		var summary storage.SessionSummary
+		if err := client.Call("summaries.get", map[string]any{"agentId": agentID, "sessionId": sessionID}, &summary); err == nil {
+			fmt.Printf("--- 压缩摘要（覆盖至 #%d，范围 %s）---\n%s\n", summary.CoversSeq, summary.Scope, summary.Summary)
+		}
+		var plan app.SessionPlanView
+		if err := client.Call("plans.get", map[string]any{"agentId": agentID, "sessionId": sessionID}, &plan); err == nil {
+			fmt.Println("--- 当前计划 ---")
+			for _, step := range plan.Steps {
+				note := ""
+				if step.Note != "" {
+					note = "（" + step.Note + "）"
+				}
+				fmt.Printf("%s %s%s\n", map[string]string{storage.PlanPending: "[ ]", storage.PlanInProgress: "[~]", storage.PlanDone: "[x]"}[step.Status], step.Title, note)
+			}
 		}
 		for _, message := range messages {
 			switch message.Role {

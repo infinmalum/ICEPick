@@ -304,9 +304,6 @@ func (s *Store) FinishToolCall(ctx context.Context, id, state, result, errText, 
 	if state == CallSucceeded && errText != "" {
 		return errors.New("成功的工具调用不能携带错误信息")
 	}
-	if state != CallSucceeded {
-		sourceScope = ""
-	}
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		var current string
 		if err := tx.QueryRowContext(ctx, `SELECT state FROM tool_calls WHERE id = ?`, id).Scan(&current); err != nil {
