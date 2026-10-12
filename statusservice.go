@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/base64"
+
 	"icepick/internal/app"
 	"icepick/internal/config"
 	"icepick/internal/storage"
@@ -214,12 +216,58 @@ func (s *StatusService) ListMCPEndpoints() ([]app.MCPEndpointStatus, error) {
 	return s.svc.ListMCPEndpoints()
 }
 
+// ListRuns returns the runs of one session, newest first.
 func (s *StatusService) ListRuns(agentID, sessionID string) ([]storage.Run, error) {
 	return s.svc.ListRuns(agentID, sessionID)
 }
 
 func (s *StatusService) GetRun(agentID, id string) (storage.Run, error) {
 	return s.svc.GetRun(agentID, id)
+}
+
+// ListChildRuns returns the delegated subtask runs of one run for the task
+// tree; children belong to the target Agent.
+func (s *StatusService) ListChildRuns(agentID, runID string) ([]storage.Run, error) {
+	return s.svc.ListChildRuns(agentID, runID)
+}
+
+// PendingApprovals sweeps every session of the agent — normal and hidden
+// delegation sessions — for calls needing user action.
+func (s *StatusService) PendingApprovals(agentID string) ([]storage.ToolCall, error) {
+	return s.svc.PendingApprovals(agentID)
+}
+
+// ExportProfile bundles one profile into a zip share package (base64).
+// Identity, policy, sessions, memories, credentials and approvals never
+// enter the package; the pinned delegation target is stripped.
+func (s *StatusService) ExportProfile(profileID string) (app.ExportResult, error) {
+	return s.svc.ExportProfile(profileID)
+}
+
+// PreviewProfileImport parses a share package (base64) and reports the
+// combination it would create plus its missing dependencies and
+// authorization recommendations.
+func (s *StatusService) PreviewProfileImport(dataBase64 string) (app.ImportPreview, error) {
+	raw, err := base64.StdEncoding.DecodeString(dataBase64)
+	if err != nil {
+		return app.ImportPreview{}, err
+	}
+	return s.svc.PreviewProfileImport(raw)
+}
+
+// ImportProfile creates a new profile from a share package (base64). It
+// never creates or switches agents, never installs resources and never
+// grants authorization.
+func (s *StatusService) ImportProfile(dataBase64 string) (app.ImportResult, error) {
+	raw, err := base64.StdEncoding.DecodeString(dataBase64)
+	if err != nil {
+		return app.ImportResult{}, err
+	}
+	profile, preview, err := s.svc.ImportProfile(raw)
+	if err != nil {
+		return app.ImportResult{}, err
+	}
+	return app.ImportResult{Profile: profile, Preview: preview}, nil
 }
 
 func (s *StatusService) StartTask(sessionID, input string) (storage.Run, error) {

@@ -387,3 +387,50 @@ func TestMemoryAndPlanOverIPC(t *testing.T) {
 		t.Fatalf("plans.clear: %v", err)
 	}
 }
+
+// Profile share packages travel over IPC as base64; the import creates a new
+// profile and never touches agents. runs.children exposes the delegation
+// task tree.
+func TestProfileShareAndChildRunsOverIPC(t *testing.T) {
+	svc, _ := newTestHost(t, &chatScript{}, &blockingTools{})
+	dataDir := startServer(t, svc)
+	client := mustConnect(t, dataDir)
+
+	var exported app.ExportResult
+	if err := client.Call("profiles.export", map[string]any{"id": storage.DefaultProfileID}, &exported); err != nil {
+		t.Fatalf("profiles.export: %v", err)
+	}
+	var preview app.ImportPreview
+	if err := client.Call("profiles.importPreview", map[string]any{"data": exported.Data}, &preview); err != nil {
+		t.Fatalf("profiles.importPreview: %v", err)
+	}
+	if preview.Name == "" {
+		t.Fatalf("empty preview: %+v", preview)
+	}
+	var imported struct {
+		Profile storage.Profile   `json:"profile"`
+		Preview app.ImportPreview `json:"preview"`
+	}
+	if err := client.Call("profiles.import", map[string]any{"data": exported.Data}, &imported); err != nil {
+		t.Fatalf("profiles.import: %v", err)
+	}
+	if imported.Profile.ID == storage.DefaultProfileID || imported.Profile.Revision != 1 {
+		t.Fatalf("imported profile: %+v", imported.Profile)
+	}
+	var agents []storage.Agent
+	if err := client.Call("agents.list", nil, &agents); err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].ID != storage.DefaultAgentID {
+		t.Fatalf("import must not create agents: %+v", agents)
+	}
+
+	// runs.children on a run-less id is refused; the tree surface exists.
+	if err := client.Call("runs.children", map[string]any{"agentId": storage.DefaultAgentID, "runId": "missing"}, nil); err == nil {
+		t.Fatal("runs.children accepted an unknown run")
+	}
+	var pending []storage.ToolCall
+	if err := client.Call("approvals.pending", map[string]any{"agentId": storage.DefaultAgentID}, &pending); err != nil {
+		t.Fatalf("approvals.pending: %v", err)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -297,6 +298,42 @@ func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 			return nil, err
 		}
 		return nil, s.svc.DeleteProfile(params.ID)
+	case "profiles.export":
+		var params struct {
+			ID string `json:"id"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.svc.ExportProfile(params.ID)
+	case "profiles.importPreview":
+		var params struct {
+			Data string `json:"data"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		raw, err := base64.StdEncoding.DecodeString(params.Data)
+		if err != nil {
+			return nil, fmt.Errorf("分享包数据必须是 base64: %w", err)
+		}
+		return s.svc.PreviewProfileImport(raw)
+	case "profiles.import":
+		var params struct {
+			Data string `json:"data"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		raw, err := base64.StdEncoding.DecodeString(params.Data)
+		if err != nil {
+			return nil, fmt.Errorf("分享包数据必须是 base64: %w", err)
+		}
+		created, preview, err := s.svc.ImportProfile(raw)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"profile": created, "preview": preview}, nil
 
 	case "agents.list":
 		return s.svc.ListAgents()
@@ -389,6 +426,15 @@ func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 			return nil, err
 		}
 		return s.svc.GetRun(params.AgentID, params.RunID)
+	case "runs.children":
+		var params struct {
+			AgentID string `json:"agentId"`
+			RunID   string `json:"runId"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.svc.ListChildRuns(params.AgentID, params.RunID)
 
 	case "tasks.start":
 		var params struct {
@@ -447,6 +493,14 @@ func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 			return nil, err
 		}
 		return s.svc.DenyToolCall(params.AgentID, params.CallID, params.Note)
+	case "approvals.pending":
+		var params struct {
+			AgentID string `json:"agentId"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.svc.PendingApprovals(params.AgentID)
 	case "calls.resolve":
 		var params struct {
 			AgentID string `json:"agentId"`

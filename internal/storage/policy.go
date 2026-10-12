@@ -133,6 +133,27 @@ func (s *Store) SessionDataScopes(ctx context.Context, sessionID string) (hasUse
 	return hasUserInput, toolScopes, rows.Err()
 }
 
+// ToolResultScopes lists the distinct data scopes the session's persisted
+// tool results carried. Unlike SessionDataScopes it excludes the unknown
+// scope that tool-call arguments accumulate: delegation uses it to pass the
+// narrowest honest provenance of a subtask's returned result to the parent.
+func (s *Store) ToolResultScopes(ctx context.Context, sessionID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT CASE WHEN c.source_scope='' THEN 'unknown' ELSE c.source_scope END FROM tool_calls c JOIN runs r ON r.id=c.run_id WHERE r.session_id=?`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	scopes := []string{}
+	for rows.Next() {
+		var scope string
+		if err := rows.Scan(&scope); err != nil {
+			return nil, err
+		}
+		scopes = append(scopes, scope)
+	}
+	return scopes, rows.Err()
+}
+
 // MCPEndpoint is the fingerprint registry of one configured stdio MCP
 // server: the binary hash, the tools/schema hash observed at registration
 // and the server-reported version. A mismatch against a live connection

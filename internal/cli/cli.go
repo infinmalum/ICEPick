@@ -56,8 +56,9 @@ func usage(errDetail string) int {
   icepick profiles list | create <名称> [--from <id>] | copy <id> <新名称>
   icepick profiles edit <id> [--name N] [--description D] [--prompt P] [--model 提供方/模型ID] [--budget N]
   icepick profiles restore | delete <id>
+  icepick profiles export <id> [--out <文件.zip>] | import <包.zip|目录> [--yes]
   icepick agents list | create <名称> --profile <id> | switch <agentID> <profileID>
-  icepick agents update <agentID> [--name N] [--mode manual|semi|automatic] | delete <agentID>
+  icepick agents update <agentID> [--name N] [--mode manual|semi|automatic] [--delegate-to <名称或ID>[,…]] [--delegate-clear] | delete <agentID>
   icepick sessions list [agentID] | create [agentID] | show <sessionID> --agent <agentID>
   icepick tasks start <agentID> <sessionID> <任务内容…> [--wait] | status <runID> --agent <agentID> | cancel <runID> --agent <agentID>
   icepick approvals list [agentID] | approve <callID> --agent <agentID> | deny <callID> [原因] --agent <agentID>

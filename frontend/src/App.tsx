@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Events } from '@wailsio/runtime'
 import { StatusService, type AppStatus } from '../bindings/icepick'
 import type { Agent, AgentPolicy, ExfilGrant, Memory, Message, Profile, Run, Session, SessionSummary, ToolCall } from '../bindings/icepick/internal/storage'
-import type { CredentialStatus, MCPEndpointStatus, SessionPlanView } from '../bindings/icepick/internal/app'
+import type { CredentialStatus, ExportResult, ImportPreview, MCPEndpointStatus, SessionPlanView } from '../bindings/icepick/internal/app'
 
 type ModelDraft = { provider: string; baseUrl: string; name: string }
 
@@ -19,6 +19,28 @@ const providerLabels: Record<string, string> = {
 }
 const scopeLabels: Record<string, string> = {
   public: '公开内容', workspace: '工作区文件', personal: '个人输入', credential: '凭据', unknown: '未知来源',
+}
+
+function downloadBase64(data: string, filename: string, mime: string) {
+  const binary = atob(data)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  const blob = new Blob([bytes], { type: mime })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  }
+  return btoa(binary)
 }
 
 function App() {
@@ -66,6 +88,12 @@ function App() {
   const [memoryError, setMemoryError] = useState('')
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null)
   const [sessionPlan, setSessionPlan] = useState<SessionPlanView | null>(null)
+  const [childRuns, setChildRuns] = useState<Run[]>([])
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null)
+  const [importData, setImportData] = useState('')
+  const [importBusy, setImportBusy] = useState(false)
+  const importInputRef = useRef<HTMLInputElement>(null)
+  const pendingSessionRef = useRef<string | null>(null)
 
   useEffect(() => {
     StatusService.GetStatus()
@@ -131,7 +159,15 @@ function App() {
     setSessions([])
     setToolCalls([])
     setStreamText('')
-    StatusService.ListAgentSessions(agentID).then((items) => setSessions(items ?? [])).catch((reason: unknown) => setError(String(reason)))
+    setChildRuns([])
+    StatusService.ListAgentSessions(agentID).then((items) => {
+      setSessions(items ?? [])
+      const wanted = pendingSessionRef.current
+      if (wanted && (items ?? []).some((session) => session.id === wanted)) {
+        pendingSessionRef.current = null
+        setSelected(wanted)
+      }
+    }).catch((reason: unknown) => setError(String(reason)))
   }, [agentID])
 
   useEffect(() => {
@@ -153,6 +189,7 @@ function App() {
         setToolCalls(calls ?? [])
         setActiveRun((previousRuns ?? []).find((item) => item.status === 'running')?.id ?? null)
         setLoadingSession(false)
+        refreshChildRuns((previousRuns ?? [])[0]?.id)
       })
       .catch((reason: unknown) => { if (!cancelled) { setTaskError(String(reason)); setLoadingSession(false) } })
     refreshSessionKnowledge(selected)
@@ -178,6 +215,7 @@ function App() {
         setToolCalls(calls ?? [])
         setStreamText(pending ?? '')
         setRuns((current) => [run, ...current.filter((item) => item.id !== run.id)])
+        refreshChildRuns(run.id)
         refreshSessionKnowledge(selected)
         if (run.status !== 'running') setActiveRun(null)
       } catch (reason) {
@@ -506,6 +544,60 @@ function App() {
     } catch (reason) { setTaskError(String(reason)) }
   }
 
+  async function refreshChildRuns(latestRunID: string | undefined) {
+    if (!latestRunID) {
+      setChildRuns([])
+      return
+    }
+    try {
+      setChildRuns((await StatusService.ListChildRuns(agentID, latestRunID)) ?? [])
+    } catch { setChildRuns([]) }
+  }
+
+  // A delegated subtask lives in a hidden session of the target Agent; the
+  // task tree jumps there so its transcript and approvals become visible.
+  function openChildSession(child: Run) {
+    pendingSessionRef.current = child.sessionId
+    setAgentID(child.agentId)
+  }
+
+  async function exportProfile() {
+    if (!profileDraft) return
+    setProfileBusy(true)
+    try {
+      const result: ExportResult = await StatusService.ExportProfile(profileDraft.id)
+      downloadBase64(result.data, result.filename, 'application/zip')
+      setProfileError('')
+    } catch (reason) { setProfileError(String(reason)) } finally { setProfileBusy(false) }
+  }
+
+  async function onImportFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    setImportBusy(true)
+    try {
+      const data = bytesToBase64(bytes)
+      setImportPreview(await StatusService.PreviewProfileImport(data))
+      setImportData(data)
+      setProfileError('')
+    } catch (reason) { setProfileError(String(reason)) } finally { setImportBusy(false) }
+  }
+
+  async function confirmImport() {
+    if (!importData) return
+    setImportBusy(true)
+    try {
+      const result = await StatusService.ImportProfile(importData)
+      await refreshProfiles()
+      setProfileEditID(result.profile.id)
+      setImportPreview(null)
+      setImportData('')
+      setProfileError('')
+    } catch (reason) { setProfileError(String(reason)) } finally { setImportBusy(false) }
+  }
+
   async function sendTask(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!selected || !prompt.trim()) return
@@ -606,6 +698,19 @@ function App() {
             </select></label>
             <label className="checkbox-label"><input type="checkbox" checked={agentDraft.policy.permissions.unrestricted} onChange={(event) => updatePermissions({ unrestricted: event.target.checked })} />不限工作区、命令和网络目标</label>
             <label className="checkbox-label"><input type="checkbox" checked={agentDraft.policy.memory} onChange={(event) => updatePolicy({ memory: event.target.checked })} />允许使用长期记忆（与 Profile 偏好同时开启才生效）</label>
+            <div className="scope-checks">
+              <span className="agent-profile-hint">可委派目标（勾选后此 Agent 可把子任务委派给这些 Agent，可含自身；Profile 委派开关也须开启）：</span>
+              {agents.map((item) => (
+                <label className="checkbox-label" key={item.id}>
+                  <input type="checkbox" checked={(agentDraft.policy.delegationTargets ?? []).includes(item.id)} onChange={(event) => {
+                    const current = agentDraft.policy.delegationTargets ?? []
+                    updatePolicy({ delegationTargets: event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id) })
+                  }} />
+                  {item.name}{item.id === agentDraft.id ? '（自身）' : ''}
+                </label>
+              ))}
+              {agents.length <= 1 && <span className="agent-profile-hint">还没有其他 Agent；也可把自身列为目标。</span>}
+            </div>
             {!agentDraft.policy.permissions.unrestricted && <><label>允许的工作区路径（每行一个）<textarea rows={2} value={(agentDraft.policy.permissions.workspacePaths ?? []).join('\n')} onChange={(event) => updatePermissions({ workspacePaths: event.target.value.split('\n').map((path) => path.trim()).filter(Boolean) })} /></label><label>允许的命令（每行一个）<textarea rows={2} value={(agentDraft.policy.permissions.commands ?? []).join('\n')} onChange={(event) => updatePermissions({ commands: event.target.value.split('\n').map((cmd) => cmd.trim()).filter(Boolean) })} /></label><label>允许的网络目标（每行一个）<textarea rows={2} value={(agentDraft.policy.permissions.networkHosts ?? []).join('\n')} onChange={(event) => updatePermissions({ networkHosts: event.target.value.split('\n').map((host) => host.trim()).filter(Boolean) })} /></label></>}
             <div className="model-actions"><button type="submit" disabled={agentBusy}>保存 Agent（名称与策略）</button><button type="button" className="secondary" disabled={agentBusy || agentDraft.id === 'default'} onClick={deleteAgent}>删除 Agent</button></div>
           </form>
@@ -642,6 +747,9 @@ function App() {
           <div className="model-actions">
             <button type="button" className="secondary" disabled={profileBusy} onClick={() => createProfile('')}>＋ 空白 Profile</button>
             <button type="button" className="secondary" disabled={profileBusy} onClick={() => createProfile(profileDraft.id)}>复制当前</button>
+            <button type="button" className="secondary" disabled={profileBusy} onClick={exportProfile}>导出分享包</button>
+            <button type="button" className="secondary" disabled={profileBusy} onClick={() => importInputRef.current?.click()}>导入分享包…</button>
+            <input ref={importInputRef} type="file" accept=".zip,application/zip" style={{ display: 'none' }} onChange={onImportFile} />
             <button type="button" className="secondary" disabled={profileBusy || profileDraft.isDefault} onClick={deleteProfile}>删除</button>
             {profileDraft.isDefault && <button type="button" className="secondary" disabled={profileBusy} onClick={restoreProfileDefault}>恢复内置内容</button>}
           </div>
@@ -664,12 +772,47 @@ function App() {
             <label>上下文预算（token）<input type="number" min={1024} max={1000000} value={profileDraft.data.contextBudget} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, contextBudget: Number(event.target.value) } })} /></label>
             <label className="checkbox-label"><input type="checkbox" checked={profileDraft.data.memoryEnabled} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, memoryEnabled: event.target.checked } })} />启用长期记忆（运行开始时检索，模型可用 local__memory_save 写入）</label>
             <label className="checkbox-label"><input type="checkbox" checked={profileDraft.data.planEnabled} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, planEnabled: event.target.checked } })} />启用任务规划（模型用 local__update_plan 维护可恢复计划）</label>
-            <label className="checkbox-label"><input type="checkbox" checked={profileDraft.data.delegation.enabled} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, delegation: { ...profileDraft.data.delegation, enabled: event.target.checked } } })} />允许委派子 Agent（尚未接通）</label>
-            {profileDraft.data.delegation.enabled && <label>最大委派深度<input type="number" min={0} max={4} value={profileDraft.data.delegation.maxDepth} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, delegation: { ...profileDraft.data.delegation, maxDepth: Number(event.target.value) } } })} /></label>}
+            <label className="checkbox-label"><input type="checkbox" checked={profileDraft.data.delegation.enabled} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, delegation: { ...profileDraft.data.delegation, enabled: event.target.checked } } })} />允许委派子 Agent（每次委派都需要审批；目标受各 Agent 允许列表约束）</label>
+            {profileDraft.data.delegation.enabled && <>
+              <label>最大委派深度<input type="number" min={0} max={4} value={profileDraft.data.delegation.maxDepth} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, delegation: { ...profileDraft.data.delegation, maxDepth: Number(event.target.value) } } })} /></label>
+              <label>并发子任务上限（默认 2）<input type="number" min={1} max={8} value={profileDraft.data.delegation.maxConcurrency || 2} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, delegation: { ...profileDraft.data.delegation, maxConcurrency: Number(event.target.value) } } })} /></label>
+              <label>单次子任务时间预算（秒，0 表示随运行上限 600）<input type="number" min={0} max={600} value={profileDraft.data.delegation.maxSeconds} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, delegation: { ...profileDraft.data.delegation, maxSeconds: Number(event.target.value) } } })} /></label>
+              <label>目标选择方式
+                <select value={profileDraft.data.delegation.selection || 'model'} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, delegation: { ...profileDraft.data.delegation, selection: event.target.value } } })}>
+                  <option value="model">由模型从允许列表中选择</option>
+                  <option value="pinned">固定目标（本机 Agent）</option>
+                </select>
+              </label>
+              {profileDraft.data.delegation.selection === 'pinned' && <label>固定目标 Agent（分享包不携带此选择）
+                <select value={profileDraft.data.delegation.targetAgentId ?? ''} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, delegation: { ...profileDraft.data.delegation, targetAgentId: event.target.value } } })}>
+                  <option value="">（未设置）</option>
+                  {agents.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select>
+              </label>}
+            </>}
             <div className="model-actions"><button type="submit" disabled={profileBusy}>保存 Profile</button></div>
           </form>
           {profileError && <p className="error">{profileError}</p>}
-          <p className="hint">Profile 可复制分享、不含实例数据与授权；保存后立即原子生效，被引用时编辑影响所有引用 Agent 的后续运行。</p>
+          <p className="hint">Profile 可复制分享、不含实例数据与授权；保存后立即原子生效，被引用时编辑影响所有引用 Agent 的后续运行。分享包只承载配置与 Skills 文件，不含授权、会话、记忆、密钥或本机委派目标。</p>
+        </section>}
+
+        {importPreview && <section className="session-card">
+          <div className="card-title">导入预览「{importPreview.name}」</div>
+          <div className="import-preview">
+            <p>模型：{importPreview.model.provider || '（应用默认）'}{importPreview.model.name ? `/${importPreview.model.name}` : ''} · 上下文预算 {importPreview.contextBudget} tokens · 人格 {importPreview.personaChars} 字符 · 提示词 {importPreview.promptChars} 字符</p>
+            <p>委派：{importPreview.delegation.enabled ? `启用（深度 ${importPreview.delegation.maxDepth} · 并发 ${importPreview.delegation.maxConcurrency || 2} · ${importPreview.delegation.maxSeconds > 0 ? `${importPreview.delegation.maxSeconds} 秒` : '随运行上限'}）` : '关闭'} · 记忆偏好：{importPreview.memoryEnabled ? '开（需接收方 Agent 授权才生效）' : '关'} · 规划：{importPreview.planEnabled ? '开' : '关'}</p>
+            {importPreview.mcpServers && importPreview.mcpServers.length > 0 && <ul className="import-list">
+              {importPreview.mcpServers.map((server) => <li key={server.name}>MCP {server.name}（命令 {server.command}）{server.configured ? ' · 已接入本机' : ' · 未接入本机，需自行配置'}</li>)}
+            </ul>}
+            {importPreview.skills && importPreview.skills.length > 0 && <ul className="import-list">
+              {importPreview.skills.map((skill) => <li key={skill.name}>Skill {skill.name}{skill.bundled ? ' · 包内包含文件' : ''}{skill.installed ? ' · 已安装' : ' · 未安装，导入不会自动安装'}</li>)}
+            </ul>}
+            {(importPreview.warnings ?? []).map((warning, index) => <p className="hint" key={index}>注意：{warning}</p>)}
+          </div>
+          <div className="model-actions">
+            <button type="button" disabled={importBusy} onClick={confirmImport}>确认导入为新 Profile</button>
+            <button type="button" className="secondary" disabled={importBusy} onClick={() => { setImportPreview(null); setImportData('') }}>取消</button>
+          </div>
         </section>}
 
         <section className="session-card">
@@ -844,6 +987,18 @@ function App() {
               </div>
             )}
             {activeRun && runs[0] && <p className="hint profile-run-hint">本次运行使用 Profile「{profileName(runs[0].profileId)}」快照 v{runs[0].profileRevision}；后续运行将使用「{activeAgent ? profileName(activeAgent.profileId) : '…'}」当前内容。</p>}
+            {(childRuns ?? []).length > 0 && <div className="task-tree">
+              <span className="card-title">子任务（任务树）</span>
+              {(childRuns ?? []).map((child) => (
+                <div className="tree-child" key={child.id}>
+                  <span className={`tree-state tree-${child.status}`}>{child.status}</span>
+                  <span>{agents.find((item) => item.id === child.agentId)?.name ?? child.agentId} · 深度 {child.depth}</span>
+                  {child.error && <span className="tree-error">{child.error}</span>}
+                  <button type="button" className="secondary" onClick={() => openChildSession(child)}>查看子会话</button>
+                </div>
+              ))}
+              <p className="hint">子任务使用目标 Agent 的 Profile 快照与独立上下文：不写入其普通会话，不访问其长期记忆；权限与外发取父任务与目标 Agent 的交集，审批取更严格者。</p>
+            </div>}
             <div className="message-list" aria-live="polite">
               {messages.length === 0 && !streamText && <p className="hint">还没有消息。可以试试“现在几点？”来验证 MCP 时间工具。</p>}
               {messages.map((item) => <div className={`message message-${item.role}`} key={item.id}><span className="message-role">{item.role === 'user' ? '你' : item.role === 'tool' ? 'MCP 工具' : 'ICEPick'}</span><p>{item.content}</p></div>)}
@@ -863,7 +1018,7 @@ function App() {
           </>}
         </section>
 
-        <p className="next-step">内置工具：local__current_time、local__read_file、local__load_skill、local__memory_save、local__update_plan。工具调用受权限网关与审批约束；远端模型发送前会检查数据外发授权；长会话超预算时自动压缩旧轮次并保留原文。</p>
+        <p className="next-step">内置工具：local__current_time、local__read_file、local__load_skill、local__memory_save、local__update_plan、local__delegate_task。工具调用受权限网关与审批约束；委派每次需确认；远端模型发送前会检查数据外发授权；长会话超预算时自动压缩旧轮次并保留原文。</p>
       </main>
     </div>
   )

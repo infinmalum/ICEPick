@@ -121,6 +121,35 @@ func (c *Catalog) Installed(name string) bool {
 	return ok
 }
 
+// Item returns the metadata of one installed skill, or nil when absent.
+func (c *Catalog) Item(name string) *Skill {
+	if c == nil {
+		return nil
+	}
+	if item, ok := c.items[name]; ok {
+		return &item
+	}
+	return nil
+}
+
+// Items lists every installed skill with its metadata, sorted by name.
+// The profile share exporter walks the skill directories from these paths.
+func (c *Catalog) Items() []Skill {
+	if c == nil {
+		return nil
+	}
+	names := make([]string, 0, len(c.items))
+	for name := range c.items {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	items := make([]Skill, 0, len(names))
+	for _, name := range names {
+		items = append(items, c.items[name])
+	}
+	return items
+}
+
 func (c *Catalog) Load(name string) (string, error) {
 	item, ok := c.items[name]
 	if !ok {

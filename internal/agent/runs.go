@@ -26,12 +26,24 @@ func NewRuns(store *storage.Store) *Runs {
 // one transaction. The returned resolved profile is the snapshot the run
 // must execute with; later profile edits affect only subsequent runs.
 func (r *Runs) Start(ctx context.Context, sessionID string) (storage.Run, context.Context, storage.AgentProfile, error) {
+	return r.start(ctx, sessionID, storage.CreateRunOptions{})
+}
+
+// StartChild registers a delegated subtask run: the child session already
+// exists and belongs to the target Agent, and the run row links to its
+// parent. The child context derives from the parent run's context, so
+// cancelling the parent cancels every surviving subtask.
+func (r *Runs) StartChild(ctx context.Context, sessionID, parentRunID string, depth int) (storage.Run, context.Context, storage.AgentProfile, error) {
+	return r.start(ctx, sessionID, storage.CreateRunOptions{ParentRunID: parentRunID, Depth: depth})
+}
+
+func (r *Runs) start(ctx context.Context, sessionID string, opts storage.CreateRunOptions) (storage.Run, context.Context, storage.AgentProfile, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return storage.Run{}, nil, storage.AgentProfile{}, err
 	}
-	item, resolved, err := r.store.CreateRun(ctx, sessionID)
+	item, resolved, err := r.store.CreateRunWithOptions(ctx, sessionID, opts)
 	if err != nil {
 		return storage.Run{}, nil, storage.AgentProfile{}, err
 	}

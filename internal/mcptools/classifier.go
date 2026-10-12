@@ -65,6 +65,12 @@ func (c Classifier) Classify(name, arguments string) (Effect, Sensitivity) {
 		// Plan state is host-local bookkeeping: nothing is read and nothing
 		// leaves the machine.
 		return EffectPure, SensPublic
+	case "local__delegate_task":
+		// Delegation starts an autonomous subtask that can run further
+		// tools, and the passed materials' sensitivity cannot be decided
+		// statically: every mode confirms it, and the parent's session
+		// accumulates unknown scope so later remote sends stay guarded.
+		return EffectExecute, SensUnknown
 	case "local__read_file":
 		var args struct {
 			Path string `json:"path"`

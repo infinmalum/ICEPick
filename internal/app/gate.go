@@ -13,14 +13,23 @@ import (
 )
 
 // toolGate combines immutable Run capabilities with live Agent restrictions.
+// For delegated subtask runs, `parent` is the delegating task's Profile
+// snapshot: the effective policy becomes the intersection of the parent
+// task's and the target Agent's own authorization, with the stricter of the
+// two approval modes and memory permanently off.
 type toolGate struct {
 	svc      *Service
 	agentID  string
 	snapshot *storage.AgentProfile
 	runID    string
+	parent   *storage.AgentProfile
 }
 
 var _ agent.ToolGate = toolGate{}
+
+// approvalRank orders the modes from most to least permissive; the stricter
+// mode wins for delegated subtasks.
+var approvalRank = map[string]int{"automatic": 0, "semi": 1, "manual": 2}
 
 // Resolve only live authorization; Profile choices belong to the Run snapshot.
 func (g toolGate) effectiveProfile(ctx context.Context) (storage.AgentProfile, error) {
@@ -33,11 +42,23 @@ func (g toolGate) effectiveProfile(ctx context.Context) (storage.AgentProfile, e
 	}
 	p := *g.snapshot
 	p.Policy = a.Policy
-	rank := map[string]int{"automatic": 0, "semi": 1, "manual": 2}
-	if rank[g.snapshot.Policy.ApprovalMode] > rank[p.Policy.ApprovalMode] {
+	if g.parent != nil {
+		p.Policy.ApprovalMode = stricterMode(g.parent.Policy.ApprovalMode, p.Policy.ApprovalMode)
+		p.Policy.Permissions = intersectPermissions(g.parent.Policy.Permissions, a.Policy.Permissions)
+		p.Policy.Memory = false
+		return p, nil
+	}
+	if approvalRank[g.snapshot.Policy.ApprovalMode] > approvalRank[p.Policy.ApprovalMode] {
 		p.Policy.ApprovalMode = g.snapshot.Policy.ApprovalMode
 	}
 	return p, nil
+}
+
+func stricterMode(a, b string) string {
+	if approvalRank[a] >= approvalRank[b] {
+		return a
+	}
+	return b
 }
 
 func (g toolGate) Gate(ctx context.Context, req agent.ToolRequest) agent.Decision {
@@ -120,11 +141,26 @@ func (g toolGate) hardLimits(ctx context.Context, profile storage.AgentProfile, 
 	if !profile.AllowsTool(req.Tool) {
 		return fmt.Sprintf("未被当前 Agent 允许的工具调用 %q", req.Tool)
 	}
-	if req.Tool == "local__memory_save" && !memoryAllowed(profile) {
-		return "该 Agent 未启用长期记忆写入"
+	if req.Tool == "local__memory_save" {
+		if g.parent != nil {
+			return "委派子任务不提供长期记忆写入"
+		}
+		if !memoryAllowed(profile) {
+			return "该 Agent 未启用长期记忆写入"
+		}
 	}
-	if req.Tool == "local__update_plan" && !profile.PlanEnabled {
-		return "该 Profile 未启用规划"
+	if req.Tool == "local__update_plan" {
+		if g.parent != nil {
+			return "委派子任务不提供规划"
+		}
+		if !profile.PlanEnabled {
+			return "该 Profile 未启用规划"
+		}
+	}
+	if req.Tool == "local__delegate_task" {
+		if deny := g.delegateLimit(ctx, profile, req.Arguments); deny != "" {
+			return deny
+		}
 	}
 	if req.Tool == "local__load_skill" {
 		var args struct {
@@ -144,6 +180,39 @@ func (g toolGate) hardLimits(ctx context.Context, profile storage.AgentProfile, 
 		if !withinAny(args.Path, profile.Policy.Permissions.WorkspacePaths) {
 			return "路径超出该 Agent 允许的工作区范围"
 		}
+	}
+	return ""
+}
+
+// delegateLimit enforces the host-side delegation bounds before dispatch:
+// the Profile switch, the depth budget and the agent's own target allowlist.
+// The profile's switch and depth come from the Run snapshot; the allowlist
+// is live agent authorization.
+func (g toolGate) delegateLimit(ctx context.Context, profile storage.AgentProfile, arguments string) string {
+	if !profile.Delegation.Enabled {
+		return "该 Profile 未启用委派"
+	}
+	if g.runID != "" {
+		run, err := g.svc.store.GetRun(ctx, g.runID)
+		if err != nil {
+			return "读取任务记录失败: " + err.Error()
+		}
+		if run.Depth+1 > profile.Delegation.MaxDepth {
+			return fmt.Sprintf("超过委派深度上限（%d）", profile.Delegation.MaxDepth)
+		}
+	}
+	var args struct {
+		Agent string `json:"agent"`
+	}
+	if json.Unmarshal([]byte(arguments), &args) != nil {
+		return "delegate_task 参数必须是 JSON 对象"
+	}
+	target, err := g.svc.resolveDelegationTarget(ctx, profile, args.Agent)
+	if err != nil {
+		return err.Error()
+	}
+	if !policyAllowsTarget(profile.Policy, target.ID) {
+		return fmt.Sprintf("目标 Agent %q 不在该 Agent 的委派允许列表中", target.Name)
 	}
 	return ""
 }

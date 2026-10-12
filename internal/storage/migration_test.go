@@ -93,6 +93,19 @@ func downgradeToVersion(t *testing.T, store *Store, version int) {
 func downgradeToV7(t *testing.T, store *Store) {
 	t.Helper()
 	ctx := context.Background()
+	// Reverse the v11 delegation structures first: indexes must go before
+	// their columns can be dropped.
+	for _, statement := range []string{
+		`DROP INDEX IF EXISTS sessions_agent_kind_order`,
+		`DROP INDEX IF EXISTS runs_parent_order`,
+		`ALTER TABLE sessions DROP COLUMN kind`,
+		`ALTER TABLE runs DROP COLUMN parent_run_id`,
+		`ALTER TABLE runs DROP COLUMN depth`,
+	} {
+		if _, err := store.db.ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
 	type legacyRow struct {
 		id, name, config string
 		revision         int

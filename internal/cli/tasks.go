@@ -130,6 +130,7 @@ func cmdTasks(client *ipc.Client, args []string) int {
 			return fail("runs.get", err)
 		}
 		printRun(run)
+		printChildRuns(client, run, "")
 		return 0
 	case "cancel":
 		parsed, err := parseCLI(args[1:])
@@ -233,31 +234,22 @@ func cmdApprovals(client *ipc.Client, args []string) int {
 	}
 }
 
-// listApprovals walks every session of the agent and prints its pending
-// approval requests and unresolved unknown-result calls.
+// listApprovals prints every call needing user action for the agent — normal
+// sessions and hidden delegation sessions alike — via the host-side sweep.
 func listApprovals(client *ipc.Client, agentID string) int {
-	var sessions []storage.Session
-	if err := client.Call("sessions.list", map[string]any{"agentId": agentID}, &sessions); err != nil {
-		return fail("sessions.list", err)
+	var pending []storage.ToolCall
+	if err := client.Call("approvals.pending", map[string]any{"agentId": agentID}, &pending); err != nil {
+		return fail("approvals.pending", err)
 	}
-	found := 0
-	for _, session := range sessions {
-		var calls []storage.ToolCall
-		if err := client.Call("calls.list", map[string]any{"agentId": agentID, "sessionId": session.ID}, &calls); err != nil {
-			continue
+	for _, call := range pending {
+		if call.State == storage.CallPending {
+			fmt.Printf("[待审批] %s (run %s)\n  工具: %s\n  参数: %s\n", call.ID, call.RunID, call.ToolName, call.Arguments)
 		}
-		for _, call := range calls {
-			if call.State == storage.CallPending {
-				found++
-				fmt.Printf("[待审批] %s (%s) 会话 %s\n  工具: %s\n  参数: %s\n", call.ID, session.Title, session.ID, call.ToolName, call.Arguments)
-			}
-			if call.State == storage.CallExecutionUnknow {
-				found++
-				fmt.Printf("[结果未知] %s (%s) 会话 %s\n  工具: %s\n  说明: %s\n", call.ID, session.Title, session.ID, call.ToolName, call.Error)
-			}
+		if call.State == storage.CallExecutionUnknow {
+			fmt.Printf("[结果未知] %s (run %s)\n  工具: %s\n  说明: %s\n", call.ID, call.RunID, call.ToolName, call.Error)
 		}
 	}
-	if found == 0 {
+	if len(pending) == 0 {
 		fmt.Println("当前没有待处理的审批或结果未知调用。")
 	}
 	return 0
@@ -324,6 +316,7 @@ func waitTask(client *ipc.Client, agentID, sessionID, runID string, prompt appro
 		}
 		if run.Status != "running" {
 			printRun(run)
+			printChildRuns(client, run, "")
 			return runStatusExitCode(run)
 		}
 		select {
@@ -336,8 +329,27 @@ func waitTask(client *ipc.Client, agentID, sessionID, runID string, prompt appro
 }
 
 func printRun(run storage.Run) {
-	fmt.Printf("run %s\n状态: %s\n错误: %s\nProfile: %s (v%d)\n开始: %s\n更新: %s\n",
-		run.ID, run.Status, run.Error, run.ProfileID, run.ProfileRevision, run.CreatedAt, run.UpdatedAt)
+	fmt.Printf("run %s\n状态: %s\n错误: %s\nProfile: %s (v%d)\n深度: %d\n开始: %s\n更新: %s\n",
+		run.ID, run.Status, run.Error, run.ProfileID, run.ProfileRevision, run.Depth, run.CreatedAt, run.UpdatedAt)
+}
+
+// printChildRuns renders the delegated subtask tree under a run. Children
+// belong to the target Agent, so each level queries with the owning agent's
+// ID; cycles are impossible because delegation refuses them before creation.
+func printChildRuns(client *ipc.Client, run storage.Run, indent string) {
+	var children []storage.Run
+	if err := client.Call("runs.children", map[string]any{"agentId": run.AgentID, "runId": run.ID}, &children); err != nil || len(children) == 0 {
+		return
+	}
+	fmt.Println(indent + "子任务:")
+	for _, child := range children {
+		line := fmt.Sprintf("%s  %s → Agent %s [%s] 会话 %s", indent, child.ID, child.AgentID, child.Status, child.SessionID)
+		if child.Error != "" {
+			line += " · " + child.Error
+		}
+		fmt.Println(line)
+		printChildRuns(client, child, indent+"    ")
+	}
 }
 
 func runStatusExitCode(run storage.Run) int {

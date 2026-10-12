@@ -112,13 +112,17 @@ var (
 	}()
 )
 
-// bookkeepingTools extends a run's tool executor with the two built-ins and
+// bookkeepingTools extends a run's tool executor with the built-ins and
 // keeps their definitions aligned with what the gate will actually accept.
+// Delegated subtask runs set `delegated`: they never get the memory or plan
+// bookkeeping, only the delegation tool itself when depth still allows it.
 type bookkeepingTools struct {
 	inner     agent.ToolExecutor
 	svc       *Service
 	profile   storage.AgentProfile
 	sessionID string
+	runID     string
+	delegated bool
 }
 
 var _ agent.ToolExecutor = bookkeepingTools{}
@@ -128,11 +132,16 @@ func (t bookkeepingTools) Definitions(ctx context.Context) ([]model.Tool, error)
 	if err != nil {
 		return nil, err
 	}
-	if memoryAllowed(t.profile) && t.profile.AllowsTool(memorySaveDefinition.Function.Name) {
-		definitions = append(definitions, memorySaveDefinition)
+	if !t.delegated {
+		if memoryAllowed(t.profile) && t.profile.AllowsTool(memorySaveDefinition.Function.Name) {
+			definitions = append(definitions, memorySaveDefinition)
+		}
+		if t.profile.PlanEnabled && t.profile.AllowsTool(updatePlanDefinition.Function.Name) {
+			definitions = append(definitions, updatePlanDefinition)
+		}
 	}
-	if t.profile.PlanEnabled && t.profile.AllowsTool(updatePlanDefinition.Function.Name) {
-		definitions = append(definitions, updatePlanDefinition)
+	if delegationOffered(ctx, t.svc, t.profile, t.runID) {
+		definitions = append(definitions, delegateDefinition)
 	}
 	return definitions, nil
 }
@@ -140,6 +149,9 @@ func (t bookkeepingTools) Definitions(ctx context.Context) ([]model.Tool, error)
 func (t bookkeepingTools) Call(ctx context.Context, name, arguments string) (string, error) {
 	switch name {
 	case "local__memory_save":
+		if t.delegated {
+			return "", errors.New("委派子任务不提供长期记忆写入")
+		}
 		if !memoryAllowed(t.profile) {
 			return "", errors.New("该 Agent 未启用长期记忆写入")
 		}
@@ -165,6 +177,9 @@ func (t bookkeepingTools) Call(ctx context.Context, name, arguments string) (str
 		}
 		return "已保存到长期记忆。", nil
 	case "local__update_plan":
+		if t.delegated {
+			return "", errors.New("委派子任务不提供规划")
+		}
 		if !t.profile.PlanEnabled {
 			return "", errors.New("该 Profile 未启用规划")
 		}
@@ -178,6 +193,8 @@ func (t bookkeepingTools) Call(ctx context.Context, name, arguments string) (str
 			return "", err
 		}
 		return "计划已更新。", nil
+	case "local__delegate_task":
+		return t.svc.executeDelegation(ctx, t.profile, t.sessionID, t.runID, arguments)
 	default:
 		return t.inner.Call(ctx, name, arguments)
 	}

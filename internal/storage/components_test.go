@@ -71,7 +71,9 @@ func TestV8MigrationSeparatesComponentsAndDoesNotRegrant(t *testing.T) {
 	}
 	raw, _ := json.Marshal(p.Data)
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		for _, q := range []string{`DROP TABLE session_context_scopes`, `DROP VIEW resolved_profiles`, `ALTER TABLE profiles ADD COLUMN config TEXT NOT NULL DEFAULT '{}'`, `DROP TABLE profile_components`, `DROP TABLE exfil_grants`, `DROP TABLE agent_memories`, `DROP TABLE session_summaries`, `DROP TABLE session_plans`, `ALTER TABLE legacy_exfil_grants RENAME TO exfil_grants`, `PRAGMA user_version=8`} {
+		// The v8 rollback also strips the newer v11 delegation structures so the
+		// migration chain can be re-exercised from this state (indexes first).
+		for _, q := range []string{`DROP TABLE session_context_scopes`, `DROP VIEW resolved_profiles`, `ALTER TABLE profiles ADD COLUMN config TEXT NOT NULL DEFAULT '{}'`, `DROP TABLE profile_components`, `DROP TABLE exfil_grants`, `DROP TABLE agent_memories`, `DROP TABLE session_summaries`, `DROP TABLE session_plans`, `ALTER TABLE legacy_exfil_grants RENAME TO exfil_grants`, `DROP INDEX IF EXISTS sessions_agent_kind_order`, `DROP INDEX IF EXISTS runs_parent_order`, `ALTER TABLE sessions DROP COLUMN kind`, `ALTER TABLE runs DROP COLUMN parent_run_id`, `ALTER TABLE runs DROP COLUMN depth`, `PRAGMA user_version=8`} {
 			if _, err := tx.ExecContext(ctx, q); err != nil {
 				return err
 			}

@@ -27,10 +27,36 @@ type PermissionScope struct {
 
 // DelegationPolicy is the Profile-level switch for sub-Agent delegation; the
 // actual target list is bounded by each delegating Agent's own authorization.
+// Selection picks how the target is chosen: "model" lets the model pick from
+// the allowed list, "pinned" always uses TargetAgentID (a local identity that
+// share export strips). Zero MaxConcurrency/MaxSeconds mean the runtime
+// defaults.
 type DelegationPolicy struct {
-	Enabled  bool `json:"enabled"`
-	MaxDepth int  `json:"maxDepth"`
+	Enabled        bool   `json:"enabled"`
+	MaxDepth       int    `json:"maxDepth"`
+	MaxConcurrency int    `json:"maxConcurrency"`
+	MaxSeconds     int    `json:"maxSeconds"`
+	Selection      string `json:"selection"`
+	TargetAgentID  string `json:"targetAgentId,omitempty"`
 }
+
+const (
+	// DelegationModelSelection lets the model choose a target from the
+	// agent's allowed list; the list bounds the choice.
+	DelegationModelSelection = "model"
+	// DelegationPinnedSelection delegates every call to one configured
+	// target Agent of this machine.
+	DelegationPinnedSelection = "pinned"
+
+	// DefaultDelegationConcurrency caps concurrent subtask runs per parent.
+	DefaultDelegationConcurrency = 2
+	// maxDelegationSeconds mirrors the engine's per-run timeout (10
+	// minutes): a subtask can never outlive the run limit, so the profile
+	// budget only tightens it.
+	maxDelegationSeconds = 600
+	// MaxDelegationDepth bounds recursive delegation.
+	MaxDelegationDepth = 4
+)
 
 // ProfileData is the shareable combination a Profile carries: prompt, model
 // binding, capability selection and budgets. It never holds instance data,
@@ -58,15 +84,19 @@ type ProfileData struct {
 }
 
 // AgentPolicy is the machine-local policy that belongs to an Agent instance,
-// not to any Profile: the approval mode, the resource authorization and the
-// long-term memory authorization. A new Agent initializes its own copy;
-// referencing a Profile never copies another instance's authorization.
+// not to any Profile: the approval mode, the resource authorization, the
+// long-term memory authorization and the delegation allowlist. A new Agent
+// initializes its own copy; referencing a Profile never copies another
+// instance's authorization.
 type AgentPolicy struct {
 	ApprovalMode string          `json:"approvalMode"`
 	Permissions  PermissionScope `json:"permissions"`
 	// Memory authorizes this Agent to use long-term memory at all. It
 	// defaults to false: existing and new Agents opt in explicitly.
 	Memory bool `json:"memory"`
+	// DelegationTargets lists the Agents this one may delegate subtasks to.
+	// An empty list disables delegation regardless of the Profile switch.
+	DelegationTargets []string `json:"delegationTargets,omitempty"`
 }
 
 // Profile is one named, versioned combination. Editing bumps the revision and
@@ -126,6 +156,12 @@ func defaultProfileData() ProfileData {
 	return d
 }
 
+// ValidateProfileData checks the stored combination shape; the share
+// importer runs it before persisting an imported profile.
+func ValidateProfileData(d ProfileData) error {
+	return validateProfileData(d)
+}
+
 func validateProfileData(d ProfileData) error {
 	if len(d.Persona) > 32000 || len(d.SystemPrompt) > 32000 || len(d.Description) > 500 {
 		return errors.New("系统提示词或说明过长")
@@ -135,7 +171,21 @@ func validateProfileData(d ProfileData) error {
 			return err
 		}
 	}
-	if d.ContextBudget < 1024 || d.ContextBudget > 1000000 || d.Delegation.MaxDepth < 0 || d.Delegation.MaxDepth > 4 {
+	switch d.Delegation.Selection {
+	case "", DelegationModelSelection, DelegationPinnedSelection:
+	default:
+		return errors.New("无效的委派目标选择方式")
+	}
+	if d.Delegation.MaxDepth < 0 || d.Delegation.MaxDepth > MaxDelegationDepth {
+		return errors.New("上下文预算或委派深度无效")
+	}
+	if d.Delegation.MaxConcurrency < 0 || d.Delegation.MaxConcurrency > 8 {
+		return errors.New("委派并发上限无效")
+	}
+	if d.Delegation.MaxSeconds < 0 || (d.Delegation.MaxSeconds > 0 && d.Delegation.MaxSeconds < 30) || d.Delegation.MaxSeconds > maxDelegationSeconds {
+		return errors.New("委派时间预算无效（30–600 秒）")
+	}
+	if d.ContextBudget < 1024 || d.ContextBudget > 1000000 {
 		return errors.New("上下文预算或委派深度无效")
 	}
 	for _, name := range d.AllowedTools {
@@ -154,6 +204,13 @@ func validateProfileData(d ProfileData) error {
 func validatePolicy(p AgentPolicy) error {
 	if p.ApprovalMode != "manual" && p.ApprovalMode != "semi" && p.ApprovalMode != "automatic" {
 		return errors.New("无效的审批模式")
+	}
+	seen := map[string]bool{}
+	for _, target := range p.DelegationTargets {
+		if target == "" || seen[target] {
+			return errors.New("委派允许列表包含空项或重复项")
+		}
+		seen[target] = true
 	}
 	return nil
 }
@@ -439,6 +496,13 @@ func (s *Store) UpdateAgentLocal(ctx context.Context, id, name string, policy Ag
 	if err := validatePolicy(policy); err != nil {
 		return Agent{}, err
 	}
+	// Every delegation target must exist on this machine: the allowlist is
+	// agent-local authorization over real instances, never free-form text.
+	for _, target := range policy.DelegationTargets {
+		if _, err := s.GetAgent(ctx, target); err != nil {
+			return Agent{}, fmt.Errorf("委派目标不存在: %w", err)
+		}
+	}
 	policyJSON, err := json.Marshal(policy)
 	if err != nil {
 		return Agent{}, err
@@ -466,9 +530,9 @@ func (s *Store) SwitchAgentProfile(ctx context.Context, agentID, profileID strin
 	return s.GetAgent(ctx, agentID)
 }
 
-// DeleteAgent removes an instance. A shared Profile is never deleted with it,
-// and an Agent that still owns sessions cannot be deleted, so no history is
-// left dangling.
+// DeleteAgent removes an instance. Agents with session history are refused so
+// no reference dangles, as are Agents that still appear in another Agent's
+// delegation allowlist; a shared Profile is never deleted with the agent.
 func (s *Store) DeleteAgent(ctx context.Context, id string) error {
 	var sessions int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE agent_id = ?`, id).Scan(&sessions); err != nil {
@@ -476,6 +540,38 @@ func (s *Store) DeleteAgent(ctx context.Context, id string) error {
 	}
 	if sessions > 0 {
 		return errors.New("Agent 仍有会话历史，请先删除其会话")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, policy FROM agents`)
+	if err != nil {
+		return err
+	}
+	referencing := []string{}
+	for rows.Next() {
+		var otherID, policyJSON string
+		if err := rows.Scan(&otherID, &policyJSON); err != nil {
+			rows.Close()
+			return err
+		}
+		if otherID == id {
+			continue
+		}
+		var other AgentPolicy
+		if json.Unmarshal([]byte(policyJSON), &other) != nil {
+			continue
+		}
+		for _, target := range other.DelegationTargets {
+			if target == id {
+				referencing = append(referencing, otherID)
+				break
+			}
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(referencing) > 0 {
+		return fmt.Errorf("Agent 仍在 %s 的委派允许列表中，请先移除该委派目标", strings.Join(referencing, "、"))
 	}
 	result, err := s.db.ExecContext(ctx, `DELETE FROM agents WHERE id = ?`, id)
 	if err != nil {

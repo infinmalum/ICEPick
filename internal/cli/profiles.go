@@ -1,8 +1,13 @@
 package cli
 
 import (
+	"archive/zip"
+	"bytes"
+	"encoding/base64"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"icepick/internal/app"
@@ -48,7 +53,7 @@ func boolText(value bool, whenTrue, whenFalse string) string {
 
 func cmdProfiles(client *ipc.Client, args []string) int {
 	if len(args) == 0 {
-		return usage("profiles 需要子命令 list|create|copy|edit|restore|delete")
+		return usage("profiles 需要子命令 list|create|copy|edit|restore|export|import|delete")
 	}
 	switch args[0] {
 	case "list":
@@ -114,6 +119,30 @@ func cmdProfiles(client *ipc.Client, args []string) int {
 		}
 		fmt.Printf("已恢复内置内容（%s，v%d）\n", restored.Name, restored.Revision)
 		return 0
+	case "export":
+		parsed, err := parseCLI(args[1:])
+		if err != nil || parsed.arg(0) == "" {
+			return usage("用法: profiles export <id> [--out <文件.zip>]")
+		}
+		var result app.ExportResult
+		if err := client.Call("profiles.export", map[string]any{"id": parsed.arg(0)}, &result); err != nil {
+			return fail("profiles.export", err)
+		}
+		out := parsed.value("out")
+		if out == "" {
+			out = result.Filename
+		}
+		data, err := base64.StdEncoding.DecodeString(result.Data)
+		if err != nil {
+			return fail("解码分享包", err)
+		}
+		if err := os.WriteFile(out, data, 0600); err != nil {
+			return fail("写入分享包", err)
+		}
+		fmt.Printf("已导出 Profile 到 %s（%d 字节）。包内不含授权、会话、记忆或密钥。\n", out, len(data))
+		return 0
+	case "import":
+		return importProfile(client, args[1:])
 	case "delete":
 		parsed, err := parseCLI(args[1:])
 		if err != nil || parsed.arg(0) == "" {
@@ -127,6 +156,124 @@ func cmdProfiles(client *ipc.Client, args []string) int {
 	default:
 		return usage(fmt.Sprintf("未知 profiles 子命令 %q", args[0]))
 	}
+}
+
+// importProfile reads a share package (zip file or directory with the same
+// layout), shows the dependency preview and — only with --yes — imports it.
+// The preview step is mandatory: import never auto-installs, auto-authorizes
+// or switches agents.
+func importProfile(client *ipc.Client, args []string) int {
+	parsed, err := parseCLI(args, "yes")
+	if err != nil || parsed.arg(0) == "" {
+		return usage("用法: profiles import <包路径.zip 或目录> [--yes]")
+	}
+	data, err := readSharePackage(parsed.arg(0))
+	if err != nil {
+		return fail("读取分享包", err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(data)
+	var preview app.ImportPreview
+	if err := client.Call("profiles.importPreview", map[string]any{"data": encoded}, &preview); err != nil {
+		return fail("profiles.importPreview", err)
+	}
+	printImportPreview(preview)
+	if !parsed.flags["yes"] {
+		fmt.Println("\n预览完成。确认后追加 --yes 执行导入。")
+		return 0
+	}
+	var imported struct {
+		Profile storage.Profile   `json:"profile"`
+		Preview app.ImportPreview `json:"preview"`
+	}
+	if err := client.Call("profiles.import", map[string]any{"data": encoded}, &imported); err != nil {
+		return fail("profiles.import", err)
+	}
+	created := imported.Profile
+	fmt.Printf("\n已导入为 Profile %s（%s，v%d）。导入不创建或切换 Agent、不安装资源、不授权；请用 agents switch 让 Agent 使用它。\n", created.ID, created.Name, created.Revision)
+	return 0
+}
+
+func printImportPreview(p app.ImportPreview) {
+	fmt.Printf("Profile 名称: %s\n说明: %s\n模型: %s/%s（%s）\n上下文预算: %d tokens\n人格 %d 字符 / 提示词 %d 字符\n委派: %v（深度上限 %d，并发 %d，单任务 %d 秒，选择方式 %s）\n记忆偏好: %v · 规划: %v\n",
+		p.Name, p.Description, p.Model.Provider, p.Model.Name, p.Model.EffectiveBaseURL(),
+		p.ContextBudget, p.PersonaChars, p.PromptChars,
+		p.Delegation.Enabled, p.Delegation.MaxDepth, p.Delegation.MaxConcurrency, p.Delegation.MaxSeconds, p.Delegation.Selection,
+		p.MemoryEnabled, p.PlanEnabled)
+	if len(p.MCPServers) > 0 {
+		fmt.Println("MCP 依赖:")
+		for _, server := range p.MCPServers {
+			state := "未接入本机"
+			if server.Configured {
+				state = "已接入"
+			}
+			adjusted := ""
+			if server.CommandAdjusted {
+				adjusted = "（导出时去除了本机路径，请核对命令）"
+			}
+			fmt.Printf("  - %s（命令 %q，%s）%s\n", server.Name, server.Command, state, adjusted)
+		}
+	}
+	if len(p.Skills) > 0 {
+		fmt.Println("Skills:")
+		for _, skill := range p.Skills {
+			state := "未安装"
+			if skill.Installed {
+				state = "已安装"
+			}
+			bundled := ""
+			if skill.Bundled {
+				bundled = "，包含在包内"
+			}
+			fmt.Printf("  - %s（%s%s）\n", skill.Name, state, bundled)
+		}
+	}
+	for _, warning := range p.Warnings {
+		fmt.Println("注意:", warning)
+	}
+}
+
+// readSharePackage loads a share bundle from a zip file or from a directory
+// holding the same layout; directories are packed in memory.
+func readSharePackage(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return os.ReadFile(path)
+	}
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	err = filepath.WalkDir(path, func(item string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !entry.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(path, item)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(item)
+		if err != nil {
+			return err
+		}
+		writer, err := zw.Create(filepath.ToSlash(rel))
+		if err != nil {
+			return err
+		}
+		_, err = writer.Write(data)
+		return err
+	})
+	if err != nil {
+		zw.Close()
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // editProfile edits the profile fields the CLI can express on the command
@@ -193,9 +340,9 @@ func cmdAgents(client *ipc.Client, args []string) int {
 		for _, p := range profiles {
 			profileNames[p.ID] = p.Name
 		}
-		rows := [][]string{{"ID", "名称", "Profile", "审批模式"}}
+		rows := [][]string{{"ID", "名称", "Profile", "审批模式", "委派目标"}}
 		for _, a := range agents {
-			rows = append(rows, []string{a.ID, a.Name, fmt.Sprintf("%s (%s)", profileNames[a.ProfileID], a.ProfileID), a.Policy.ApprovalMode})
+			rows = append(rows, []string{a.ID, a.Name, fmt.Sprintf("%s (%s)", profileNames[a.ProfileID], a.ProfileID), a.Policy.ApprovalMode, fmt.Sprintf("%d", len(a.Policy.DelegationTargets))})
 		}
 		printTable(rows)
 		return 0
@@ -226,12 +373,12 @@ func cmdAgents(client *ipc.Client, args []string) int {
 		fmt.Printf("Agent %s 现在使用 Profile %s（会话与授权不变）\n", updated.ID, updated.ProfileID)
 		return 0
 	case "update":
-		parsed, err := parseCLI(args[1:])
+		parsed, err := parseCLI(args[1:], "delegate-clear")
 		if err != nil || parsed.arg(0) == "" {
-			return usage("用法: agents update <agentID> [--name N] [--mode manual|semi|automatic]")
+			return usage("用法: agents update <agentID> [--name N] [--mode manual|semi|automatic] [--delegate-to <名称或ID>[,<名称或ID>…]] [--delegate-clear]")
 		}
-		if parsed.value("name") == "" && parsed.value("mode") == "" {
-			return usage("agents update 需要至少一个 --name 或 --mode")
+		if parsed.value("name") == "" && parsed.value("mode") == "" && parsed.value("delegate-to") == "" && !parsed.flags["delegate-clear"] {
+			return usage("agents update 需要至少一个 --name、--mode、--delegate-to 或 --delegate-clear")
 		}
 		var resolved storage.AgentProfile
 		if err := client.Call("agents.profile", map[string]any{"agentId": parsed.arg(0)}, &resolved); err != nil {
@@ -243,11 +390,41 @@ func cmdAgents(client *ipc.Client, args []string) int {
 		if v := parsed.value("mode"); v != "" {
 			resolved.Policy.ApprovalMode = v
 		}
+		if parsed.flags["delegate-clear"] {
+			resolved.Policy.DelegationTargets = []string{}
+		}
+		if v := parsed.value("delegate-to"); v != "" {
+			var agents []storage.Agent
+			if err := client.Call("agents.list", nil, &agents); err != nil {
+				return fail("agents.list", err)
+			}
+			targets := []string{}
+			for _, ref := range strings.Split(v, ",") {
+				ref = trimText(ref)
+				if ref == "" {
+					continue
+				}
+				found := ""
+				for _, candidate := range agents {
+					if candidate.ID == ref || candidate.Name == ref {
+						found = candidate.ID
+						break
+					}
+				}
+				if found == "" {
+					return usage(fmt.Sprintf("委派目标不存在: %q（用 agents list 查看 ID 或名称）", ref))
+				}
+				if !containsID(targets, found) {
+					targets = append(targets, found)
+				}
+			}
+			resolved.Policy.DelegationTargets = targets
+		}
 		var updated storage.Agent
 		if err := client.Call("agents.update", map[string]any{"agentId": parsed.arg(0), "name": resolved.AgentName, "policy": resolved.Policy}, &updated); err != nil {
 			return fail("agents.update", err)
 		}
-		fmt.Printf("已更新 Agent %s（审批模式 %s）\n", updated.ID, updated.Policy.ApprovalMode)
+		fmt.Printf("已更新 Agent %s（审批模式 %s，委派目标 %d 个）\n", updated.ID, updated.Policy.ApprovalMode, len(updated.Policy.DelegationTargets))
 		return 0
 	case "delete":
 		parsed, err := parseCLI(args[1:])
@@ -262,6 +439,15 @@ func cmdAgents(client *ipc.Client, args []string) int {
 	default:
 		return usage(fmt.Sprintf("未知 agents 子命令 %q", args[0]))
 	}
+}
+
+func containsID(list []string, want string) bool {
+	for _, item := range list {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func fail(operation string, err error) int {

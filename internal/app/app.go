@@ -311,6 +311,23 @@ func (s *Service) GetRun(agentID, id string) (storage.Run, error) {
 	return run, nil
 }
 
+// ListChildRuns returns the delegated subtask runs of one run, oldest first.
+// The task tree renders them under their parent with target Agent, status
+// and error.
+func (s *Service) ListChildRuns(agentID, runID string) ([]storage.Run, error) {
+	if err := s.checkReady(); err != nil {
+		return nil, err
+	}
+	run, err := s.store.GetRun(context.Background(), runID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.checkSessionAgent(agentID, run.SessionID); err != nil {
+		return nil, err
+	}
+	return s.store.ListChildRuns(context.Background(), runID)
+}
+
 // ListToolCalls returns the persisted tool call records of a session, oldest
 // first. These are the authoritative records the model history is rebuilt
 // from.
@@ -322,6 +339,36 @@ func (s *Service) ListToolCalls(agentID, sessionID string) ([]storage.ToolCall, 
 		return nil, err
 	}
 	return s.store.ListSessionToolCalls(context.Background(), sessionID)
+}
+
+// PendingApprovals walks every session owned by the agent — including the
+// hidden delegation sessions — and returns the calls needing user action:
+// pending approvals and unresolved unknown-result calls.
+func (s *Service) PendingApprovals(agentID string) ([]storage.ToolCall, error) {
+	if err := s.checkReady(); err != nil {
+		return nil, err
+	}
+	ctx := context.Background()
+	if _, err := s.store.GetAgent(ctx, agentID); err != nil {
+		return nil, err
+	}
+	sessions, err := s.store.ListAgentSessionsAll(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	pending := []storage.ToolCall{}
+	for _, session := range sessions {
+		calls, err := s.store.ListSessionToolCalls(ctx, session.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, call := range calls {
+			if call.State == storage.CallPending || call.State == storage.CallExecutionUnknow {
+				pending = append(pending, call)
+			}
+		}
+	}
+	return pending, nil
 }
 
 // ResolveToolCall records an explicit user disposition for a call whose
@@ -471,7 +518,7 @@ func (s *Service) executeTask(ctx context.Context, runID, sessionID string, sour
 		}
 		runTools = hub.ForServers(all, names)
 	}
-	runner := bookkeepingTools{inner: runTools, svc: s, profile: profile, sessionID: sessionID}
+	runner := bookkeepingTools{inner: runTools, svc: s, profile: profile, sessionID: sessionID, runID: runID}
 	definitions, err := runner.Definitions(ctx)
 	if err != nil {
 		_ = s.runs.Finish(runID, "failed", err.Error())

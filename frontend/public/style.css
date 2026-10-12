@@ -104,3 +104,12 @@ h1 { margin: 17px 0 12px; font-size: clamp(42px, 5vw, 66px); line-height: 1.1; }
 .plan-step.plan-in_progress { color: #007d8b; }
 .plan-marker { display: inline-block; width: 18px; }
 .plan-note { color: #8a8672; font-size: 13px; }
+
+.task-tree { border-left: 3px solid #7fa3b8; padding: 6px 0 6px 10px; margin: 10px 0; display: flex; flex-direction: column; gap: 6px; }
+.tree-child { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; color: #33566b; }
+.tree-state { font-size: 12px; padding: 1px 8px; border-radius: 10px; background: #e8eef2; color: #46606f; }
+.tree-state.tree-completed { background: #e2f2e8; color: #1a7f4b; }
+.tree-state.tree-failed, .tree-state.tree-cancelled, .tree-state.tree-interrupted { background: #f7e6e6; color: #b34; }
+.tree-error { color: #b34; }
+.import-preview { border: 1px solid #d8e0e8; border-radius: 8px; padding: 10px 12px; margin: 8px 0; display: flex; flex-direction: column; gap: 6px; }
+.import-preview ul { margin: 0; padding-left: 18px; font-size: 13px; color: #46606f; }
