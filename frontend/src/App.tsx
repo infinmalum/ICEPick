@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { Events } from '@wailsio/runtime'
 import { StatusService, type AppStatus } from '../bindings/icepick'
-import type { TaskGraph, AgentPolicy, Conversation, LocalContext, ProfileTemplate, ProfileReference, ExfilGrant, Memory, Message, Profile, Run, SessionSummary, ToolCall } from '../bindings/icepick/internal/storage'
+import type { TaskReview, TaskGraph, AgentPolicy, Conversation, LocalContext, ProfileTemplate, ProfileReference, ExfilGrant, Memory, Message, Profile, Run, SessionSummary, ToolCall } from '../bindings/icepick/internal/storage'
 import type { CredentialStatus, ExportResult, ImportPreview, MCPEndpointStatus, SessionPlanView } from '../bindings/icepick/internal/app'
+
+const blankRootBudget = {autoRetry:false,maxSeconds:0,maxModelCalls:0,maxToolCalls:0,maxTokens:0,maxPlannerRounds:0,maxAttempts:0,maxRetries:0}
 
 type ModelDraft = { provider: string; baseUrl: string; name: string }
 
@@ -92,6 +94,8 @@ function App() {
   const [memoryError, setMemoryError] = useState('')
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null)
   const [sessionPlan, setSessionPlan] = useState<SessionPlanView | null>(null)
+  const [reviews, setReviews] = useState<TaskReview[]>([])
+  const [reviewBusy, setReviewBusy] = useState(false)
   const [taskGraph, setTaskGraph] = useState<TaskGraph | null>(null)
   const [childRuns, setChildRuns] = useState<Run[]>([])
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null)
@@ -176,7 +180,7 @@ function App() {
     }
     let cancelled = false
     setLoadingSession(true)
-    setTaskGraph(null)
+    setTaskGraph(null); setReviews([])
     Promise.all([StatusService.ListMessages(agentID, selected), StatusService.ListRuns(agentID, selected), StatusService.ListToolCalls(agentID, selected)])
       .then(([history, previousRuns, calls]) => {
         if (cancelled) return
@@ -554,14 +558,14 @@ function App() {
 
   async function refreshChildRuns(latestRunID: string | undefined) {
     if (!latestRunID) {
-      setTaskGraph(null)
+      setTaskGraph(null); setReviews([])
       setChildRuns([])
       return
     }
     try {
       const sessionID = activeSessionID.current
-      const [items, graph] = await Promise.all([StatusService.ListChildRuns(agentID, latestRunID), StatusService.GetTaskGraph(agentID, latestRunID).catch(() => null)])
-      if (activeAgentID.current === agentID && activeSessionID.current === sessionID) { setChildRuns(items ?? []); setTaskGraph(graph) }
+      const [items, graph, reviewItems] = await Promise.all([StatusService.ListChildRuns(agentID, latestRunID), StatusService.GetTaskGraph(agentID, latestRunID).catch(() => null), StatusService.ListTaskReviews(agentID, latestRunID).catch(() => [])])
+      if (activeAgentID.current === agentID && activeSessionID.current === sessionID) { setChildRuns(items ?? []); setTaskGraph(graph); setReviews(reviewItems ?? []) }
     } catch { setChildRuns([]) }
   }
 
@@ -731,15 +735,24 @@ function App() {
               </ul>
               <p className="hint">前置步骤完成后才能开始后继，更新有修订保护。状态由模型记录，尚未接入自动调度或独立验收；工具调用仍走审批。</p>
             </div>}
-            {!!taskGraph?.tasks?.length && <div className="plan-panel task-graph">
+            {runs[0] && runs[0].status !== 'running' && <button type="button" className="secondary" disabled={reviewBusy} onClick={async()=>{
+              setReviewBusy(true);try { const run = await StatusService.StartConversationReview(selected!,runs[0].id); setRuns(current=>[run,...current]); setActiveRun(run.id) } catch(e) {setError(String(e))} finally {setReviewBusy(false)}
+            }}>单次审查此结果</button>}
+            {reviews.length > 0 && <div className="plan-panel">{reviews.map(review=><details key={review.id}><summary>独立审查：{review.result.status} · {review.current ? '当前交付' : '已失效'}</summary><p>{review.result.summary}</p><p>绑定指纹：{review.binding}</p>{(review.result.defects ?? []).map((d,i)=><p key={i}>{d.reference}：{d.description}</p>)}</details>)}</div>}
+            {taskGraph && (!!taskGraph.tasks?.length || (taskGraph.coordination?.rounds ?? 0) > 0) && <div className="plan-panel task-graph">
               <span className="card-title">本次执行计划 · 修订 {taskGraph.revision}</span>
               <p>{taskGraph.goal}</p>
+              {taskGraph.coordination && <p>调度：{taskGraph.coordination.state} · 规划 {taskGraph.coordination.rounds} 轮 · 事件 {taskGraph.coordination.plannedSeq}/{taskGraph.coordination.eventSeq}{taskGraph.coordination.reason && ` · ${taskGraph.coordination.reason}`}</p>}
+              {taskGraph.budget && <p>根预算：模型 {taskGraph.budget.modelCalls}/{taskGraph.budget.limits.maxModelCalls} 次 · 工具 {taskGraph.budget.toolCalls}/{taskGraph.budget.limits.maxToolCalls} 次 · token {taskGraph.budget.tokens}{taskGraph.budget.unknownUsage > 0 && `（${taskGraph.budget.unknownUsage} 次用量未知，保留预留额度）`}</p>}
               {(taskGraph.tasks ?? []).map(item => <details key={item.spec.id}>
-                <summary>{item.spec.id} · {item.spec.worker} · {item.state}</summary>
+                <summary>{item.spec.id} · {item.spec.worker} · {item.state} · {item.spec.accessMode || 'unknown'}</summary>
                 <p>{item.spec.task}</p>
                 {item.spec.materials && <pre>{item.spec.materials}</pre>}
                 {!!item.spec.dependsOn?.length && <p>前置任务：{item.spec.dependsOn.join('、')}</p>}
                 {item.spec.acceptance && <p>验收条件：{item.spec.acceptance}</p>}
+                {!!item.spec.resources?.length && <p>共享资源：{item.spec.resources.join('、')}</p>}
+                {item.spec.replaces && <p>替代失败任务：{item.spec.replaces}</p>}
+                {(taskGraph.artifacts ?? []).filter(a=>a.taskId===item.spec.id).map(a=><p key={a.id}>交付物 {a.id} · {a.verification} · SHA256 {a.sha256}</p>)}
                 {(taskGraph.attempts ?? []).filter(a => a.taskId === item.spec.id).map(a => <p key={a.id}>执行尝试 {a.id} · {a.status} · 运行 {a.runId}</p>)}
               </details>)}
               <p className="hint">状态来自实际执行；succeeded 表示执行结束，独立审查尚未接入。领取前可展开查看任务条件；中断或结果未知的任务不会自动重跑。</p>
@@ -801,19 +814,20 @@ function App() {
             </form>
             {activeRun && <p className="hint">任务正在运行…</p>}
             {taskError && <p className="error">{taskError}</p>}
-            {runs[0]?.status === 'failed' && <p className="error">任务失败：{runs[0].error}</p>}
+            {runs[0]?.status === 'failed' && taskGraph?.coordination?.state !== 'waiting' && <p className="error">任务失败：{runs[0].error}</p>}
+            {taskGraph?.coordination?.state === 'waiting' && <p className="hint">等待补充信息；发送补充内容可继续对话，此前任务和执行记录会保留。</p>}
             {runs[0]?.status === 'cancelled' && <p className="hint">任务已取消。</p>}
           </>}
         </section>
 
         <section className="session-card">
           <div className="card-title">场景模板</div>
-          <p className="hint">模板由程序提供，删除本地 Profile 后仍可重新创建。以下模板已接入直接执行，尚待真实模型验收。</p>
+          <p className="hint">模板由程序提供，删除本地 Profile 后仍可重建。研究与开发为动态流程试验配置，包含必需独立审查；所有模板均待真实模型验收。</p>
           <div className="model-actions">
             {templates.map(item => <button key={item.id} type="button" className="secondary" disabled={profileBusy} onClick={() => createTemplate(item.id)}>＋ {item.name}</button>)}
             <button type="button" className="secondary" disabled={profileBusy} onClick={() => createProfile('')}>＋ 空白 Profile</button>
           </div>
-          {!profileDraft && <p className="hint">请创建或选择 Profile。研究分析与开发协作模板将在规划、审查与工具依赖就绪后提供。</p>}
+          {!profileDraft && <p className="hint">请创建或选择 Profile；研究与开发模板需要提供实际材料或配置工具依赖。</p>}
           {!profileDraft && profileError && <p className="error">{profileError}</p>}
         </section>
 
@@ -890,18 +904,29 @@ function App() {
             <label className="checkbox-label"><input type="checkbox" checked={profileDraft.data.planEnabled} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, planEnabled: event.target.checked } })} />启用任务规划（会话待办；配置 worker 后可声明本次执行计划）</label>
             <details><summary>高级：执行组件</summary>
               <p className="hint">当前执行流程为直接执行。main 和 worker 共用运行循环；规划、独立审查、并行调度与配置改进将在后续阶段提供。</p>
-              {(['main', 'worker'] as const).map(role => {
-                const component = profileDraft.data.execution[role]
+              <label>执行流程<select value={profileDraft.data.execution.workflow} onChange={event => {
+                const dynamic = event.target.value === 'dynamic'
+                setProfileDraft({...profileDraft,data:{...profileDraft.data,planEnabled:dynamic || profileDraft.data.planEnabled,delegation:{...profileDraft.data.delegation,enabled:dynamic || profileDraft.data.delegation.enabled,maxDepth:dynamic ? Math.max(1,profileDraft.data.delegation.maxDepth):profileDraft.data.delegation.maxDepth},execution:{...profileDraft.data.execution,workflow:event.target.value,workerSources:dynamic && !(profileDraft.data.execution.workerSources ?? []).length ? [{name:'worker1',profileId:'',configuration:null}] : profileDraft.data.execution.workerSources}}})
+              }}><option value="direct">直接执行</option><option value="dynamic">动态规划与协作</option></select></label>
+              <p className="hint">动态流程由 planner 规划、宿主按依赖调度、main 汇总。只读任务可以并行；写入和未知副作用任务串行。每次派发 worker 仍需审批。</p>
+              <div className="card-title">根任务预算（0 使用默认值；token 为 0 时仅统计）</div>
+              <label className="checkbox-label"><input type="checkbox" checked={profileDraft.data.execution.budget?.autoRetry ?? false} onChange={event=>setProfileDraft({...profileDraft,data:{...profileDraft.data,execution:{...profileDraft.data.execution,budget:{...(profileDraft.data.execution.budget ?? blankRootBudget),autoRetry:event.target.checked}}}})} />允许无副作用失败任务的有界自动重试</label>
+              {(['maxSeconds','maxModelCalls','maxToolCalls','maxTokens','maxPlannerRounds','maxAttempts','maxRetries'] as const).map(key => <label key={key}>{({maxSeconds:'总秒数',maxModelCalls:'模型调用次数',maxToolCalls:'工具调用次数',maxTokens:'token 预算',maxPlannerRounds:'规划轮次',maxAttempts:'执行尝试次数',maxRetries:'每条链的重试次数'})[key]}<input type="number" min={0} value={profileDraft.data.execution.budget?.[key] ?? 0} onChange={event => setProfileDraft({...profileDraft,data:{...profileDraft.data,execution:{...profileDraft.data.execution,budget:{...(profileDraft.data.execution.budget ?? blankRootBudget),[key]:Number(event.target.value)}}}})} /></label>)}
+              <label>独立审查<select value={profileDraft.data.execution.review?.mode || 'off'} onChange={event=>setProfileDraft({...profileDraft,data:{...profileDraft.data,execution:{...profileDraft.data.execution,review:{...(profileDraft.data.execution.review ?? {requiredChecks:[]}),mode:event.target.value}}}})}><option value="off">关闭</option><option value="on_demand">按需（手动审查结果）</option><option value="required">必需（未通过不能完成）</option></select></label>
+              <label>必要检查工具（逗号分隔）<input value={(profileDraft.data.execution.review?.requiredChecks ?? []).join(',')} onChange={event=>setProfileDraft({...profileDraft,data:{...profileDraft.data,execution:{...profileDraft.data.execution,review:{mode:profileDraft.data.execution.review?.mode || 'off',requiredChecks:event.target.value.split(',').map(x=>x.trim()).filter(Boolean)}}}})} placeholder="例如 tests__run" /></label>
+              <p className="hint">审查依据交付物和已有工具记录。必要检查需由执行组件完成并返回 JSON passed:true；未执行或结果未知时无法判定。当前版本不会自动返工。</p>
+              {(['main', 'planner', 'worker', 'reviewer'] as const).map(role => {
+                const component = profileDraft.data.execution[role] ?? {systemPrompt:"",restrictTools:false,allowedTools:[],model:null}
                 const update = (patch: Partial<typeof component>) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, execution: { ...profileDraft.data.execution, [role]: { ...component, ...patch } } } })
                 return <div key={role} className="model-form">
-                  <strong>{role === 'main' ? '主执行' : '子任务执行'}</strong>
+                  <strong>{role === 'main' ? '主执行' : role === 'planner' ? '规划（仅生成计划）' : role === 'reviewer' ? '独立审查（无工具）' : '子任务执行'}</strong>
                   <label>组件提示词（留空使用公共提示词）<textarea rows={3} value={component.systemPrompt} onChange={event => update({ systemPrompt: event.target.value })} /></label>
                   <label>组件模型<select value={component.model?.provider ?? ''} onChange={event => update({ model: event.target.value ? { provider: event.target.value, baseUrl: providerDefaults[event.target.value] ?? '', name: '' } : null })}>
                     <option value="">使用 Profile 公共模型</option>{Object.entries(providerLabels).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
                   </select></label>
                   {component.model && <><label>模型地址<input value={component.model.baseUrl} onChange={event => update({ model: { ...component.model!, baseUrl: event.target.value } })} /></label><label>模型 ID<input value={component.model.name} onChange={event => update({ model: { ...component.model!, name: event.target.value } })} /></label></>}
-                  <label className="checkbox-label"><input type="checkbox" checked={component.restrictTools} onChange={event => update({ restrictTools: event.target.checked })} />限制为公共能力中的工具子集</label>
-                  {component.restrictTools && <label>允许的工具（每行一个，空列表表示不允许工具）<textarea rows={2} value={(component.allowedTools ?? []).join('\n')} onChange={event => update({ allowedTools: event.target.value.split('\n').map(name => name.trim()).filter(Boolean) })} /></label>}
+                  {role !== 'planner' && role !== 'reviewer' && <><label className="checkbox-label"><input type="checkbox" checked={component.restrictTools} onChange={event => update({ restrictTools: event.target.checked })} />限制为公共能力中的工具子集</label>
+                  {component.restrictTools && <label>允许的工具（每行一个，空列表表示不允许工具）<textarea rows={2} value={(component.allowedTools ?? []).join('\n')} onChange={event => update({ allowedTools: event.target.value.split('\n').map(name => name.trim()).filter(Boolean) })} /></label>}</>}
                 </div>
               })}
               <label className="checkbox-label"><input type="checkbox" checked={profileDraft.data.delegation.enabled} onChange={event => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, delegation: { ...profileDraft.data.delegation, enabled: event.target.checked, maxDepth: event.target.checked ? Math.max(1, profileDraft.data.delegation.maxDepth) : profileDraft.data.delegation.maxDepth } } })} />允许调用 worker（受对话授权与审批策略约束）</label>
@@ -1075,7 +1100,7 @@ function App() {
 
 
 
-        <p className="next-step">内置工具：local__current_time、local__read_file、local__load_skill、local__memory_save、local__update_plan、local__task_plan、local__delegate_task。工具调用受权限网关与审批约束；委派每次需确认；远端模型发送前会检查数据外发授权；长会话超预算时自动压缩旧轮次并保留原文。</p>
+        <p className="next-step">内置工具：local__current_time、local__read_file、local__load_skill、local__memory_save、local__update_plan、local__task_plan、local__delegate_task，以及同根任务的 worker 过程检索与观察工具。工具调用受权限网关与审批约束；委派每次需确认；远端模型发送前会检查数据外发授权；长会话超预算时自动压缩旧轮次并保留原文。</p>
       </main>
     </div>
   )

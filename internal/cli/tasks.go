@@ -119,11 +119,22 @@ func cmdSessions(client *ipc.Client, args []string) int {
 
 func cmdTasks(client *ipc.Client, args []string) int {
 	if len(args) == 0 {
-		return usage("tasks 需要子命令 start|status|cancel")
+		return usage("tasks 需要子命令 start|status|review|cancel")
 	}
 	switch args[0] {
 	case "start":
 		return startTask(client, args[1:])
+	case "review":
+		parsed, err := parseCLI(args[1:])
+		if err != nil || parsed.arg(0) == "" || parsed.arg(1) == "" {
+			return usage("用法: tasks review <sessionID> <runID>")
+		}
+		var run storage.Run
+		if err := client.Call("tasks.review", map[string]any{"sessionId": parsed.arg(0), "runId": parsed.arg(1)}, &run); err != nil {
+			return fail("tasks.review", err)
+		}
+		printRun(run)
+		return 0
 	case "status":
 		parsed, err := parseCLI(args[1:])
 		if err != nil || parsed.arg(0) == "" {
@@ -140,13 +151,23 @@ func cmdTasks(client *ipc.Client, args []string) int {
 		printRun(run)
 		printChildRuns(client, run, "")
 		var graph storage.TaskGraph
-		if err := client.Call("tasks.graph", map[string]any{"agentId": agentID, "runId": parsed.arg(0)}, &graph); err == nil && len(graph.Tasks) > 0 {
-			fmt.Printf("执行计划修订 %d\n", graph.Revision)
+		if err := client.Call("tasks.graph", map[string]any{"agentId": agentID, "runId": parsed.arg(0)}, &graph); err == nil {
+			fmt.Printf("执行计划修订 %d · 调度 %s · 规划 %d 轮 · 事件 %d/%d\n", graph.Revision, graph.Coordination.State, graph.Coordination.Rounds, graph.Coordination.PlannedSeq, graph.Coordination.EventSeq)
+			fmt.Printf("根预算：模型 %d/%d 次 · 工具 %d/%d 次 · token %d · 用量未知 %d 次\n", graph.Budget.ModelCalls, graph.Budget.Limits.MaxModelCalls, graph.Budget.ToolCalls, graph.Budget.Limits.MaxToolCalls, graph.Budget.Tokens, graph.Budget.UnknownUsage)
 			for _, item := range graph.Tasks {
 				fmt.Printf("%s · %s · %s · %s\n", item.Spec.ID, item.Spec.Worker, item.State, item.Spec.Task)
 			}
 			for _, attempt := range graph.Attempts {
 				fmt.Printf("尝试 %s · 任务 %s · %s · 运行 %s\n", attempt.ID, attempt.TaskID, attempt.Status, attempt.RunID)
+			}
+		}
+		var reviews []storage.TaskReview
+		if err := client.Call("tasks.reviews", map[string]any{"agentId": agentID, "runId": parsed.arg(0)}, &reviews); err == nil {
+			for _, r := range reviews {
+				fmt.Printf("审查 %s · 当前 %t · %s\n%s\n", r.Result.Status, r.Current, r.Binding, r.Result.Summary)
+				for _, d := range r.Result.Defects {
+					fmt.Printf("  %s：%s\n", d.Reference, d.Description)
+				}
 			}
 		}
 		return 0

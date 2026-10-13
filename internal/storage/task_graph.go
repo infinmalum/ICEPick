@@ -15,6 +15,9 @@ import (
 // TaskSpec is a declared execution contract. Acceptance is a requested check,
 // not a review verdict. Dependency results remain in their original messages.
 type TaskSpec struct {
+	AccessMode string   `json:"accessMode,omitempty"`
+	Resources  []string `json:"resources,omitempty"`
+	Replaces   string   `json:"replaces,omitempty"`
 	ID         string   `json:"id"`
 	Worker     string   `json:"worker"`
 	Task       string   `json:"task"`
@@ -28,6 +31,7 @@ type TaskItem struct {
 	State       string   `json:"state"`
 }
 type TaskAttempt struct {
+	Error     string `json:"error,omitempty"`
 	ID        string `json:"id"`
 	TaskID    string `json:"taskId"`
 	RunID     string `json:"runId"`
@@ -36,17 +40,20 @@ type TaskAttempt struct {
 	UpdatedAt string `json:"updatedAt"`
 }
 type TaskGraph struct {
-	RootRunID string        `json:"rootRunId"`
-	Goal      string        `json:"goal"`
-	Revision  int           `json:"revision"`
-	RunStatus string        `json:"runStatus"`
-	Tasks     []TaskItem    `json:"tasks"`
-	Attempts  []TaskAttempt `json:"attempts"`
+	RootRunID    string            `json:"rootRunId"`
+	Goal         string            `json:"goal"`
+	Revision     int               `json:"revision"`
+	RunStatus    string            `json:"runStatus"`
+	Coordination CoordinationState `json:"coordination"`
+	Budget       BudgetState       `json:"budget"`
+	Artifacts    []Artifact        `json:"artifacts"`
+	Tasks        []TaskItem        `json:"tasks"`
+	Attempts     []TaskAttempt     `json:"attempts"`
 }
 
 func taskGraphInTx(ctx context.Context, tx *sql.Tx, root string) (TaskGraph, error) {
 	g := TaskGraph{RootRunID: root, Tasks: []TaskItem{}, Attempts: []TaskAttempt{}}
-	if err := tx.QueryRowContext(ctx, `SELECT t.goal,t.revision,r.status FROM task_roots t JOIN runs r ON r.id=t.run_id WHERE t.run_id=?`, root).Scan(&g.Goal, &g.Revision, &g.RunStatus); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT t.goal,t.revision,CASE WHEN r.status='failed' AND c.state IN ('waiting','blocked') THEN c.state ELSE r.status END FROM task_roots t JOIN runs r ON r.id=t.run_id JOIN task_coordination c ON c.root_run_id=t.run_id WHERE t.run_id=?`, root).Scan(&g.Goal, &g.Revision, &g.RunStatus); err != nil {
 		return g, err
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT spec,state FROM task_items WHERE root_run_id=? ORDER BY position`, root)
@@ -72,13 +79,13 @@ func taskGraphInTx(ctx context.Context, tx *sql.Tx, root string) (TaskGraph, err
 	if err != nil {
 		return g, err
 	}
-	rows, err = tx.QueryContext(ctx, `SELECT id,task_id,run_id,status,created_at,updated_at FROM task_attempts WHERE root_run_id=? ORDER BY created_at,id`, root)
+	rows, err = tx.QueryContext(ctx, `SELECT a.id,a.task_id,a.run_id,a.status,a.created_at,a.updated_at,r.error FROM task_attempts a JOIN runs r ON r.id=a.run_id WHERE a.root_run_id=? ORDER BY a.created_at,a.id`, root)
 	if err != nil {
 		return g, err
 	}
 	for rows.Next() {
 		var a TaskAttempt
-		if err := rows.Scan(&a.ID, &a.TaskID, &a.RunID, &a.Status, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.TaskID, &a.RunID, &a.Status, &a.CreatedAt, &a.UpdatedAt, &a.Error); err != nil {
 			rows.Close()
 			return g, err
 		}
@@ -86,6 +93,15 @@ func taskGraphInTx(ctx context.Context, tx *sql.Tx, root string) (TaskGraph, err
 	}
 	err = rows.Err()
 	rows.Close()
+	if err == nil {
+		g.Coordination, err = coordinationInTx(ctx, tx, root)
+	}
+	if err == nil {
+		g.Budget, err = budgetInTx(ctx, tx, root)
+	}
+	if err == nil {
+		g.Artifacts, err = artifactsInTx(ctx, tx, root)
+	}
 	return g, err
 }
 func (s *Store) GetTaskGraph(ctx context.Context, root string) (TaskGraph, error) {
@@ -114,6 +130,9 @@ func (s *Store) SetTaskGraph(ctx context.Context, root string, expected int, spe
 		}
 		if !resources.Root.Data.PlanEnabled || !resources.Root.Data.Delegation.Enabled {
 			return errors.New("任务起始配置未启用规划和 worker 委派")
+		}
+		if err := validateTaskContracts(ctx, tx, g, resources, specs); err != nil {
+			return err
 		}
 		steps := make([]PlanStep, 0, len(specs))
 		seen := map[string]TaskSpec{}
@@ -178,7 +197,7 @@ func (s *Store) SetTaskGraph(ctx context.Context, root string, expected int, spe
 	return result, err
 }
 func sameTaskSpec(a, b TaskSpec) bool {
-	return a.ID == b.ID && a.Worker == b.Worker && a.Task == b.Task && a.Materials == b.Materials && a.Acceptance == b.Acceptance && samePlanRefs(a.DependsOn, b.DependsOn)
+	return a.AccessMode == b.AccessMode && a.Replaces == b.Replaces && samePlanRefs(a.Resources, b.Resources) && a.ID == b.ID && a.Worker == b.Worker && a.Task == b.Task && a.Materials == b.Materials && a.Acceptance == b.Acceptance && samePlanRefs(a.DependsOn, b.DependsOn)
 }
 
 // claimTaskInTx is part of CreateRunWithOptions, so there is no persisted
@@ -207,9 +226,12 @@ func claimTaskInTx(ctx context.Context, tx *sql.Tx, root string, spec TaskSpec, 
 		return errors.New("任务已被领取或结束，禁止重复执行")
 	}
 	for _, dep := range selected.Spec.DependsOn {
-		if states[dep] != "succeeded" {
+		if !taskSatisfied(g, dep) {
 			return errors.New("前置执行任务尚未成功")
 		}
+	}
+	if err := validateClaim(ctx, tx, g, spec, runID); err != nil {
+		return err
 	}
 	resources, err := resourcesInTx(ctx, tx, root)
 	if err != nil {
@@ -220,7 +242,7 @@ func claimTaskInTx(ctx context.Context, tx *sql.Tx, root string, spec TaskSpec, 
 		limit = DefaultDelegationConcurrency
 	}
 	var active int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM runs WHERE parent_run_id=? AND status='running' AND id<>?`, root, runID).Scan(&active); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM runs WHERE parent_run_id=? AND status='running' AND id<>? AND id NOT IN(SELECT run_id FROM run_components)`, root, runID).Scan(&active); err != nil {
 		return err
 	}
 	if active >= limit {
@@ -266,6 +288,12 @@ func settleTaskAttempt(ctx context.Context, tx *sql.Tx, runID string) error {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE task_roots SET revision=revision+1 WHERE run_id=?`, root)
+	if err == nil {
+		err = recordArtifact(ctx, tx, root, task, runID, status)
+	}
+	if err == nil {
+		err = signalCoordination(ctx, tx, root, "task.finished")
+	}
 	return err
 }
 
@@ -282,21 +310,49 @@ func settleTaskRoot(ctx context.Context, tx *sql.Tx, root string) error {
 		return nil
 	}
 	if status == "completed" {
-		var incomplete int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM task_items WHERE root_run_id=? AND state<>'succeeded'`, root).Scan(&incomplete); err != nil {
+		g, err := taskGraphInTx(ctx, tx, root)
+		if err != nil {
 			return err
 		}
-		if incomplete > 0 {
+		incomplete := false
+		for _, item := range g.Tasks {
+			if !taskSatisfied(g, item.Spec.ID) {
+				incomplete = true
+			}
+		}
+		if incomplete {
 			if _, err := tx.ExecContext(ctx, `UPDATE runs SET status='failed',error='执行计划仍有未成功任务，不能标记完成' WHERE id=?`, root); err != nil {
 				return err
 			}
 		}
 	}
+
 	if _, err := tx.ExecContext(ctx, `UPDATE task_items SET state='cancelled' WHERE root_run_id=? AND state='pending'`, root); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE task_roots SET revision=revision+1 WHERE run_id=?`, root)
-	return err
+	if _, err := tx.ExecContext(ctx, `UPDATE task_roots SET revision=revision+1 WHERE run_id=?`, root); err != nil {
+		return err
+	}
+	var actual, detail, coordState string
+	if err := tx.QueryRowContext(ctx, `SELECT r.status,r.error,c.state FROM runs r JOIN task_coordination c ON c.root_run_id=r.id WHERE r.id=?`, root).Scan(&actual, &detail, &coordState); err != nil {
+		return err
+	}
+	next := actual
+	if actual == "completed" {
+		next = "complete"
+	}
+	if actual == "interrupted" {
+		next = "blocked"
+		detail = "宿主中断，保留事件和尝试；处置未知结果后明确继续"
+	}
+	if actual == "failed" && (coordState == "waiting" || coordState == "blocked") {
+		next = coordState
+		detail = ""
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE task_coordination SET state=?,reason=CASE WHEN ?='' THEN reason ELSE ? END,updated_at=? WHERE root_run_id=?`, next, detail, detail, now(), root); err != nil {
+		return err
+	}
+	return signalCoordination(ctx, tx, root, "root."+actual)
 }
 
 // Recovery follows existing tool disposition. It never releases a claim or
@@ -354,6 +410,8 @@ func recoverTaskAttempts(ctx context.Context, tx *sql.Tx) error {
 func TaskFingerprint(spec TaskSpec) string {
 	spec.DependsOn = append([]string(nil), spec.DependsOn...)
 	slices.Sort(spec.DependsOn)
+	spec.Resources = append([]string(nil), spec.Resources...)
+	slices.Sort(spec.Resources)
 	raw, _ := json.Marshal(spec)
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])

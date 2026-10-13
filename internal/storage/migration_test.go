@@ -215,7 +215,7 @@ func downgradeToV11(t *testing.T, store *Store) {
 
 func downgradeToV12(t *testing.T, store *Store) {
 	t.Helper()
-	for _, q := range []string{`DROP TABLE task_attempts`, `DROP TABLE task_items`, `DROP TABLE task_plan_revisions`, `DROP TABLE task_roots`, `DROP TABLE session_plan_revisions`, `ALTER TABLE session_plans DROP COLUMN revision`, `ALTER TABLE runs DROP COLUMN resources_snapshot`, `ALTER TABLE runs DROP COLUMN worker_name`, `PRAGMA user_version=12`} {
+	for _, q := range []string{`DROP TABLE review_requests`, `DROP TABLE task_reviews`, `DROP TABLE model_usage`, `DROP TABLE root_budgets`, `DROP TABLE task_events`, `DROP TABLE task_coordination`, `DROP TABLE task_artifacts`, `DROP TABLE worker_observations`, `DROP TABLE run_components`, `DROP TABLE task_attempts`, `DROP TABLE task_items`, `DROP TABLE task_plan_revisions`, `DROP TABLE task_roots`, `DROP TABLE session_plan_revisions`, `ALTER TABLE session_plans DROP COLUMN revision`, `ALTER TABLE runs DROP COLUMN resources_snapshot`, `ALTER TABLE runs DROP COLUMN worker_name`, `PRAGMA user_version=12`} {
 		if _, err := store.db.Exec(q); err != nil {
 			t.Fatal(err)
 		}

@@ -95,7 +95,7 @@ func geminiContents(messages []Message) ([]*genai.Content, error) {
 // becomes the system instruction and the unified tool declarations are
 // converted to function declarations.
 func geminiConfig(messages []Message, tools []Tool) (*genai.GenerateContentConfig, error) {
-	cfg := &genai.GenerateContentConfig{}
+	cfg := &genai.GenerateContentConfig{MaxOutputTokens: 8192}
 	if len(messages) > 0 && messages[0].Role == "system" {
 		cfg.SystemInstruction = &genai.Content{Parts: []*genai.Part{{Text: messages[0].Content}}}
 	}

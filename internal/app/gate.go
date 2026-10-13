@@ -137,6 +137,19 @@ func (g toolGate) Recheck(ctx context.Context, req agent.ToolRequest) agent.Deci
 // stay inside the workspace boundary when one is configured. A user
 // confirmation can never override these.
 func (g toolGate) hardLimits(ctx context.Context, profile storage.AgentProfile, req agent.ToolRequest) string {
+	if g.runID != "" {
+		spec, ok, err := g.svc.store.RunTaskSpec(ctx, g.runID)
+		if err != nil {
+			return err.Error()
+		}
+		if ok && spec.AccessMode == "read" {
+			effect, _ := g.svc.classifierFor(profile).Classify(req.Tool, req.Arguments)
+			if effect != mcptools.EffectRead && effect != mcptools.EffectPure {
+				return "只读任务不能执行写入、命令或未知副作用工具"
+			}
+		}
+	}
+
 	if g.snapshot != nil && req.Tool == "local__read_file" && !g.snapshot.Policy.Permissions.Unrestricted {
 		var args struct {
 			Path string `json:"path"`

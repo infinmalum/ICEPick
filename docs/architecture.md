@@ -325,3 +325,8 @@ CLI 的目标行为是选择 Profile 创建会话、提交任务、查看计划/
 2026-10-13 R3 首个增量（数据库 v14）：会话 Plan 增加稳定 ID、依赖、验收条件、输入出处和修订历史。模型经 `local__update_plan(expected_revision, steps)` 提交；宿主拒绝无效依赖、过期修订及已开始任务契约改写。清除计划保留递增修订，旧响应不能复活已清除计划。旧待办自动补 ID，历史状态和备注保持。此处仍是模型维护的会话记录，不是原子领取或实际执行状态；独立根任务、尝试、planner 和并行调度尚未交付。
 
 2026-10-13 R3 第二增量（数据库 v15）：根 Run 关联 task_roots，保存目标及单调修订；task_items 保存执行条件和宿主状态，task_attempts 原子关联任务项与子 Run，task_plan_revisions 保留声明历史。现有会话 Plan 不被自动转成调度任务。main 经 local__task_plan 提交声明，经 local__delegate_task(taskId, taskFingerprint) 按实际依赖领取；条件指纹约束审批，领取/子 Run/尝试一起提交。前置交付物从成功 Run 的原消息读取，带任务与 Run 出处；权限和外发沿用祖先检查。Run 终态和工具未知处置驱动任务状态，未成功计划阻止根任务完成；succeeded 不代表独立验收通过。进程恢复仅收敛记录，绝不盲目重放。桌面/CLI 提供状态与尝试查看。独立 planner、自动恢复、重试、并行、资源冲突与全组件预算仍待实现。
+
+2026-10-13 R3 长任务交付（v16）：dynamic 流程接入 planner 独立规划会话及 Run（逻辑组件保存在 run_components，旧 runs 物理字段保持兼容）。task_coordination / task_events 保存语义事件、游标与明确状态；root_budgets / model_usage 为全部组件和摘要请求保存共享预算与未知用量。已知只读任务并行，write/unknown 全局串行；read 声明由网关强制，外部 MCP 不属于可信只读工具。重试默认关闭，只能有界替代无副作用失败任务，旧尝试不抹除。task_artifacts 指向原交付消息、SHA256 和实际工具证据，状态 unreviewed；worker_observations 与原 tool_calls 支持同根、排除自身的受控过程交换，结果继承数据范围。权限及所有允许身份的外发授权冻结起始上限，执行/发送前仍复核实时限制。恢复原子收敛未知结果、用量和事件，阻塞等待显式继续，不后台自动续跑。模型适配器提交 8192 输出上限，未知 token 使用请求字节量加输出上限的保守预留；它不是已测量的实际用量。分享 v4 保留新配置并读取旧包；研究和开发仅为试验模板，reviewer/固定流程/improver 继续待实现。
+
+
+2026-10-13 R4 首批交付（v17）：reviewer 已开放为独立、无工具的审查组件，使用冻结模型配置、独立上下文与同根预算。Profile 配置 off/on_demand/required；required 既在执行流程又在存储完成事务强制检查。task_reviews 保存目标/任务契约/最终消息/交付物/实际工具记录的绑定指纹与 passed/changes_requested/inconclusive；变化后旧结论不可用于完成。必要检查工具的最后结果必须成功且返回 JSON `{"passed":true}`，否则宿主不能承认 passed。review_requests 支持当前 Profile 对历史结果作单次审查，使用新根预算，不改旧终态或配置。分享 v5 保留 reviewer 与条件并兼容旧包；日常/写作模板 v2 默认按需，研究/开发试验模板默认 required。当前 reviewer 不执行工具，自动返工、专用确定性检查调度与复盘专用契约继续待实现；未作真实模型验收。

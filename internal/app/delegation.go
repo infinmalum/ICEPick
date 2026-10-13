@@ -284,6 +284,15 @@ func (s *Service) runDelegatedSubtask(parentCtx context.Context, ctx context.Con
 		finalize("failed", err.Error())
 		return "", fmt.Errorf("子任务写入失败: %w", err)
 	}
+	parentScopes, err := s.sessionScopes(ctx, parentSessionID, parentProfile)
+	if err != nil {
+		finalize("failed", err.Error())
+		return "", err
+	}
+	if err := s.store.AccumulateContextScopes(ctx, childRun.SessionID, parentScopes); err != nil {
+		finalize("failed", err.Error())
+		return "", err
+	}
 	if err := s.store.AccumulateContextScopes(ctx, childRun.SessionID, []string{materialScope}); err != nil {
 		finalize("failed", err.Error())
 		return "", err
@@ -322,7 +331,16 @@ func (s *Service) runDelegatedSubtask(parentCtx context.Context, ctx context.Con
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(budgetSeconds)*time.Second)
 		defer cancel()
 	}
+	resources, err := s.resourcesFor(ctx, parentProfile, childRun.ParentRunID)
+	if err != nil {
+		finalize("failed", err.Error())
+		return "", err
+	}
+	structured := resources.Root.Data.Execution.Workflow == "dynamic" && childRun.WorkerName != ""
 	history := []model.Message{{Role: "system", Content: s.delegationSystemPrompt(parentProfile, childProfile)}}
+	if structured {
+		history[0].Content += "\n\n" + workerOutcomeContract
+	}
 	history = append(history, model.Message{Role: "user", Content: userContent})
 	runTools := s.tools
 	if hub, ok := s.tools.(*mcptools.Hub); ok {
@@ -343,9 +361,21 @@ func (s *Service) runDelegatedSubtask(parentCtx context.Context, ctx context.Con
 		}
 		runTools = hub.ForServers(all, names)
 	}
+	if spec, ok, err := s.store.RunTaskSpec(ctx, childRun.ID); err != nil {
+		finalize("failed", err.Error())
+		return "", err
+	} else if ok && spec.AccessMode == "read" {
+		if hub, ok := s.tools.(*mcptools.Hub); ok {
+			runTools = hub.ForServers(false, []string{"local"})
+		}
+	}
 	runner := bookkeepingTools{inner: runTools, svc: s, profile: childProfile, sessionID: childRun.SessionID, runID: childRun.ID, delegated: true}
 	definitions, err := runner.Definitions(ctx)
 	if err != nil {
+		finalize("failed", err.Error())
+		return "", err
+	}
+	if err := s.SyncMCPEndpoints(ctx); err != nil {
 		finalize("failed", err.Error())
 		return "", err
 	}
@@ -360,7 +390,7 @@ func (s *Service) runDelegatedSubtask(parentCtx context.Context, ctx context.Con
 		finalize("failed", err.Error())
 		return "", err
 	}
-	guarded := guardedChat{inner: s.chat, payloadCheck: func(c context.Context, m []model.Message, t []model.Tool) error {
+	guarded := guardedChat{svc: s, runID: childRun.ID, inner: s.chat, payloadCheck: func(c context.Context, m []model.Message, t []model.Tool) error {
 		return s.checkPayloadFor(c, source, actorIDs, childRun.SessionID, m, t)
 	}, check: func(checkCtx context.Context) error {
 		// The stricter exfiltration rule: both the target Agent's and the
@@ -383,8 +413,35 @@ func (s *Service) runDelegatedSubtask(parentCtx context.Context, ctx context.Con
 		ApprovalTimeout: timeout,
 	}
 	finalText, runErr := engine.Run(ctx, source, history)
+	scopes, scopeErr := s.sessionScopes(context.WithoutCancel(ctx), childRun.SessionID, childProfile)
+	if scopeErr == nil {
+		scopeErr = s.store.AccumulateContextScopes(context.WithoutCancel(ctx), parentSessionID, scopes)
+	}
+	if scopeErr != nil {
+		finalize("failed", scopeErr.Error())
+		return "", scopeErr
+	}
+	if structured && runErr == nil {
+		outcome, err := s.validateWorkerOutcome(ctx, childRun.ID, finalText)
+		if err != nil {
+			runErr = err
+		} else if outcome.Status != "succeeded" {
+			runErr = fmt.Errorf("worker %s：%s", outcome.Status, outcome.Content)
+		} else {
+			finalText = outcome.Content
+		}
+	}
 	switch {
 	case runErr == nil:
+		scopes, err := s.sessionScopes(ctx, childRun.SessionID, childProfile)
+		if err != nil {
+			finalize("failed", err.Error())
+			return "", err
+		}
+		if err := s.store.AccumulateContextScopes(ctx, parentSessionID, scopes); err != nil {
+			finalize("failed", err.Error())
+			return "", err
+		}
 		finalize("completed", "")
 		return finalText, nil
 	case parentCtx.Err() != nil:

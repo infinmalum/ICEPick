@@ -65,7 +65,7 @@ func usage(errDetail string) int {
   icepick agents list | create <名称> --profile <id> | switch <agentID> <profileID>
   icepick agents update <agentID> [--name N] [--mode manual|semi|automatic] [--delegate-to <名称或ID>[,…]] [--delegate-clear] | delete <agentID>
   icepick sessions list [agentID] | create [agentID] | show <sessionID> --agent <agentID>
-  icepick tasks start <agentID> <sessionID> <任务内容…> [--wait] | status <runID> --agent <agentID> | cancel <runID> --agent <agentID>
+  icepick tasks start <agentID> <sessionID> <任务内容…> [--wait] | status <runID> --agent <agentID> | review <sessionID> <runID> | cancel <runID> --agent <agentID>
   icepick approvals list [agentID] | approve <callID> --agent <agentID> | deny <callID> [原因] --agent <agentID>
   icepick memory list <agentID> | add <agentID> <内容…> | edit <agentID> <id> <内容…> | delete <agentID> <id> | export <agentID> [--out <文件>]
   icepick logs [行数]`)

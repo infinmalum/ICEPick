@@ -335,9 +335,6 @@ func TestExfilCheckAndGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SetRunStatus(ctx, run.ID, "completed", ""); err != nil {
-		t.Fatal(err)
-	}
 	_, calls, err := store.AddAssistantMessage(ctx, session.ID, run.ID, "", []storage.MessageToolCall{{ID: "c1", Name: "local__read_file", Arguments: "{}"}})
 	if err != nil {
 		t.Fatal(err)
@@ -346,6 +343,9 @@ func TestExfilCheckAndGrants(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.FinishToolCall(ctx, calls[0].ID, storage.CallSucceeded, "secret", "", storage.ScopeCredential); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetRunStatus(ctx, run.ID, "completed", ""); err != nil {
 		t.Fatal(err)
 	}
 	err = svc.exfilCheck(ctx, session.ID, remote, profile)

@@ -42,6 +42,14 @@ func (r *Runs) StartPlannedWorker(ctx context.Context, sessionID, parentID strin
 	return r.start(ctx, sessionID, storage.CreateRunOptions{ParentRunID: parentID, Depth: 1, WorkerName: spec.Worker, TaskSpec: &spec})
 }
 
+func (r *Runs) StartPlanner(ctx context.Context, session, parent string) (storage.Run, context.Context, storage.AgentProfile, error) {
+	return r.start(ctx, session, storage.CreateRunOptions{ParentRunID: parent, Depth: 1, WorkerName: "@planner", Component: "planner"})
+}
+
+func (r *Runs) StartReviewer(ctx context.Context, session, parent string) (storage.Run, context.Context, storage.AgentProfile, error) {
+	return r.start(ctx, session, storage.CreateRunOptions{ParentRunID: parent, Depth: 1, WorkerName: "@reviewer", Component: "reviewer"})
+}
+
 // StartChild registers a delegated subtask run: the child session already
 // exists and belongs to the target Agent, and the run row links to its
 // parent. The child context derives from the parent run's context, so
@@ -60,7 +68,11 @@ func (r *Runs) start(ctx context.Context, sessionID string, opts storage.CreateR
 	if err != nil {
 		return storage.Run{}, nil, storage.AgentProfile{}, err
 	}
-	runCtx, cancel := context.WithTimeout(ctx, RunTimeout)
+	timeout := RunTimeout
+	if opts.ParentRunID == "" {
+		timeout = time.Duration(resolved.Execution.Budget.Effective().MaxSeconds) * time.Second
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	r.active[item.ID] = cancel
 	return item, runCtx, resolved, nil
 }

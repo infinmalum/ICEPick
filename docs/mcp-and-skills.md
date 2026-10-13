@@ -41,3 +41,12 @@ Read the changed files, identify concrete defects, and cite file locations.
 ```
 
 启动时由应用统一发现 Skills，只读取标准 `name` 和 `description` 元数据。当前默认 Agent 启用全部已安装 Skills；其他 Agent 可启用全部、指定名称或都不启用。当前实现还要求允许 `local__load_skill` 工具（启用 `local` 服务且工具白名单未排除它），才能按需读取完整 `SKILL.md`；新任务开始时固定选中 SKILL.md 的内容、元数据与 SHA-256，根任务及其 worker 后续加载使用这些副本；修改或删除安装文件不影响在途任务，新任务读取最新内容。旧运行保留兼容加载行为。调用时会再次检查目标 Skill 是否在运行快照的选择范围内。目标架构将 Skill 发现与加载作为独立指令来源能力，不把“通过 MCP 工具读取 Skill”固定为唯一执行方式。用户主动安装或编辑 Skill 正文不要求每次重新授权；第三方可执行依赖及影响风险的变更单独评估，发现 Skill 不自动安装或执行其依赖。Skill 中的相对资源引用、脚本执行和权限声明目前尚未接入；加载 Skill 不会自动运行脚本，也不会授予工具权限。修改 Skill 后重启应用以刷新发现列表。
+
+## 动态协作与过程交换
+
+选择 dynamic 后，宿主按 planner 的任务契约执行。accessMode=read 的 worker 仅使用程序已知的 pure/read 工具，不初始化外部 MCP；外部工具均按未知副作用处理，使用 write/unknown 任务并串行执行，调用仍需授权和审批。共享资源声明与任务条件一起绑定审批指纹。
+
+worker 可用 local__search_worker_traces / local__list_worker_traces 查找本根任务其他 worker 的工具过程与显式观察，用 local__get_worker_trace(id, part, offset) 分页读取 content / arguments / error；不会检索其他根任务、长期记忆或模型请求快照。local__record_observation 保存显式观察。每条结果带来源、敏感度和验证状态，接收会话累积来源范围，之后的模型发送仍检查所有祖先的起始授权上限与实时授权。
+
+
+独立审查当前只读取执行者已有工具证据。Profile 的 `execution.review.requiredChecks` 是必要检查工具名列表；对应工具必须经过原网关与审批，最后一次调用成功且结果为包含 `"passed": true` 的 JSON 对象，才能满足检查。普通文本或单纯调用成功不能满足必要检查；失败、缺失、未知执行结果会阻止必需审查通过。reviewer 当前没有工具、Skill、记忆或委派能力。

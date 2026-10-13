@@ -509,6 +509,31 @@ func (s *Service) executeTask(ctx context.Context, runID, sessionID string, sour
 		_ = s.runs.Finish(runID, "failed", err.Error())
 		return
 	}
+	if profile.Execution.Workflow == "dynamic" {
+		err := s.executeDynamic(ctx, runID, sessionID, source, profile, history.history)
+		if err == nil {
+			err = s.requireDeliveryReview(ctx, runID, sessionID, profile)
+		}
+		if err != nil {
+			g, e := s.store.GetTaskGraph(context.WithoutCancel(ctx), runID)
+			if e == nil && g.RunStatus == "running" && g.Coordination.State != "waiting" && g.Coordination.State != "blocked" && g.Coordination.State != "failed" {
+				_ = s.store.AcknowledgePlanner(context.WithoutCancel(ctx), runID, g.Coordination.EventSeq, "failed", boundedText(err.Error(), 4000))
+			}
+		}
+		status, detail := "completed", ""
+		if err != nil {
+			status = "failed"
+			detail = err.Error()
+		}
+		if errors.Is(ctx.Err(), context.Canceled) {
+			status = "cancelled"
+		}
+		if err := s.runs.Finish(runID, status, detail); err != nil {
+			_ = s.runs.Finish(runID, "failed", err.Error())
+		}
+		s.publish(Event{Type: "run.updated", SessionID: sessionID, RunID: runID, Detail: "动态调度结束"})
+		return
+	}
 	runTools := s.tools
 	if hub, ok := s.tools.(*mcptools.Hub); ok {
 		all, names := profile.AllMCPServers, profile.EnabledMCPServers
@@ -544,7 +569,7 @@ func (s *Service) executeTask(ctx context.Context, runID, sessionID string, sour
 			allowedTools = append(allowedTools, definition.Function.Name)
 		}
 	}
-	guarded := guardedChat{inner: s.chat, payloadCheck: func(c context.Context, m []model.Message, t []model.Tool) error {
+	guarded := guardedChat{svc: s, runID: runID, inner: s.chat, payloadCheck: func(c context.Context, m []model.Message, t []model.Tool) error {
 		return s.checkPayload(c, source, profile.AgentID, sessionID, m, t)
 	}, check: func(checkCtx context.Context) error {
 		// Every model request re-checks the exfiltration scope: tool
@@ -580,14 +605,20 @@ func (s *Service) executeTask(ctx context.Context, runID, sessionID string, sour
 		return
 	}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		_ = s.runs.Finish(runID, "failed", "任务超过 10 分钟上限")
+		_ = s.runs.Finish(runID, "failed", "根任务超过配置的时间预算")
 		return
 	}
 	if err != nil {
 		_ = s.runs.Finish(runID, "failed", err.Error())
 		return
 	}
-	_ = s.runs.Finish(runID, "completed", "")
+	if err := s.requireDeliveryReview(ctx, runID, sessionID, profile); err != nil {
+		_ = s.runs.Finish(runID, "failed", err.Error())
+		return
+	}
+	if err := s.runs.Finish(runID, "completed", ""); err != nil {
+		_ = s.runs.Finish(runID, "failed", err.Error())
+	}
 }
 
 // appendStream merges one streamed fragment into the run's in-memory buffer

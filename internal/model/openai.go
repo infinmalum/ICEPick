@@ -93,8 +93,9 @@ func openaiChatParams(source config.Model, messages []Message, tools []Tool) (op
 		return openai.ChatCompletionNewParams{}, err
 	}
 	params := openai.ChatCompletionNewParams{
-		Model:    openai.ChatModel(source.Name),
-		Messages: converted,
+		MaxCompletionTokens: openai.Int(8192),
+		Model:               openai.ChatModel(source.Name),
+		Messages:            converted,
 	}
 	if len(toolParams) > 0 {
 		params.Tools = toolParams

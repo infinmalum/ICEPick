@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"icepick/internal/config"
 	"icepick/internal/storage"
@@ -84,10 +85,25 @@ func (s *Service) exfilCheckRun(ctx context.Context, runID, sessionID string, so
 	if err != nil {
 		return err
 	}
+	resources, err := s.resourcesFor(ctx, p, runID)
+	if err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	for _, run := range runs {
 		if !seen[run.AgentID] {
 			seen[run.AgentID] = true
+			if resources.GrantsFrozen {
+				allowed := map[string]bool{}
+				for _, scope := range resources.Grants[run.AgentID][origin].Scopes {
+					allowed[scope] = true
+				}
+				for _, scope := range scopes {
+					if !allowed[scope] {
+						return fmt.Errorf("数据外发超出根任务开始时的授权上限：%s / %s；新增授权用于新任务", origin, scope)
+					}
+				}
+			}
 			if err := requireGrantCoverage(ctx, s.store, run.AgentID, origin, scopes); err != nil {
 				return err
 			}

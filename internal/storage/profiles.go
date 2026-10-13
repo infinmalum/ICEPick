@@ -528,7 +528,12 @@ func (s *Store) UpdateAgentLocal(ctx context.Context, id, name string, policy Ag
 	if err != nil {
 		return Agent{}, err
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE agents SET name=?, policy=?, updated_at=? WHERE id=?`, name, string(policyJSON), now(), old.ID); err != nil {
+	if err := s.withTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE agents SET name=?,policy=?,updated_at=? WHERE id=?`, name, string(policyJSON), now(), old.ID); err != nil {
+			return err
+		}
+		return signalActorChange(ctx, tx, old.ID, "policy.changed")
+	}); err != nil {
 		return Agent{}, err
 	}
 	return s.GetAgent(ctx, id)

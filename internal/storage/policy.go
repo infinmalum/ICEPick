@@ -92,20 +92,27 @@ func (s *Store) SetExfilGrant(ctx context.Context, grant ExfilGrant) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO exfil_grants (agent_id,destination, scopes, created_at) VALUES (?, ?, ?, ?)
-		ON CONFLICT(agent_id,destination) DO UPDATE SET scopes = excluded.scopes`, grant.AgentID, grant.Destination, string(payload), now())
-	return err
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO exfil_grants(agent_id,destination,scopes,created_at) VALUES(?,?,?,?) ON CONFLICT(agent_id,destination) DO UPDATE SET scopes=excluded.scopes`, grant.AgentID, grant.Destination, string(payload), now()); err != nil {
+			return err
+		}
+		return signalActorChange(ctx, tx, grant.AgentID, "grant.changed")
+	})
 }
 
 func (s *Store) DeleteExfilGrant(ctx context.Context, agentID, destination string) error {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM exfil_grants WHERE agent_id=? AND destination = ?`, agentID, destination)
-	if err != nil {
-		return err
-	}
-	if n, err := result.RowsAffected(); err == nil && n == 0 {
-		return errors.New("该目的地没有已登记的外发授权")
-	}
-	return nil
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `DELETE FROM exfil_grants WHERE agent_id=? AND destination=?`, agentID, destination)
+		if err != nil {
+			return err
+		}
+		if n, err := result.RowsAffected(); err != nil {
+			return err
+		} else if n == 0 {
+			return errors.New("该目的地没有已登记的外发授权")
+		}
+		return signalActorChange(ctx, tx, agentID, "grant.revoked")
+	})
 }
 
 // SessionDataScopes reconstructs the accumulated data scope of a session's

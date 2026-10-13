@@ -419,13 +419,16 @@ func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 			return nil, err
 		}
 		return s.svc.ListRuns(params.AgentID, params.SessionID)
-	case "tasks.graph", "runs.get":
+	case "tasks.graph", "tasks.reviews", "runs.get":
 		var params struct {
 			AgentID string `json:"agentId"`
 			RunID   string `json:"runId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
+		}
+		if request.Method == "tasks.reviews" {
+			return s.svc.ListTaskReviews(params.AgentID, params.RunID)
 		}
 		if request.Method == "tasks.graph" {
 			return s.svc.GetTaskGraph(params.AgentID, params.RunID)
@@ -451,6 +454,15 @@ func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 			return nil, err
 		}
 		return s.svc.StartAgentTask(params.AgentID, params.SessionID, params.Input)
+	case "tasks.review":
+		var params struct {
+			SessionID string `json:"sessionId"`
+			RunID     string `json:"runId"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.svc.StartConversationReview(params.SessionID, params.RunID)
 	case "tasks.cancel":
 		var params struct {
 			AgentID string `json:"agentId"`

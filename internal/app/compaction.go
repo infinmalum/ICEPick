@@ -9,6 +9,7 @@ import (
 
 	"icepick/internal/agent"
 	"icepick/internal/config"
+	"icepick/internal/mcptools"
 	"icepick/internal/model"
 	"icepick/internal/storage"
 )
@@ -36,7 +37,7 @@ func (c sessionCompactor) Summarize(ctx context.Context, source config.Model, ol
 		{Role: "system", Content: "你是会话摘要器。把既有摘要与新对话合并为一份供后续对话使用的紧凑摘要：保留任务目标、已完成的步骤、关键工具结果和未决问题；按时间顺序陈述事实，不加评价；不超过 1200 字。"},
 		{Role: "user", Content: summaryRequest(previous.Summary, found, older)},
 	}
-	payload, err := json.Marshal(modelRequestSnapshot{Model: source, Messages: messages})
+	payload, err := json.Marshal(modelRequestSnapshot{Model: source, Messages: messages, OutputTokenLimit: 8192})
 	if err != nil {
 		return "", err
 	}
@@ -147,6 +148,27 @@ func (t bookkeepingTools) Definitions(ctx context.Context) ([]model.Tool, error)
 			definitions = append(definitions, definition)
 		}
 	}
+	if t.delegated {
+		for _, def := range traceDefinitions() {
+			if t.profile.AllowsTool(def.Function.Name) {
+				definitions = append(definitions, def)
+			}
+		}
+		spec, ok, err := t.svc.store.RunTaskSpec(ctx, t.runID)
+		if err != nil {
+			return nil, err
+		}
+		if ok && spec.AccessMode == "read" {
+			filtered := []model.Tool{}
+			for _, def := range definitions {
+				effect, _ := t.svc.classifierFor(t.profile).Classify(def.Function.Name, "{}")
+				if effect == mcptools.EffectRead || effect == mcptools.EffectPure {
+					filtered = append(filtered, def)
+				}
+			}
+			definitions = filtered
+		}
+	}
 	if !t.delegated {
 		if memoryAllowed(t.profile) && t.profile.AllowsTool(memorySaveDefinition.Function.Name) {
 			definitions = append(definitions, memorySaveDefinition)
@@ -169,6 +191,8 @@ func (t bookkeepingTools) Definitions(ctx context.Context) ([]model.Tool, error)
 
 func (t bookkeepingTools) Call(ctx context.Context, name, arguments string) (string, error) {
 	switch name {
+	case "local__search_worker_traces", "local__list_worker_traces", "local__get_worker_trace", "local__record_observation":
+		return t.traceCall(ctx, name, arguments)
 	case "local__load_skill":
 		if !t.profile.ResourcesFrozen {
 			return t.inner.Call(ctx, name, arguments)

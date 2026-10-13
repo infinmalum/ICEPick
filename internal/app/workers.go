@@ -102,7 +102,7 @@ func (s *Service) executeWorker(ctx context.Context, parent storage.AgentProfile
 	}
 	running := 0
 	for _, child := range children {
-		if child.Status == "running" {
+		if child.Component == "worker" && child.Status == "running" {
 			running++
 		}
 		if planned == nil && child.WorkerName == name {

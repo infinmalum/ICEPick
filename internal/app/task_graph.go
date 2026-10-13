@@ -98,12 +98,12 @@ func (s *Service) resolvePlannedTask(ctx context.Context, p storage.AgentProfile
 	args.Worker = selected.Worker
 	args.Materials = selected.Materials
 	for _, dep := range selected.DependsOn {
-		if states[dep] != "succeeded" {
+		if !storage.TaskSatisfied(g, dep) {
 			return args, nil, errors.New("前置执行任务尚未成功")
 		}
 		var childID string
 		for _, attempt := range g.Attempts {
-			if attempt.TaskID == dep && attempt.Status == "succeeded" {
+			if storage.TaskSatisfied(g, dep) && attempt.Status == "succeeded" && taskReplaces(g, attempt.TaskID, dep) {
 				childID = attempt.RunID
 			}
 		}
@@ -176,4 +176,23 @@ func taskPlanSummary(g storage.TaskGraph) map[string]any {
 		tasks = append(tasks, task)
 	}
 	return map[string]any{"rootRunId": g.RootRunID, "revision": g.Revision, "runStatus": g.RunStatus, "tasks": tasks, "summary": true}
+}
+
+func taskReplaces(g storage.TaskGraph, id, target string) bool {
+	for depth := 0; depth < 8; depth++ {
+		if id == target {
+			return true
+		}
+		next := ""
+		for _, item := range g.Tasks {
+			if item.Spec.ID == id {
+				next = item.Spec.Replaces
+			}
+		}
+		if next == "" {
+			return false
+		}
+		id = next
+	}
+	return false
 }

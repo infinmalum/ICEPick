@@ -27,7 +27,7 @@ var _ agent.Recorder = runRecorder{}
 // ModelRequest persists the full request snapshot: the model parameters that
 // will be used, the exact prompt history and the tool definitions offered.
 func (r runRecorder) ModelRequest(ctx context.Context, source config.Model, messages []model.Message, tools []model.Tool) (string, error) {
-	payload, err := json.Marshal(modelRequestSnapshot{Model: source, Messages: messages, Tools: tools})
+	payload, err := json.Marshal(modelRequestSnapshot{Model: source, Messages: messages, Tools: tools, OutputTokenLimit: 8192})
 	if err != nil {
 		return "", err
 	}
@@ -39,9 +39,10 @@ func (r runRecorder) ModelRequest(ctx context.Context, source config.Model, mess
 }
 
 type modelRequestSnapshot struct {
-	Model    config.Model    `json:"model"`
-	Messages []model.Message `json:"messages"`
-	Tools    []model.Tool    `json:"tools"`
+	Model            config.Model    `json:"model"`
+	Messages         []model.Message `json:"messages"`
+	Tools            []model.Tool    `json:"tools"`
+	OutputTokenLimit int             `json:"outputTokenLimit"`
 }
 
 func (r runRecorder) ModelDone(ctx context.Context, stepID string, chatErr error) error {

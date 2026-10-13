@@ -76,11 +76,12 @@ func (c ChatClient) Chat(ctx context.Context, source config.Model, messages []Me
 		return ChatResponse{}, err
 	}
 	request := struct {
-		Model    string    `json:"model"`
-		Messages []Message `json:"messages"`
-		Tools    []Tool    `json:"tools,omitempty"`
-		Stream   bool      `json:"stream"`
-	}{Model: source.Name, Messages: messages, Tools: tools, Stream: false}
+		Model     string    `json:"model"`
+		Messages  []Message `json:"messages"`
+		Tools     []Tool    `json:"tools,omitempty"`
+		Stream    bool      `json:"stream"`
+		MaxTokens int       `json:"max_tokens"`
+	}{Model: source.Name, Messages: messages, Tools: tools, Stream: false, MaxTokens: 8192}
 	data, err := json.Marshal(request)
 	if err != nil {
 		return ChatResponse{}, fmt.Errorf("编码模型请求: %w", err)
@@ -141,12 +142,13 @@ func (c ChatClient) ChatStream(ctx context.Context, source config.Model, message
 		return ChatResponse{}, err
 	}
 	request := struct {
-		Model    string         `json:"model"`
-		Messages []Message      `json:"messages"`
-		Tools    []Tool         `json:"tools,omitempty"`
-		Stream   bool           `json:"stream"`
-		Options  *streamOptions `json:"stream_options,omitempty"`
-	}{Model: source.Name, Messages: messages, Tools: tools, Stream: true}
+		Model     string         `json:"model"`
+		Messages  []Message      `json:"messages"`
+		Tools     []Tool         `json:"tools,omitempty"`
+		Stream    bool           `json:"stream"`
+		Options   *streamOptions `json:"stream_options,omitempty"`
+		MaxTokens int            `json:"max_tokens"`
+	}{Model: source.Name, Messages: messages, Tools: tools, Stream: true, MaxTokens: 8192}
 	if onDelta != nil {
 		request.Options = &streamOptions{IncludeUsage: true}
 	}

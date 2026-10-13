@@ -347,3 +347,45 @@ func TestProfileShareStripsLocalPaths(t *testing.T) {
 		t.Fatalf("mcp preview: %+v", preview.MCPServers)
 	}
 }
+
+func TestDynamicShareV4PreservesWorkflowPlannerAndBudget(t *testing.T) {
+	svc, _ := newShareService(t, nil)
+	p, err := svc.CreateTemplateProfile("research", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Data.Execution.Planner.Model = &config.Model{Provider: "lmstudio", BaseURL: "http://127.0.0.1:1234/v1", Name: "planner-test"}
+	p.Data.Execution.Planner.SystemPrompt = "规划约束"
+	p.Data.Execution.Budget = storage.RootBudget{AutoRetry: true, MaxModelCalls: 17, MaxTokens: 40000}
+	p, err = svc.UpdateProfile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exported, err := svc.ExportProfile(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := base64.StdEncoding.DecodeString(exported.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := readShareFiles(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest shareManifest
+	if err = json.Unmarshal(files[shareManifestFileName], &manifest); err != nil || manifest.FormatVersion != 5 {
+		t.Fatal("new configuration exported under old format", manifest, err)
+	}
+	imported, _, err := svc.ImportProfile(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imported.Data.Execution.Workflow != "dynamic" || imported.Data.Execution.Planner.Model.Name != "planner-test" || imported.Data.Execution.Planner.SystemPrompt != "规划约束" || imported.Data.Execution.Budget.MaxModelCalls != 17 || !imported.Data.Execution.Budget.AutoRetry {
+		t.Fatal("dynamic configuration was lost", imported.Data.Execution)
+	}
+	grants, err := svc.ListExfilGrants(storage.DefaultAgentID)
+	if err != nil || len(grants) > 0 {
+		t.Fatal("import activated authorization", grants, err)
+	}
+}

@@ -208,7 +208,7 @@ func TestTaskGraphMigrationKeepsLegacyRunAndPlan(t *testing.T) {
 	if err = s.SetRunStatus(ctx, root.ID, "completed", ""); err != nil {
 		t.Fatal(err)
 	}
-	for _, q := range []string{`DROP TABLE task_attempts`, `DROP TABLE task_items`, `DROP TABLE task_plan_revisions`, `DROP TABLE task_roots`, `PRAGMA user_version=14`} {
+	for _, q := range []string{`DROP TABLE review_requests`, `DROP TABLE task_reviews`, `DROP TABLE model_usage`, `DROP TABLE root_budgets`, `DROP TABLE task_events`, `DROP TABLE task_coordination`, `DROP TABLE task_artifacts`, `DROP TABLE worker_observations`, `DROP TABLE run_components`, `DROP TABLE task_attempts`, `DROP TABLE task_items`, `DROP TABLE task_plan_revisions`, `DROP TABLE task_roots`, `PRAGMA user_version=14`} {
 		if _, err = s.db.Exec(q); err != nil {
 			t.Fatal(err)
 		}

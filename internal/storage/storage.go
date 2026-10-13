@@ -19,7 +19,7 @@ import (
 
 // currentVersion is the schema version this binary writes. Opening a database
 // with a higher version is refused so an old binary never writes a new schema.
-const currentVersion = 15
+const currentVersion = 17
 
 type Store struct {
 	db   *sql.DB
@@ -270,6 +270,16 @@ func (s *Store) migrate() (bool, error) {
 	}
 	if version < 15 {
 		if err := s.withTx(context.Background(), func(tx *sql.Tx) error { return migrateTaskGraphV15(context.Background(), tx) }); err != nil {
+			return false, err
+		}
+	}
+	if version < 16 {
+		if err := s.withTx(context.Background(), func(tx *sql.Tx) error { return migrateCoordinationV16(context.Background(), tx) }); err != nil {
+			return false, err
+		}
+	}
+	if version < 17 {
+		if err := s.withTx(context.Background(), func(tx *sql.Tx) error { return migrateReviewV17(context.Background(), tx) }); err != nil {
 			return false, err
 		}
 	}
@@ -548,6 +558,7 @@ func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]Message, 
 
 // CreateRunOptions distinguishes top-level runs from delegated subtask runs.
 type CreateRunOptions struct {
+	Component        string
 	TaskSpec         *TaskSpec
 	CaptureResources bool
 	SnapshotSkills   SkillSnapshotter
@@ -618,7 +629,17 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 					return errors.New("worker 槽位仅用于同一上下文的直接子任务")
 				}
 				var ok bool
-				frozen, ok = resources.Workers[opts.WorkerName]
+				if opts.Component == "planner" && opts.WorkerName == "@planner" && resources.Root.Data.Execution.Workflow == "dynamic" {
+					frozen = resources.Planner
+					ok = frozen.ID != ""
+					item.Component = "planner"
+				} else if opts.Component == "reviewer" && opts.WorkerName == "@reviewer" {
+					frozen = resources.Reviewer
+					ok = frozen.ID != ""
+					item.Component = "reviewer"
+				} else {
+					frozen, ok = resources.Workers[opts.WorkerName]
+				}
 				if !ok {
 					return errors.New("worker 未包含在任务起始快照中")
 				}
@@ -667,12 +688,47 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 		if opts.ParentRunID != "" {
 			parent = opts.ParentRunID
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO runs(id,session_id,agent_id,profile_id,profile_revision,profile_snapshot,parent_run_id,depth,status,created_at,updated_at,component,component_version,worker_name,resources_snapshot) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, sessionID, agentID, frozen.ID, frozen.Revision, string(snapshot), parent, opts.Depth, item.Status, item.CreatedAt, item.UpdatedAt, item.Component, item.ComponentVersion, opts.WorkerName, resourcesRaw)
+		if opts.ParentRunID != "" && item.Component == "worker" {
+			root, err := rootInTx(ctx, tx, opts.ParentRunID)
+			if err != nil {
+				return err
+			}
+			b, err := budgetInTx(ctx, tx, root)
+			if err != nil {
+				return err
+			}
+			if err := checkBudget(b); err != nil {
+				return err
+			}
+			var count int
+			if err := tx.QueryRowContext(ctx, `WITH RECURSIVE tree(id) AS(SELECT ? UNION ALL SELECT r.id FROM runs r JOIN tree ON r.parent_run_id=tree.id) SELECT count(*) FROM runs WHERE id IN tree AND component='worker' AND id NOT IN(SELECT run_id FROM run_components)`, root).Scan(&count); err != nil {
+				return err
+			}
+			if count >= b.Limits.MaxAttempts {
+				return errors.New("根任务 worker 尝试预算耗尽")
+			}
+		}
+		item.ComponentVersion = componentVersion(item.Component)
+		persistedComponent := item.Component
+		if item.Component == "planner" || item.Component == "reviewer" {
+			persistedComponent = "worker"
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO runs(id,session_id,agent_id,profile_id,profile_revision,profile_snapshot,parent_run_id,depth,status,created_at,updated_at,component,component_version,worker_name,resources_snapshot) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, sessionID, agentID, frozen.ID, frozen.Revision, string(snapshot), parent, opts.Depth, item.Status, item.CreatedAt, item.UpdatedAt, persistedComponent, item.ComponentVersion, opts.WorkerName, resourcesRaw)
 		if err != nil {
 			return err
 		}
+		if item.Component == "planner" || item.Component == "reviewer" {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO run_components(run_id,role) VALUES(?,?)`, id, item.Component); err != nil {
+				return err
+			}
+		}
 		if opts.ParentRunID == "" {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO task_roots(run_id) VALUES(?)`, id); err != nil {
+				return err
+			}
+		}
+		if opts.ParentRunID == "" {
+			if err := initCoordination(ctx, tx, id, frozen.Data.Execution.Budget); err != nil {
 				return err
 			}
 		}
@@ -746,6 +802,11 @@ func (s *Store) SetRunStatus(ctx context.Context, id, status, detail string) err
 	// transaction: a finished run never leaves un-dispatched or in-flight
 	// calls behind without an explicit, persisted disposition.
 	return s.withTx(ctx, func(tx *sql.Tx) error {
+		if status == "completed" && run.ParentRunID == "" {
+			if err := enforceRequiredReview(ctx, tx, id); err != nil {
+				return err
+			}
+		}
 		result, err := tx.ExecContext(ctx, `UPDATE runs SET status = ?, error = ?, updated_at = ? WHERE id = ? AND status = ?`, status, detail, now(), id, run.Status)
 		if err != nil {
 			return err
@@ -789,7 +850,7 @@ func sweepRunArtifacts(ctx context.Context, tx *sql.Tx, runID string) error {
 	return nil
 }
 
-const runColumns = `id, session_id, agent_id, profile_id, profile_revision, parent_run_id, depth, status, error, created_at, updated_at, component, component_version, worker_name`
+const runColumns = `id, session_id, agent_id, profile_id, profile_revision, parent_run_id, depth, CASE WHEN status='failed' AND (SELECT state FROM task_coordination WHERE root_run_id=runs.id) IN ('waiting','blocked') THEN (SELECT state FROM task_coordination WHERE root_run_id=runs.id) ELSE status END, error, created_at, updated_at, COALESCE((SELECT role FROM run_components WHERE run_id=runs.id),component), component_version, worker_name`
 
 func scanRun(scanner interface{ Scan(...any) error }) (Run, error) {
 	var item Run

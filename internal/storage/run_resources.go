@@ -27,12 +27,16 @@ type LegacyWorker struct {
 }
 
 type RunResources struct {
-	RootContextID string                   `json:"rootContextId"`
-	Version       int                      `json:"version"`
-	Root          FrozenProfile            `json:"root"`
-	RootPolicy    AgentPolicy              `json:"rootPolicy"`
-	Workers       map[string]FrozenProfile `json:"workers"`
-	Legacy        map[string]LegacyWorker  `json:"legacy"`
+	GrantsFrozen  bool                             `json:"grantsFrozen"`
+	Grants        map[string]map[string]ExfilGrant `json:"grants"`
+	RootContextID string                           `json:"rootContextId"`
+	Version       int                              `json:"version"`
+	Reviewer      FrozenProfile                    `json:"reviewer"`
+	Planner       FrozenProfile                    `json:"planner"`
+	Root          FrozenProfile                    `json:"root"`
+	RootPolicy    AgentPolicy                      `json:"rootPolicy"`
+	Workers       map[string]FrozenProfile         `json:"workers"`
+	Legacy        map[string]LegacyWorker          `json:"legacy"`
 }
 
 type SkillSnapshotter func(bool, []string) ([]skills.Snapshot, error)
@@ -158,6 +162,26 @@ func captureRunResources(ctx context.Context, tx *sql.Tx, root FrozenProfile, co
 		return resources, err
 	}
 	resources.Root = root
+	if rawRoot.Execution.Workflow == "dynamic" {
+		planned, err := rawRoot.ResolveComponent("planner")
+		if err != nil {
+			return resources, err
+		}
+		if planned.Model.Provider == "" {
+			planned.Model = defaultModel
+		}
+		resources.Planner = FrozenProfile{ID: root.ID, Name: root.Name, Revision: root.Revision, Data: planned}
+	}
+	if rawRoot.Execution.Review.Mode != "" && rawRoot.Execution.Review.Mode != "off" {
+		reviewed, err := rawRoot.ResolveComponent("reviewer")
+		if err != nil {
+			return resources, err
+		}
+		if reviewed.Model.Provider == "" {
+			reviewed.Model = defaultModel
+		}
+		resources.Reviewer = FrozenProfile{ID: root.ID, Name: root.Name, Revision: root.Revision, Data: reviewed}
+	}
 	for _, slot := range rawRoot.Execution.WorkerSources {
 		item := FrozenProfile{ID: root.ID, Name: root.Name, Revision: root.Revision, Data: rawRoot}
 		if slot.Configuration != nil {
@@ -230,6 +254,34 @@ func captureRunResources(ctx context.Context, tx *sql.Tx, root FrozenProfile, co
 		resources.Legacy[id] = legacy
 		if legacy.Profile.Data.Delegation.Enabled {
 			queue = append(queue, legacy.Policy.DelegationTargets...)
+		}
+	}
+	resources.GrantsFrozen = true
+	resources.Grants = map[string]map[string]ExfilGrant{}
+	actors := []string{contextID}
+	for id := range resources.Legacy {
+		if id != contextID {
+			actors = append(actors, id)
+		}
+	}
+	for _, id := range actors {
+		resources.Grants[id] = map[string]ExfilGrant{}
+		rows, err := tx.QueryContext(ctx, `SELECT agent_id,destination,scopes,created_at FROM exfil_grants WHERE agent_id=?`, id)
+		if err != nil {
+			return resources, err
+		}
+		for rows.Next() {
+			grant, err := scanGrant(rows)
+			if err != nil {
+				rows.Close()
+				return resources, err
+			}
+			resources.Grants[id][grant.Destination] = grant
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return resources, err
 		}
 	}
 	encoded, err := json.Marshal(resources)

@@ -51,3 +51,10 @@ func (s *StatusService) GetProfile(id string) (storage.Profile, error) { return 
 func (s *StatusService) GetTaskGraph(agentID, runID string) (storage.TaskGraph, error) {
 	return s.svc.GetTaskGraph(agentID, runID)
 }
+
+func (s *StatusService) ListTaskReviews(agentID, runID string) ([]storage.TaskReview, error) {
+	return s.svc.ListTaskReviews(agentID, runID)
+}
+func (s *StatusService) StartConversationReview(sessionID, target string) (storage.Run, error) {
+	return s.svc.StartConversationReview(sessionID, target)
+}

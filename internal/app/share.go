@@ -32,7 +32,7 @@ import (
 // and never activates authorization. The preview lists missing dependencies
 // and the recommendations the receiver must act on explicitly.
 
-const shareFormatVersion = 3
+const shareFormatVersion = 5
 
 // Package size caps: a share bundle is metadata plus text assets.
 const (
@@ -417,7 +417,7 @@ func parseSharePackage(files map[string][]byte) (*sharePackage, error) {
 	if err := json.Unmarshal(rawManifest, &manifest); err != nil {
 		return nil, fmt.Errorf("解析 manifest.json: %w", err)
 	}
-	if manifest.FormatVersion != 1 && manifest.FormatVersion != 2 && manifest.FormatVersion != shareFormatVersion {
+	if manifest.FormatVersion != 1 && manifest.FormatVersion != 2 && manifest.FormatVersion != 3 && manifest.FormatVersion != 4 && manifest.FormatVersion != shareFormatVersion {
 		return nil, fmt.Errorf("分享包版本不兼容（格式 %d，本程序支持 %d）", manifest.FormatVersion, shareFormatVersion)
 	}
 	rawProfile, ok := files[shareProfileFileName]

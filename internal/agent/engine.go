@@ -425,3 +425,30 @@ func isUnknownOutcome(err error) bool {
 	var outcome interface{ OutcomeUnknown() bool }
 	return errors.As(err, &outcome) && outcome.OutcomeUnknown()
 }
+
+// ExecuteTool dispatches an already persisted host-scheduled request through
+// exactly the same approval, recheck and durable outcome path as model calls.
+func (e Engine) ExecuteTool(ctx context.Context, call model.ToolCall) (string, string, error) {
+	rec := e.Recorder
+	if rec == nil {
+		rec = noopRecorder{}
+	}
+	defs, err := e.Tools.Definitions(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	allowed := map[string]bool{}
+	for _, d := range defs {
+		ok := e.AllowedTools == nil
+		for _, n := range e.AllowedTools {
+			if n == d.Function.Name {
+				ok = true
+			}
+		}
+		if ok {
+			allowed[d.Function.Name] = true
+		}
+	}
+	_, output, _ := e.budget()
+	return e.dispatch(ctx, rec, allowed, call, output)
+}

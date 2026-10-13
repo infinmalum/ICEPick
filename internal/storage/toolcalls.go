@@ -153,9 +153,13 @@ func (s *Store) BeginModelStep(ctx context.Context, runID, payload string) (Step
 	created := now()
 	item := Step{ID: id, RunID: runID, Seq: 0, Kind: "model", Status: "running", Payload: payload, CreatedAt: created, UpdatedAt: created}
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		return tx.QueryRowContext(ctx, `INSERT INTO steps (id, run_id, seq, kind, status, error, payload, created_at, updated_at)
+		err := tx.QueryRowContext(ctx, `INSERT INTO steps (id, run_id, seq, kind, status, error, payload, created_at, updated_at)
 			SELECT ?, ?, COALESCE((SELECT MAX(seq) FROM steps WHERE run_id = ?), 0) + 1, 'model', 'running', '', ?, ?, ?
 			RETURNING seq`, item.ID, runID, runID, payload, created, created).Scan(&item.Seq)
+		if err != nil {
+			return err
+		}
+		return reserveModel(ctx, tx, runID, item.ID, payload)
 	})
 	if err != nil {
 		return Step{}, err
@@ -180,7 +184,7 @@ func (s *Store) CompleteModelStep(ctx context.Context, stepID string, chatErr er
 		} else if n == 0 {
 			return errors.New("模型请求步骤不存在或已结束")
 		}
-		return nil
+		return settleUnknownUsage(ctx, tx, stepID)
 	})
 }
 
@@ -199,6 +203,9 @@ func (s *Store) BeginToolCall(ctx context.Context, id string) error {
 		}
 		if argsHash != "" && argsHash != hashArgs(arguments) {
 			return errors.New("工具参数与批准时不一致，需要重新确认")
+		}
+		if err := reserveTool(ctx, tx, id); err != nil {
+			return err
 		}
 		result, err := tx.ExecContext(ctx, `UPDATE tool_calls SET state = 'executing', updated_at = ? WHERE id = ?`, now(), id)
 		if err != nil {
@@ -309,6 +316,9 @@ func (s *Store) FinishToolCall(ctx context.Context, id, state, result, errText, 
 		if err := tx.QueryRowContext(ctx, `SELECT state FROM tool_calls WHERE id = ?`, id).Scan(&current); err != nil {
 			return err
 		}
+		if current == CallExecutionUnknow {
+			return errors.New("未知结果只能由显式用户处置，迟到响应不能改写")
+		}
 		allowed, ok := toolTransitions[current]
 		if !ok {
 			return fmt.Errorf("工具调用状态 %q 是终态，不能再次变更", current)
@@ -399,7 +409,10 @@ func (s *Store) RecoverInterrupted(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE steps SET status = 'cancelled', error = '应用在分派前退出，调用未执行', updated_at = ? WHERE status IN ('pending') AND kind = 'tool'`, ts); err != nil {
 			return err
 		}
-		return recoverTaskAttempts(ctx, tx)
+		if err := recoverTaskAttempts(ctx, tx); err != nil {
+			return err
+		}
+		return recoverCoordination(ctx, tx)
 	})
 	return err
 }

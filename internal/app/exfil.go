@@ -21,6 +21,8 @@ import (
 // before the inner call on both the plain and the streaming path, so a
 // denied send never reaches an adapter.
 type guardedChat struct {
+	svc          *Service
+	runID        string
 	inner        agent.ChatModel
 	check        func(context.Context) error
 	payloadCheck func(context.Context, []model.Message, []model.Tool) error
@@ -40,7 +42,13 @@ func (g guardedChat) Chat(ctx context.Context, source config.Model, messages []m
 	if err := g.check(ctx); err != nil {
 		return model.ChatResponse{}, err
 	}
-	return g.inner.Chat(ctx, source, messages, tools)
+	resp, err := g.inner.Chat(ctx, source, messages, tools)
+	if g.svc != nil {
+		if e := g.svc.store.RecordUsage(context.WithoutCancel(ctx), g.runID, usageTokens(resp.Usage)); e != nil {
+			return resp, e
+		}
+	}
+	return resp, err
 }
 
 func (g guardedChat) ChatStream(ctx context.Context, source config.Model, messages []model.Message, tools []model.Tool, onDelta func(string) error) (model.ChatResponse, error) {
@@ -53,9 +61,21 @@ func (g guardedChat) ChatStream(ctx context.Context, source config.Model, messag
 		return model.ChatResponse{}, err
 	}
 	if streamer, ok := g.inner.(agent.StreamingChatModel); ok {
-		return streamer.ChatStream(ctx, source, messages, tools, onDelta)
+		resp, err := streamer.ChatStream(ctx, source, messages, tools, onDelta)
+		if g.svc != nil {
+			if e := g.svc.store.RecordUsage(context.WithoutCancel(ctx), g.runID, usageTokens(resp.Usage)); e != nil {
+				return resp, e
+			}
+		}
+		return resp, err
 	}
-	return g.inner.Chat(ctx, source, messages, tools)
+	resp, err := g.inner.Chat(ctx, source, messages, tools)
+	if g.svc != nil {
+		if e := g.svc.store.RecordUsage(context.WithoutCancel(ctx), g.runID, usageTokens(resp.Usage)); e != nil {
+			return resp, e
+		}
+	}
+	return resp, err
 }
 
 // endpointOrigin normalizes a model base URL to scheme://host:port and
@@ -314,4 +334,14 @@ func (s *Service) checkInitialGrant(ctx context.Context, sessionID string, sourc
 		}
 	}
 	return nil
+}
+
+func usageTokens(u model.Usage) int {
+	if u.TotalTokens > 0 {
+		return u.TotalTokens
+	}
+	if u.PromptTokens >= 0 && u.CompletionTokens >= 0 {
+		return u.PromptTokens + u.CompletionTokens
+	}
+	return 0
 }

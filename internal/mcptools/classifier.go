@@ -53,6 +53,10 @@ func (c Classifier) Classify(name, arguments string) (Effect, Sensitivity) {
 	switch name {
 	case "local__current_time":
 		return EffectPure, SensPublic
+	case "local__search_worker_traces", "local__list_worker_traces", "local__get_worker_trace":
+		return EffectRead, SensUnknown
+	case "local__record_observation":
+		return EffectPure, SensUnknown
 	case "local__load_skill":
 		// Skill bodies are user-installed instruction files on this machine.
 		return EffectRead, SensWorkspace
