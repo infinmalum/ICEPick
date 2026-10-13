@@ -34,6 +34,15 @@ func saveProfileComponents(ctx context.Context, tx *sql.Tx, id string, data Prof
 			return err
 		}
 	}
+	// Older migrations create their original five groups before v12 adds
+	// the execution group. Do not change those historical schemas.
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='profile_execution'`).Scan(&exists); err != nil {
+		return err
+	}
+	if exists != 0 {
+		return saveExecutionComponent(ctx, tx, id, normalizeProfile(data))
+	}
 	return nil
 }
 

@@ -399,7 +399,7 @@ func (s *Store) RecoverInterrupted(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE steps SET status = 'cancelled', error = '应用在分派前退出，调用未执行', updated_at = ? WHERE status IN ('pending') AND kind = 'tool'`, ts); err != nil {
 			return err
 		}
-		return nil
+		return recoverTaskAttempts(ctx, tx)
 	})
 	return err
 }

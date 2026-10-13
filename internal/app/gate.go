@@ -41,10 +41,17 @@ func (g toolGate) effectiveProfile(ctx context.Context) (storage.AgentProfile, e
 		return storage.AgentProfile{}, err
 	}
 	p := *g.snapshot
-	p.Policy = a.Policy
+	p.Policy = restrictPolicy(g.snapshot.Policy, a.Policy)
+	p.Policy.DelegationTargets = intersectLists(g.snapshot.Policy.DelegationTargets, a.Policy.DelegationTargets)
+	if g.runID != "" {
+		policy, err := g.svc.restrictRunPolicy(ctx, g.runID, p)
+		if err != nil {
+			return storage.AgentProfile{}, err
+		}
+		p.Policy = policy
+	}
 	if g.parent != nil {
-		p.Policy.ApprovalMode = stricterMode(g.parent.Policy.ApprovalMode, p.Policy.ApprovalMode)
-		p.Policy.Permissions = intersectPermissions(g.parent.Policy.Permissions, a.Policy.Permissions)
+		p.Policy = restrictPolicy(p.Policy, g.parent.Policy)
 		p.Policy.Memory = false
 		return p, nil
 	}
@@ -149,7 +156,7 @@ func (g toolGate) hardLimits(ctx context.Context, profile storage.AgentProfile, 
 			return "该 Agent 未启用长期记忆写入"
 		}
 	}
-	if req.Tool == "local__update_plan" {
+	if req.Tool == "local__update_plan" || req.Tool == "local__task_plan" {
 		if g.parent != nil {
 			return "委派子任务不提供规划"
 		}
@@ -168,6 +175,17 @@ func (g toolGate) hardLimits(ctx context.Context, profile storage.AgentProfile, 
 		}
 		if json.Unmarshal([]byte(req.Arguments), &args) != nil || !profile.EnablesSkill(args.Name) {
 			return fmt.Sprintf("未被当前 Agent 启用的 Skill %q", args.Name)
+		}
+		if profile.ResourcesFrozen {
+			found := false
+			for _, item := range profile.FrozenSkills {
+				if item.Name == args.Name {
+					found = true
+				}
+			}
+			if !found {
+				return "Skill 不在任务起始快照中"
+			}
 		}
 	}
 	if req.Tool == "local__read_file" && !profile.Policy.Permissions.Unrestricted {
@@ -201,13 +219,22 @@ func (g toolGate) delegateLimit(ctx context.Context, profile storage.AgentProfil
 			return fmt.Sprintf("超过委派深度上限（%d）", profile.Delegation.MaxDepth)
 		}
 	}
-	var args struct {
-		Agent string `json:"agent"`
-	}
+	var args delegateArgs
 	if json.Unmarshal([]byte(arguments), &args) != nil {
 		return "delegate_task 参数必须是 JSON 对象"
 	}
-	target, err := g.svc.resolveDelegationTarget(ctx, profile, args.Agent)
+	args, _, err := g.svc.resolvePlannedTask(ctx, profile, g.runID, args)
+	if err != nil {
+		return err.Error()
+	}
+	name, _, selected, err := g.svc.selectedWorker(ctx, profile, g.runID, args)
+	if err != nil {
+		return err.Error()
+	}
+	if selected {
+		return g.svc.workerLimit(ctx, profile, g.runID, name)
+	}
+	target, err := g.svc.resolveFrozenLegacy(ctx, profile, g.runID, args.Agent)
 	if err != nil {
 		return err.Error()
 	}

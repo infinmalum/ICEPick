@@ -232,6 +232,44 @@ func TestProfileShareRejectsIncompatibleVersion(t *testing.T) {
 	}
 }
 
+func TestProfileShareComponentRoundTrip(t *testing.T) {
+	svc, _ := newShareService(t, nil)
+	p, err := svc.CreateTemplateProfile("daily", "components")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Data.Execution.Main.SystemPrompt = "custom main"
+	p.Data.Execution.Main.RestrictTools = true
+	p.Data.Execution.Main.AllowedTools = []string{}
+	p.Data.Execution.Worker.SystemPrompt = "custom worker"
+	p, err = svc.UpdateProfile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exported, err := svc.ExportProfile(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(exported.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy, _, err := svc.ImportProfile(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	main, err := copy.Data.ResolveComponent("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if main.SystemPrompt != "custom main" || main.AllowsTool("local__current_time") || copy.Data.Execution.Worker.SystemPrompt != "custom worker" {
+		t.Fatal("share lost component isolation")
+	}
+	if copy.Data.TemplateID != "" {
+		t.Fatal("import silently claimed a local template binding")
+	}
+}
+
 // Zip entries must never escape the package root.
 func TestProfileShareRejectsPathEscape(t *testing.T) {
 	svc, _ := newShareService(t, nil)

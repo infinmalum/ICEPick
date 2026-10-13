@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"icepick/internal/model"
+	"icepick/internal/skills"
 	"icepick/internal/storage"
 )
 
@@ -124,7 +125,11 @@ func (s *Service) injectPlan(ctx context.Context, sessionID string, profile stor
 		return
 	}
 	plan, found, err := s.store.GetSessionPlan(ctx, sessionID)
-	if err != nil || !found {
+	if err != nil {
+		return
+	}
+	if !found {
+		window.history[0].Content += fmt.Sprintf("\n\n当前计划为空；local__update_plan 使用 expected_revision=%d。", plan.Revision)
 		return
 	}
 	var steps []storage.PlanStep
@@ -133,13 +138,14 @@ func (s *Service) injectPlan(ctx context.Context, sessionID string, profile stor
 	}
 	marker := map[string]string{storage.PlanPending: "[ ]", storage.PlanInProgress: "[~]", storage.PlanDone: "[x]"}
 	var b strings.Builder
-	b.WriteString("当前计划（通过 local__update_plan 维护，完成一步及时更新状态；计划不再符合任务时直接重写）：")
+	fmt.Fprintf(&b, "当前计划（修订 %d；更新使用 expected_revision=%d，保留任务 ID；已开始任务不可删除或改写执行条件）：", plan.Revision, plan.Revision)
 	for _, step := range steps {
 		note := ""
 		if step.Note != "" {
 			note = "（" + step.Note + "）"
 		}
-		fmt.Fprintf(&b, "\n%s %s%s", marker[step.Status], step.Title, note)
+		raw, _ := json.Marshal(step)
+		fmt.Fprintf(&b, "\n%s %s%s · %s", marker[step.Status], step.Title, note, raw)
 	}
 	window.history[0].Content += "\n\n" + b.String()
 }
@@ -161,13 +167,20 @@ func (s *Service) systemPrompt(profile storage.AgentProfile) string {
 		prompt += profile.SystemPrompt
 	}
 	if profile.AllowsTool("local__load_skill") {
-		summary := s.skills.SummaryFor(profile.EnabledSkills)
-		if profile.AllSkills {
-			summary = s.skills.Summary()
-		}
+		summary := s.profileSkillSummary(profile)
 		if summary != "" {
 			prompt += "\n可用 Agent Skills（仅元数据）：\n" + summary + "\n相关任务先调用 local__load_skill 读取完整 SKILL.md。"
 		}
 	}
 	return prompt
+}
+
+func (s *Service) profileSkillSummary(profile storage.AgentProfile) string {
+	if profile.ResourcesFrozen {
+		return skills.SnapshotSummary(profile.FrozenSkills)
+	}
+	if profile.AllSkills {
+		return s.skills.Summary()
+	}
+	return s.skills.SummaryFor(profile.EnabledSkills)
 }

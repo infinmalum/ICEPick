@@ -98,6 +98,7 @@ type SessionPlanView struct {
 	AgentID   string             `json:"agentId"`
 	UpdatedAt string             `json:"updatedAt"`
 	Steps     []storage.PlanStep `json:"steps"`
+	Revision  int                `json:"revision"`
 }
 
 func (s *Service) GetSessionPlan(agentID, sessionID string) (SessionPlanView, error) {
@@ -115,7 +116,7 @@ func (s *Service) GetSessionPlan(agentID, sessionID string) (SessionPlanView, er
 	if err := json.Unmarshal([]byte(plan.Plan), &steps); err != nil {
 		return SessionPlanView{}, fmt.Errorf("解析计划: %w", err)
 	}
-	return SessionPlanView{SessionID: plan.SessionID, AgentID: plan.AgentID, UpdatedAt: plan.UpdatedAt, Steps: steps}, nil
+	return SessionPlanView{SessionID: plan.SessionID, AgentID: plan.AgentID, UpdatedAt: plan.UpdatedAt, Steps: steps, Revision: plan.Revision}, nil
 }
 
 // ClearSessionPlan removes the session's plan. It never touches approvals,

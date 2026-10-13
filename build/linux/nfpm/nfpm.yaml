@@ -13,10 +13,12 @@ maintainer: ${GIT_COMMITTER_NAME} <${GIT_COMMITTER_EMAIL}>
 description: "Local desktop agent"
 vendor: "ICEPick"
 homepage: "https://wails.io"
-license: "MIT"
+license: "AGPL-3.0-only"
 release: "1"
 
 contents:
+  - src: "./LICENSE"
+    dst: "/usr/share/licenses/icepick/LICENSE"
   - src: "./bin/icepick"
     dst: "/usr/local/bin/icepick"
   - src: "./build/appicon.png"

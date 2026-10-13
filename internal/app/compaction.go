@@ -106,8 +106,8 @@ var (
 	updatePlanDefinition = func() model.Tool {
 		t := model.Tool{Type: "function"}
 		t.Function.Name = "local__update_plan"
-		t.Function.Description = "创建或更新当前任务计划（整体替换）。每步给出简短标题和状态：pending / in_progress / done"
-		t.Function.Parameters = json.RawMessage(`{"type":"object","properties":{"steps":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","done"]},"note":{"type":"string"}},"required":["title","status"]}}},"required":["steps"]}`)
+		t.Function.Description = "创建或更新当前任务计划；提交观察到的 expected_revision（首次为 0），保留已有任务 id。dependsOn 引用前置任务 id，前置未完成不能开始后继。验收条件是声明，不代表已验证。返回当前完整计划；修订冲突时按返回的当前状态重新规划。"
+		t.Function.Parameters = json.RawMessage(`{"type":"object","properties":{"expected_revision":{"type":"integer","minimum":0},"steps":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"object","properties":{"id":{"type":"string","description":"稳定任务 ID；新步骤可省略由宿主生成"},"title":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","done"]},"note":{"type":"string"},"dependsOn":{"type":"array","items":{"type":"string"}},"acceptance":{"type":"string","description":"验收条件"},"inputRefs":{"type":"array","items":{"type":"string"},"description":"材料出处标识；不授予访问权限"}},"required":["title","status"]}}},"required":["expected_revision","steps"]}`)
 		return t
 	}()
 )
@@ -132,6 +132,21 @@ func (t bookkeepingTools) Definitions(ctx context.Context) ([]model.Tool, error)
 	if err != nil {
 		return nil, err
 	}
+	if t.profile.ResourcesFrozen && len(t.profile.FrozenSkills) > 0 && t.profile.AllowsTool("local__load_skill") {
+		found := false
+		for _, d := range definitions {
+			if d.Function.Name == "local__load_skill" {
+				found = true
+			}
+		}
+		if !found {
+			definition := model.Tool{Type: "function"}
+			definition.Function.Name = "local__load_skill"
+			definition.Function.Description = "读取本任务固定版本的 Skill 指令"
+			definition.Function.Parameters = json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)
+			definitions = append(definitions, definition)
+		}
+	}
 	if !t.delegated {
 		if memoryAllowed(t.profile) && t.profile.AllowsTool(memorySaveDefinition.Function.Name) {
 			definitions = append(definitions, memorySaveDefinition)
@@ -140,14 +155,39 @@ func (t bookkeepingTools) Definitions(ctx context.Context) ([]model.Tool, error)
 			definitions = append(definitions, updatePlanDefinition)
 		}
 	}
+	if !t.delegated && t.profile.PlanEnabled && t.profile.AllowsTool(taskPlanDefinition.Function.Name) {
+		resources, err := t.svc.resourcesFor(ctx, t.profile, t.runID)
+		if err == nil && len(resources.Workers) > 0 && delegationOffered(ctx, t.svc, t.profile, t.runID) {
+			definitions = append(definitions, taskPlanDefinition)
+		}
+	}
 	if delegationOffered(ctx, t.svc, t.profile, t.runID) {
-		definitions = append(definitions, delegateDefinition)
+		definitions = append(definitions, t.svc.delegationDefinition(ctx, t.profile, t.runID))
 	}
 	return definitions, nil
 }
 
 func (t bookkeepingTools) Call(ctx context.Context, name, arguments string) (string, error) {
 	switch name {
+	case "local__load_skill":
+		if !t.profile.ResourcesFrozen {
+			return t.inner.Call(ctx, name, arguments)
+		}
+		var args struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+			return "", err
+		}
+		if !t.profile.EnablesSkill(args.Name) {
+			return "", errors.New("未选择的 Skill")
+		}
+		for _, item := range t.profile.FrozenSkills {
+			if item.Name == args.Name {
+				return item.Content, nil
+			}
+		}
+		return "", errors.New("Skill 不在任务起始快照中")
 	case "local__memory_save":
 		if t.delegated {
 			return "", errors.New("委派子任务不提供长期记忆写入")
@@ -184,15 +224,28 @@ func (t bookkeepingTools) Call(ctx context.Context, name, arguments string) (str
 			return "", errors.New("该 Profile 未启用规划")
 		}
 		var args struct {
-			Steps []storage.PlanStep `json:"steps"`
+			Steps            []storage.PlanStep `json:"steps"`
+			ExpectedRevision *int               `json:"expected_revision"`
 		}
 		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
 			return "", errors.New("update_plan 参数必须是 JSON 对象")
 		}
-		if _, err := t.svc.store.SetSessionPlan(ctx, t.sessionID, args.Steps); err != nil {
+		if args.ExpectedRevision == nil {
+			current, _, err := t.svc.store.GetSessionPlan(ctx, t.sessionID)
+			if err != nil {
+				return "", err
+			}
+			raw, _ := json.Marshal(current)
+			return "", fmt.Errorf("需要 expected_revision；当前状态 %s", raw)
+		}
+		plan, err := t.svc.store.CompareAndSetSessionPlan(ctx, t.sessionID, args.Steps, *args.ExpectedRevision)
+		if err != nil {
 			return "", err
 		}
-		return "计划已更新。", nil
+		raw, err := json.Marshal(plan)
+		return string(raw), err
+	case "local__task_plan":
+		return t.taskPlan(ctx, arguments)
 	case "local__delegate_task":
 		return t.svc.executeDelegation(ctx, t.profile, t.sessionID, t.runID, arguments)
 	default:

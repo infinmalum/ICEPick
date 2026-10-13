@@ -252,6 +252,8 @@ func writeLine(conn net.Conn, payload any) error {
 // rules and exfiltration gates behave identically over IPC.
 func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 	switch request.Method {
+	case "conversations.list", "conversations.get", "conversations.create", "conversations.select", "conversations.start", "contexts.get", "contexts.update", "templates.list", "templates.create", "templates.restore", "components.list", "profiles.archive", "profiles.references", "profiles.replaceArchive", "profiles.exportWorkers":
+		return s.dispatchConversation(request)
 	case "status":
 		return s.svc.GetStatus(), nil
 
@@ -417,13 +419,16 @@ func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 			return nil, err
 		}
 		return s.svc.ListRuns(params.AgentID, params.SessionID)
-	case "runs.get":
+	case "tasks.graph", "runs.get":
 		var params struct {
 			AgentID string `json:"agentId"`
 			RunID   string `json:"runId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
+		}
+		if request.Method == "tasks.graph" {
+			return s.svc.GetTaskGraph(params.AgentID, params.RunID)
 		}
 		return s.svc.GetRun(params.AgentID, params.RunID)
 	case "runs.children":

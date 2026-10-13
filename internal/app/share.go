@@ -32,7 +32,7 @@ import (
 // and never activates authorization. The preview lists missing dependencies
 // and the recommendations the receiver must act on explicitly.
 
-const shareFormatVersion = 1
+const shareFormatVersion = 3
 
 // Package size caps: a share bundle is metadata plus text assets.
 const (
@@ -54,18 +54,20 @@ type shareManifest struct {
 // shareProfile is the transport shape of a Profile combination. Persona and
 // prompt live in standalone text files next to it.
 type shareProfile struct {
-	Description       string           `json:"description"`
-	Model             config.Model     `json:"model"`
-	AllMCPServers     bool             `json:"allMcpServers"`
-	EnabledMCPServers []string         `json:"enabledMcpServers,omitempty"`
-	MCPServerRefs     []shareMCPServer `json:"mcpServerRefs,omitempty"`
-	AllowedTools      []string         `json:"allowedTools,omitempty"`
-	AllSkills         bool             `json:"allSkills"`
-	EnabledSkills     []string         `json:"enabledSkills,omitempty"`
-	Delegation        shareDelegation  `json:"delegation"`
-	ContextBudget     int              `json:"contextBudget"`
-	MemoryEnabled     bool             `json:"memoryEnabled"`
-	PlanEnabled       bool             `json:"planEnabled"`
+	SchemaVersion     int               `json:"schemaVersion"`
+	Execution         storage.Execution `json:"execution"`
+	Description       string            `json:"description"`
+	Model             config.Model      `json:"model"`
+	AllMCPServers     bool              `json:"allMcpServers"`
+	EnabledMCPServers []string          `json:"enabledMcpServers,omitempty"`
+	MCPServerRefs     []shareMCPServer  `json:"mcpServerRefs,omitempty"`
+	AllowedTools      []string          `json:"allowedTools,omitempty"`
+	AllSkills         bool              `json:"allSkills"`
+	EnabledSkills     []string          `json:"enabledSkills,omitempty"`
+	Delegation        shareDelegation   `json:"delegation"`
+	ContextBudget     int               `json:"contextBudget"`
+	MemoryEnabled     bool              `json:"memoryEnabled"`
+	PlanEnabled       bool              `json:"planEnabled"`
 }
 
 // shareMCPServer is a dependency reference, not a config: the receiver
@@ -107,12 +109,38 @@ type ImportResult struct {
 // specific enters the bundle: the export reads only the profile content,
 // the MCP config references and the installed skill directories.
 func (s *Service) ExportProfile(profileID string) (ExportResult, error) {
+	return s.exportProfile(profileID, false)
+}
+
+func (s *Service) ExportProfileIncludingWorkers(profileID string) (ExportResult, error) {
+	return s.exportProfile(profileID, true)
+}
+
+func (s *Service) exportProfile(profileID string, includeWorkers bool) (ExportResult, error) {
 	if err := s.checkReady(); err != nil {
 		return ExportResult{}, err
 	}
 	profile, err := s.store.GetProfile(context.Background(), profileID)
 	if err != nil {
 		return ExportResult{}, err
+	}
+	for i, source := range profile.Data.Execution.WorkerSources {
+		if source.ProfileID == "" {
+			continue
+		}
+		if !includeWorkers {
+			return ExportResult{}, errors.New("此 Profile 引用了其他 worker 配置，请选择包含 worker 配置导出")
+		}
+		dependency, err := s.store.GetProfile(context.Background(), source.ProfileID)
+		if err != nil {
+			return ExportResult{}, err
+		}
+		portable, err := storage.WorkerConfigurationFrom(dependency)
+		if err != nil {
+			return ExportResult{}, err
+		}
+		profile.Data.Execution.WorkerSources[i].ProfileID = ""
+		profile.Data.Execution.WorkerSources[i].Configuration = &portable
 	}
 	files := map[string][]byte{}
 	manifest := shareManifest{
@@ -125,6 +153,8 @@ func (s *Service) ExportProfile(profileID string) (ExportResult, error) {
 		return ExportResult{}, err
 	}
 	share := shareProfile{
+		SchemaVersion:     profile.Data.SchemaVersion,
+		Execution:         profile.Data.Execution,
 		Description:       profile.Data.Description,
 		Model:             profile.Data.Model,
 		AllMCPServers:     profile.Data.AllMCPServers,
@@ -293,7 +323,14 @@ type ImportMCPServer struct {
 
 // ImportPreview is everything the receiver should see before confirming an
 // import: the combination, its dependencies and the explicit recommendations.
+type ImportWorker struct {
+	Name    string `json:"name"`
+	Source  string `json:"source"`
+	Bundled bool   `json:"bundled"`
+}
+
 type ImportPreview struct {
+	Workers       []ImportWorker           `json:"workers"`
 	Name          string                   `json:"name"`
 	Description   string                   `json:"description"`
 	Model         config.Model             `json:"model"`
@@ -380,7 +417,7 @@ func parseSharePackage(files map[string][]byte) (*sharePackage, error) {
 	if err := json.Unmarshal(rawManifest, &manifest); err != nil {
 		return nil, fmt.Errorf("解析 manifest.json: %w", err)
 	}
-	if manifest.FormatVersion != shareFormatVersion {
+	if manifest.FormatVersion != 1 && manifest.FormatVersion != 2 && manifest.FormatVersion != shareFormatVersion {
 		return nil, fmt.Errorf("分享包版本不兼容（格式 %d，本程序支持 %d）", manifest.FormatVersion, shareFormatVersion)
 	}
 	rawProfile, ok := files[shareProfileFileName]
@@ -390,6 +427,11 @@ func parseSharePackage(files map[string][]byte) (*sharePackage, error) {
 	var share shareProfile
 	if err := json.Unmarshal(rawProfile, &share); err != nil {
 		return nil, fmt.Errorf("解析 profile.json: %w", err)
+	}
+	for _, source := range share.Execution.WorkerSources {
+		if source.ProfileID != "" {
+			return nil, errors.New("分享包不能绑定本机 Profile ID；请导出独立 worker 配置")
+		}
 	}
 	pkg := &sharePackage{manifest: manifest, profile: share}
 	if data, ok := files["persona.md"]; ok {
@@ -417,6 +459,8 @@ func parseSharePackage(files map[string][]byte) (*sharePackage, error) {
 // the allowlist on their own Agents.
 func (pkg *sharePackage) toProfileData() (storage.ProfileData, error) {
 	data := storage.ProfileData{
+		SchemaVersion:     pkg.profile.SchemaVersion,
+		Execution:         pkg.profile.Execution,
 		Description:       pkg.profile.Description,
 		Persona:           pkg.persona,
 		SystemPrompt:      pkg.prompt,
@@ -541,9 +585,17 @@ func (s *Service) buildImportPreview(pkg *sharePackage) ImportPreview {
 		preview.Warnings = append(preview.Warnings, "包内的记忆偏好不会自动生效：仍需接收方 Agent 的记忆授权，且记忆数据从不随包传输")
 	}
 	if data.Delegation.Enabled {
-		preview.Warnings = append(preview.Warnings, "包内的委派声明不携带目标（Agent ID 属于本机身份）：导入后按“由模型选择”执行，需要为接收方 Agent 单独配置委派允许列表")
+		preview.Warnings = append(preview.Warnings, "worker 配置随 Profile 导入；旧委派不携带目标本机身份，使用旧委派时仍需配置本机允许列表")
 	}
-	preview.Warnings = append(preview.Warnings, "导入只创建 Profile，不创建或切换 Agent、不安装资源、不授权任何本机权限；请导入后再选择用于哪个 Agent。")
+	preview.Warnings = append(preview.Warnings, "导入只创建 Profile，不安装资源、不授权本机权限；可在对话中选择此 Profile。")
+	for _, source := range data.Execution.WorkerSources {
+		item := ImportWorker{Name: source.Name, Source: "当前 Profile 的 worker"}
+		if source.Configuration != nil {
+			item.Source = source.Configuration.Name
+			item.Bundled = true
+		}
+		preview.Workers = append(preview.Workers, item)
+	}
 	return preview
 }
 

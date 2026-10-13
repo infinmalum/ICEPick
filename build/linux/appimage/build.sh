@@ -10,6 +10,8 @@ APP_DIR="${APP_NAME}.AppDir"
 
 # Create AppDir structure
 mkdir -p "${APP_DIR}/usr/bin"
+mkdir -p "${APP_DIR}/usr/share/licenses/${APP_NAME}"
+cp "./LICENSE" "${APP_DIR}/usr/share/licenses/${APP_NAME}/LICENSE"
 cp -r "${APP_BINARY}" "${APP_DIR}/usr/bin/"
 cp "${ICON_PATH}" "${APP_DIR}/"
 cp "${DESKTOP_FILE}" "${APP_DIR}/"

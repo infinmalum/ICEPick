@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"icepick/internal/config"
+	"icepick/internal/skills"
 )
 
 const DefaultAgentID = "default"
@@ -63,6 +64,10 @@ const (
 // history, secrets or authorization, so copying a Profile is safe by
 // construction.
 type ProfileData struct {
+	SchemaVersion     int              `json:"schemaVersion"`
+	Execution         Execution        `json:"execution"`
+	TemplateID        string           `json:"templateId,omitempty"`
+	TemplateVersion   int              `json:"templateVersion,omitempty"`
 	Persona           string           `json:"persona"`
 	Description       string           `json:"description"`
 	SystemPrompt      string           `json:"systemPrompt"`
@@ -125,10 +130,13 @@ type Agent struct {
 // AgentProfile is the resolved combination one Run executes with: the
 // Agent's identity and machine policy plus the Profile content snapshot.
 type AgentProfile struct {
-	AgentID     string `json:"agentId"`
-	AgentName   string `json:"agentName"`
-	ProfileID   string `json:"profileId"`
-	ProfileName string `json:"profileName"`
+	Resources       *RunResources     `json:"-"`
+	ResourcesFrozen bool              `json:"-"`
+	FrozenSkills    []skills.Snapshot `json:"-"`
+	AgentID         string            `json:"agentId"`
+	AgentName       string            `json:"agentName"`
+	ProfileID       string            `json:"profileId"`
+	ProfileName     string            `json:"profileName"`
 	ProfileData
 	Policy          AgentPolicy `json:"policy"`
 	ProfileRevision int         `json:"profileRevision"`
@@ -137,7 +145,7 @@ type AgentProfile struct {
 // BlankProfile is the built-in blank template: nothing enabled, everything
 // explicit, manual approvals.
 func BlankProfile() ProfileData {
-	return ProfileData{AllowedTools: []string{}, EnabledSkills: []string{}, ContextBudget: 8192}
+	return ProfileData{SchemaVersion: ProfileSchemaVersion, Execution: Execution{Workflow: "direct"}, AllowedTools: []string{}, EnabledSkills: []string{}, ContextBudget: 8192}
 }
 
 // defaultProfileData is the built-in default combination: a short generic
@@ -163,6 +171,9 @@ func ValidateProfileData(d ProfileData) error {
 }
 
 func validateProfileData(d ProfileData) error {
+	if err := validateExecution(d); err != nil {
+		return err
+	}
 	if len(d.Persona) > 32000 || len(d.SystemPrompt) > 32000 || len(d.Description) > 500 {
 		return errors.New("系统提示词或说明过长")
 	}
@@ -268,7 +279,7 @@ func scanProfile(scanner interface{ Scan(...any) error }) (Profile, error) {
 }
 
 func (s *Store) ListProfiles(ctx context.Context) ([]Profile, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, config, revision, is_default, created_at, updated_at FROM resolved_profiles ORDER BY CASE id WHEN 'default' THEN 0 ELSE 1 END, created_at, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, config, revision, is_default, created_at, updated_at FROM resolved_profiles WHERE archived_at IS NULL ORDER BY CASE id WHEN 'default' THEN 0 ELSE 1 END, created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -297,6 +308,7 @@ func (s *Store) GetProfile(ctx context.Context, id string) (Profile, error) {
 // caller assembled. The new Profile starts at revision 1 and is never the
 // built-in default.
 func (s *Store) CreateProfile(ctx context.Context, name string, data ProfileData) (Profile, error) {
+	data = normalizeProfile(data)
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > 100 {
 		return Profile{}, errors.New("Profile 名称无效")
@@ -310,10 +322,16 @@ func (s *Store) CreateProfile(ctx context.Context, name string, data ProfileData
 	}
 	created := now()
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		if err := validateWorkerReferences(ctx, tx, id, data); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO profiles(id,name,revision,is_default,created_at,updated_at) VALUES(?,?,1,0,?,?)`, id, name, created, created); err != nil {
 			return err
 		}
-		return saveProfileComponents(ctx, tx, id, data)
+		if err := saveProfileComponents(ctx, tx, id, data); err != nil {
+			return err
+		}
+		return saveProfileRevision(ctx, tx, id, 1, name, data)
 	})
 	if err != nil {
 		return Profile{}, err
@@ -324,6 +342,10 @@ func (s *Store) CreateProfile(ctx context.Context, name string, data ProfileData
 // UpdateProfile publishes component changes in one revision-checked transaction.
 // Unchanged components are not rewritten.
 func (s *Store) UpdateProfile(ctx context.Context, p Profile) (Profile, error) {
+	p.Data = normalizeProfile(p.Data)
+	if strings.TrimSpace(p.Name) == "" || len(p.Name) > 100 {
+		return Profile{}, errors.New("Profile 名称无效")
+	}
 	if p.ID == "" || p.Revision < 1 {
 		return Profile{}, errors.New("Profile ID 或版本无效")
 	}
@@ -338,7 +360,10 @@ func (s *Store) UpdateProfile(ctx context.Context, p Profile) (Profile, error) {
 		return Profile{}, err
 	}
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		result, err := tx.ExecContext(ctx, `UPDATE profiles SET name=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?`, strings.TrimSpace(p.Name), now(), p.ID, p.Revision)
+		if err := validateWorkerReferences(ctx, tx, p.ID, p.Data); err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE profiles SET name=?,revision=revision+1,updated_at=? WHERE id=? AND revision=? AND archived_at IS NULL`, strings.TrimSpace(p.Name), now(), p.ID, p.Revision)
 		if err != nil {
 			return err
 		}
@@ -349,7 +374,10 @@ func (s *Store) UpdateProfile(ctx context.Context, p Profile) (Profile, error) {
 		if n == 0 {
 			return errors.New("Profile 已被其他操作修改，请刷新后重试")
 		}
-		return saveProfileComponents(ctx, tx, p.ID, p.Data)
+		if err := saveProfileComponents(ctx, tx, p.ID, p.Data); err != nil {
+			return err
+		}
+		return saveProfileRevision(ctx, tx, p.ID, p.Revision+1, strings.TrimSpace(p.Name), p.Data)
 	})
 	if err != nil {
 		return Profile{}, err
@@ -386,16 +414,9 @@ func (s *Store) DeleteProfile(ctx context.Context, id string) error {
 		}
 		return fmt.Errorf("Profile 仍被 Agent 引用（%s），请先为这些 Agent 选择其他 Profile", strings.Join(names, "、"))
 	}
-	result, err := s.db.ExecContext(ctx, `DELETE FROM profiles WHERE id = ?`, id)
-	if err != nil {
-		return err
-	}
-	if n, err := result.RowsAffected(); err != nil {
-		return err
-	} else if n == 0 {
-		return errors.New("Profile 不存在")
-	}
-	return nil
+	// Legacy clients keep their reference check, but deletion must also
+	// preserve conversations that explicitly selected this Profile.
+	return s.ArchiveProfile(ctx, id)
 }
 
 func scanAgent(scanner interface{ Scan(...any) error }) (Agent, error) {
@@ -612,7 +633,19 @@ func (s *Store) AgentForSession(ctx context.Context, sessionID string) (AgentPro
 	if err != nil {
 		return AgentProfile{}, err
 	}
-	return s.ResolvedAgentProfile(ctx, session.AgentID)
+	conversation, err := s.GetConversation(ctx, sessionID)
+	if err != nil {
+		return AgentProfile{}, err
+	}
+	profile, err := s.GetProfile(ctx, conversation.ProfileID)
+	if err != nil {
+		return AgentProfile{}, err
+	}
+	a, err := s.GetAgent(ctx, session.AgentID)
+	if err != nil {
+		return AgentProfile{}, err
+	}
+	return AgentProfile{AgentID: a.ID, AgentName: a.Name, ProfileID: profile.ID, ProfileName: profile.Name, ProfileData: profile.Data, Policy: a.Policy, ProfileRevision: profile.Revision}, nil
 }
 
 // legacyDefaultConfig renders the pre-v8 JSON record for the built-in

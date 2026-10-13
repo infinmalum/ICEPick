@@ -34,9 +34,12 @@ var delegateDefinition = func() model.Tool {
 }()
 
 type delegateArgs struct {
-	Agent     string `json:"agent"`
-	Task      string `json:"task"`
-	Materials string `json:"materials"`
+	TaskID          string `json:"taskId"`
+	TaskFingerprint string `json:"taskFingerprint"`
+	Worker          string `json:"worker"`
+	Agent           string `json:"agent"`
+	Task            string `json:"task"`
+	Materials       string `json:"materials"`
 }
 
 // delegationOffered reports whether a run may offer the delegation tool at
@@ -45,6 +48,13 @@ type delegateArgs struct {
 func delegationOffered(ctx context.Context, svc *Service, profile storage.AgentProfile, runID string) bool {
 	if !profile.Delegation.Enabled || !profile.AllowsTool(delegateDefinition.Function.Name) {
 		return false
+	}
+	resources, err := svc.resourcesFor(ctx, profile, runID)
+	if err == nil && len(resources.Workers) > 0 && runID != "" {
+		run, err := svc.store.GetRun(ctx, runID)
+		if err == nil && run.Depth == 0 && run.Depth+1 <= profile.Delegation.MaxDepth {
+			return true
+		}
 	}
 	if profile.Delegation.Selection == storage.DelegationPinnedSelection {
 		if profile.Delegation.TargetAgentID == "" {
@@ -199,6 +209,12 @@ func (s *Service) executeDelegation(ctx context.Context, parentProfile storage.A
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
 		return "", errors.New("delegate_task 参数必须是 JSON 对象")
 	}
+	var planned *storage.TaskSpec
+	var err error
+	args, planned, err = s.resolvePlannedTask(ctx, parentProfile, parentRunID, args)
+	if err != nil {
+		return "", err
+	}
 	task := strings.TrimSpace(args.Task)
 	if task == "" || len(task) > 10000 {
 		return "", errors.New("子任务描述长度必须在 1 到 10000 字节之间")
@@ -211,11 +227,18 @@ func (s *Service) executeDelegation(ctx context.Context, parentProfile storage.A
 	if materials != "" {
 		userContent += "\n\n[父任务提供的材料]\n" + materials
 	}
+	name, worker, selected, err := s.selectedWorker(ctx, parentProfile, parentRunID, args)
+	if err != nil {
+		return "", err
+	}
+	if selected {
+		return s.executeWorker(ctx, parentProfile, parentSessionID, parentRunID, name, worker, userContent, planned)
+	}
 	parentRun, err := s.store.GetRun(ctx, parentRunID)
 	if err != nil {
 		return "", err
 	}
-	target, err := s.resolveDelegationTarget(ctx, parentProfile, args.Agent)
+	target, err := s.resolveFrozenLegacy(ctx, parentProfile, parentRunID, args.Agent)
 	if err != nil {
 		return "", err
 	}
@@ -332,12 +355,17 @@ func (s *Service) runDelegatedSubtask(parentCtx context.Context, ctx context.Con
 			allowedTools = append(allowedTools, definition.Function.Name)
 		}
 	}
+	actorIDs, err := s.runActorIDs(ctx, childRun.ID)
+	if err != nil {
+		finalize("failed", err.Error())
+		return "", err
+	}
 	guarded := guardedChat{inner: s.chat, payloadCheck: func(c context.Context, m []model.Message, t []model.Tool) error {
-		return s.checkPayloadFor(c, source, []string{childProfile.AgentID, parentProfile.AgentID}, childRun.SessionID, m, t)
+		return s.checkPayloadFor(c, source, actorIDs, childRun.SessionID, m, t)
 	}, check: func(checkCtx context.Context) error {
 		// The stricter exfiltration rule: both the target Agent's and the
 		// parent task's grants must cover everything the child sends.
-		return s.exfilCheckBoth(checkCtx, childRun.SessionID, source, childProfile, parentProfile.AgentID)
+		return s.exfilCheckRun(checkCtx, childRun.ID, childRun.SessionID, source, childProfile)
 	}}
 	engine := agent.Engine{
 		Model:        guarded,

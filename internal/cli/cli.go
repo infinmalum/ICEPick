@@ -53,10 +53,15 @@ func usage(errDetail string) int {
 	fmt.Fprintln(out, `用法：
   icepick serve                    启动无头宿主（含 IPC；桌面端同时内置）
   icepick status                   查看宿主与模型状态
+  icepick templates list | create <模板ID> [名称]
+  icepick conversations list | create --profile <id> [--reuse <对话ID>]
+  icepick conversations select <对话ID> --profile <id>
+  icepick conversations start <对话ID> <任务内容…> [--wait] | show <对话ID>
+  icepick conversations permissions <对话ID> [--mode semi] [--workspace <路径>]
   icepick profiles list | create <名称> [--from <id>] | copy <id> <新名称>
   icepick profiles edit <id> [--name N] [--description D] [--prompt P] [--model 提供方/模型ID] [--budget N]
-  icepick profiles restore | delete <id>
-  icepick profiles export <id> [--out <文件.zip>] | import <包.zip|目录> [--yes]
+  icepick profiles restore | delete <id> [--replace <ProfileID> | --restore-workers]
+  icepick profiles export <id> [--out <文件.zip>] [--include-workers] | import <包.zip|目录> [--yes]
   icepick agents list | create <名称> --profile <id> | switch <agentID> <profileID>
   icepick agents update <agentID> [--name N] [--mode manual|semi|automatic] [--delegate-to <名称或ID>[,…]] [--delegate-clear] | delete <agentID>
   icepick sessions list [agentID] | create [agentID] | show <sessionID> --agent <agentID>
@@ -114,6 +119,10 @@ func connect() (*ipc.Client, int) {
 
 func dispatch(client *ipc.Client, args []string) int {
 	switch args[0] {
+	case "conversations":
+		return cmdConversations(client, args[1:])
+	case "templates":
+		return cmdTemplates(client, args[1:])
 	case "status":
 		return cmdStatus(client)
 	case "profiles":

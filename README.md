@@ -2,22 +2,31 @@
 
 ICEPick 是一个本地优先、领域无关的 Agent 宿主。它使用 Go 和 Wails 3 构建桌面应用，同一二进制也提供命令行客户端。模型可接入本机 Ollama / LM Studio（无需密钥），或通过官方 Go SDK 接入 OpenAI、Anthropic 与 Gemini（凭据独立存储，发送前经数据外发授权检查）。
 
+## 重新设计的方向（2026-10-12）
+
+目标是让用户通过 **Profile** 定义完整场景，选择主执行、规划、worker、审查、配置改进等内置 Agent 组件，组合模型、指令、工具、Skills 和执行流程。运行实例由宿主创建，用户无需维护另一套 Agent 列表。计划按实际能力提供“日常助手”“研究分析”“写作编辑”“开发协作”四个经真实验收的场景 Profile 和空白创建入口。审查和复盘在当前场景中调用，无需切换 Profile；Profile/Skills 改进经过候选、验证、发布和回退流程。
+
+R1–R2 两批增量已接入：桌面以 Profile 为入口，运行状态和授权由本机上下文自动管理，旧 Agent 表和命令保留兼容。已提供日常助手、写作编辑的可编辑模板副本与空白入口，标记为待真实模型验收。研究分析、开发协作、独立规划/审查、并行调度和配置改进仍待交付。实现范围、兼容迁移与后续阶段见[设计文档](docs/architecture.md)和[实施计划](IMPLEMENTATION_PLAN.md)；P4/P5 编号对应[历史实施记录](docs/history/implementation-v1.md)。
+
 ## 当前功能
 
-- Profile 与 Agent 分离：Profile 保存可共享的提示词、模型与能力组合（可复制/编辑/恢复），Agent 持有稳定身份、会话与本机授权（审批模式 + 资源范围 + 记忆授权），支持切换 Profile 与 Run 级快照。
+- 直接选择 Profile 开始对话，无需创建 Agent；新对话默认隔离上下文，可显式沿用已有对话的记忆与权限。Profile 切换按对话保存，保留历史和授权，在途 Run 使用旧快照。
+- main/worker 组件支持独立提示词、模型和工具子集；worker 来源可选当前或其他 Profile 的配置，运行固定修订、模型与所选 SKILL.md 内容；当前只开放 direct 流程。出厂模板可创建、编辑和按配置组恢复，删除本地 Profile 不删除程序模板、历史或授权。
+- Profile schemaVersion=1、事务修订记录和归档删除；v3 分享包含执行组件与独立 worker 配置，兼容读取 v1/v2 包，不携带本机授权和出厂绑定。
 - 按 Agent 隔离会话、消息和任务记录；支持多轮对话、工具调用、流式输出与取消任务。
 - 统一接入 MCP 服务和 Agent Skills，由 Profile 选择启用范围，与 Agent 授权取交集执行。
 - 工具执行统一经权限网关：effect/sensitivity 分类、全人工/半自动/全自动三模式审批（绑定调用与参数哈希）、工作区硬边界、MCP 指纹变化暂停自动执行、每轮模型发送前的数据外发授权检查（桌面端可管理外发授权与远端凭据）。
 - 上下文压缩（P4）：会话超过 Profile 上下文预算时自动把最旧的完整轮次归纳为摘要（保留当前任务与未闭合工具调用，原文不删），摘要继承数据范围并继续受外发检查约束；会话视图可查看摘要与覆盖区间。
 - 逐 Agent 长期记忆（P4）：记忆按 `agent_id` 隔离，Profile 偏好与 Agent 授权同时开启才生效；运行开始时注入（来源与范围标注，范围计入外发检查），模型可经 `local__memory_save`（需审批）写入；桌面记忆面板与 `icepick memory` 命令提供查看/编辑/添加/删除/导出。
-- 任务规划（P4）：模型经 `local__update_plan` 维护可恢复的计划，重启后随会话恢复并在下一运行注入；计划面板可查看与清除，计划不授予任何权限。
+- 任务计划：模型经 `local__update_plan` 维护带稳定 ID、依赖、验收条件与材料出处的计划；宿主校验依赖和修订，防止并发覆盖及已开始任务被重写。桌面/CLI 显示计划，重启后恢复；清除保留修订历史。状态由模型记录，尚未接入自动调度与独立验收。
+- 本次任务执行计划：启用规划、委派和 worker 槽位后，main 可声明依赖任务，经审批按 ID 与条件指纹执行。宿主原子领取并关联子 Run、执行尝试和前置交付文本；状态由实际执行推进，未执行任务不能标记完成，中断和未知结果不会自动重跑。桌面与 `tasks status` 可查看完整计划和尝试；独立 planner、并行与独立审查仍未提供。
 - 本机委派（P5）：Profile 开启后，模型经 `local__delegate_task` 把明确描述的子任务委派给允许列表中的其他 Agent（也可指定固定目标）。子任务有独立上下文与运行记录（`parent_run_id` 任务树），权限与外发取父任务与目标 Agent 的交集、审批取更严格者，取消父任务级联取消子任务；子任务不访问目标的会话与长期记忆。
-- Profile 分享包（P5）：一键导出 zip（配置清单、人格/提示词独立文件、MCP 依赖引用、标准 Skills 目录），不含授权、会话、记忆、密钥与绝对路径；导入先预览缺失依赖与建议，确认后创建新 Profile（不自动安装资源、不创建/切换 Agent、不授权）。桌面端与 `icepick profiles export/import` 均可使用。
+- Profile 分享包 v3（兼容 v1/v2）：可明确选择包含 worker 来源，展平为独立配置；一键导出 zip（配置清单、人格/提示词独立文件、MCP 依赖引用、标准 Skills 目录），不含授权、会话、记忆、密钥与绝对路径；导入先预览缺失依赖与建议，确认后创建新 Profile（不自动安装资源、不创建/切换 Agent、不授权）。桌面端与 `icepick profiles export/import` 均可使用。
 - CLI/IPC：桌面端或 `icepick serve` 构成每数据目录唯一宿主；`icepick` 命令行经本机 IPC 驱动与桌面相同的服务契约。
 
-当前可运行的工具限于内置只读工具与记忆/计划/委派簿记工具。外部 MCP 工具执行、Jev 和 A2A 等功能尚未交付（见实施计划 P6–P7）。默认 Agent 虽已保存“全部服务和 Skills、权限范围不限、半自动审批”的配置，运行时仍受上述限制；长期记忆与委派默认需在 Profile 偏好与 Agent 授权（记忆授权 / 委派允许列表）中同时开启。
+当前内置工具包含只读工具与记忆/计划/委派簿记工具；外部 MCP 工具已可经权限网关和审批调用，统一按 external/unknown 处理。尚无通用内置写入、命令和网络工具，Jev、A2A 也未实现。默认 Agent 的一般资源策略为范围不限、半自动审批，远端外发另行授权；长期记忆与委派需在 Profile 偏好与 Agent 授权（记忆授权 / 委派允许列表）中同时开启。新 worker 使用对话本机授权，配置来源不提供权限或记忆。会话 Plan 继续保留待办语义；新的根执行计划校验实际依赖并原子领取任务，仍由 main 同步调用 worker，尚无事件驱动的 planner、并行 worker 或强制审查。
 
-升级到数据库 v9–v11 会拆分 Profile 配置并保留原 ID、会话和运行快照（v11 增加委派的会话类型与父子运行关联）。旧全局外发授权保留供核对，但需按 Agent 重新授权；旧历史来源不全时按 unknown 处理。外部 MCP 改为任务首次使用所选服务时启动。
+升级到数据库 v15 会保留原 ID、会话、记忆、运行快照和 grant；contexts 视图逐个承接旧 Agent 身份，不合并共享 Profile 的数据。新增对话级 Profile、组件配置、修订记录、归档状态、计划依赖/修订历史与根任务/执行尝试；启动迁移前自动备份，旧程序不能直接写入 v15 数据库。旧全局外发授权保留供核对，但需按 Agent 重新授权；旧历史来源不全时按 unknown 处理。外部 MCP 改为任务首次使用所选服务时启动。
 
 ## 运行
 
@@ -47,7 +56,14 @@ wails3 build
 bin/icepick serve            # 启动无头宿主（Ctrl+C 退出）
 bin/icepick status           # 宿主与模型状态
 bin/icepick profiles list    # Profile 列表（create/copy/edit/restore/export/import/delete）
-bin/icepick agents list      # Agent 列表（create/switch/update/delete；update 可配置委派允许列表）
+bin/icepick templates list   # 可用场景模板
+bin/icepick templates create daily   # 创建日常助手 Profile
+bin/icepick conversations create --profile <profileID>   # 新对话，自动隔离
+bin/icepick conversations start <conversationID> "任务内容" --wait
+bin/icepick conversations permissions <conversationID> --mode semi --workspace <项目路径>
+bin/icepick conversations select <conversationID> --profile <profileID>
+bin/icepick conversations show <conversationID>   # 查看历史、摘要与计划
+bin/icepick agents list      # 旧身份兼容入口
 bin/icepick sessions create <agentID>          # 新建会话
 bin/icepick tasks start <agentID> <sessionID> "任务内容" --wait   # 执行任务（--wait 跟随并处理审批）
 bin/icepick tasks status <runID> --agent <agentID>   # 任务状态与委派子任务树
@@ -90,6 +106,11 @@ go test ./...
 
 ## 文档
 
-- [设计文档](docs/architecture.md)：目标架构与可自定义能力。
-- [实施计划](IMPLEMENTATION_PLAN.md)：开发阶段与验收标准。
+- [设计文档](docs/architecture.md)：以 Profile 为入口的新目标架构与可自定义能力。
+- [实施计划](IMPLEMENTATION_PLAN.md)：新阶段、兼容迁移与验收标准。
+- [历史实施记录](docs/history/implementation-v1.md)：现有 P0–P8 基线及未完成的真实验收。
 - [MCP 与 Skills](docs/mcp-and-skills.md)：当前接入方式。
+
+## 许可证
+
+本项目采用 GNU Affero General Public License v3.0（`AGPL-3.0-only`），完整条款见 [LICENSE](LICENSE)。第三方依赖与保留版权声明的构建脚本遵循各自许可证。

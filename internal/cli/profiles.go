@@ -68,7 +68,7 @@ func cmdProfiles(client *ipc.Client, args []string) int {
 		printTable(rows)
 		return 0
 	case "create":
-		parsed, err := parseCLI(args[1:], "from")
+		parsed, err := parseCLI(args[1:])
 		if err != nil || parsed.arg(0) == "" {
 			return usage("用法: profiles create <名称> [--from <id>]")
 		}
@@ -113,19 +113,38 @@ func cmdProfiles(client *ipc.Client, args []string) int {
 			}
 			revision = current.Revision
 		}
+		var source storage.Profile
+		if err := client.Call("profiles.get", map[string]any{"id": profileID}, &source); err != nil {
+			return fail("profiles.get", err)
+		}
+		method := "templates.restore"
+		if source.Data.TemplateID == "" {
+			if profileID != storage.DefaultProfileID {
+				return usage("此 Profile 没有出厂模板来源")
+			}
+			method = "profiles.restore"
+		}
+		var groups []string
+		if group := parsed.value("group"); group != "" {
+			groups = []string{group}
+		}
 		var restored storage.Profile
-		if err := client.Call("profiles.restore", map[string]any{"revision": revision, "id": profileID}, &restored); err != nil {
+		if err := client.Call(method, map[string]any{"revision": revision, "id": profileID, "groups": groups}, &restored); err != nil {
 			return fail("profiles.restore", err)
 		}
 		fmt.Printf("已恢复内置内容（%s，v%d）\n", restored.Name, restored.Revision)
 		return 0
 	case "export":
-		parsed, err := parseCLI(args[1:])
+		parsed, err := parseCLI(args[1:], "include-workers")
 		if err != nil || parsed.arg(0) == "" {
-			return usage("用法: profiles export <id> [--out <文件.zip>]")
+			return usage("用法: profiles export <id> [--out <文件.zip>] [--include-workers]")
+		}
+		method := "profiles.export"
+		if parsed.flags["include-workers"] {
+			method = "profiles.exportWorkers"
 		}
 		var result app.ExportResult
-		if err := client.Call("profiles.export", map[string]any{"id": parsed.arg(0)}, &result); err != nil {
+		if err := client.Call(method, map[string]any{"id": parsed.arg(0)}, &result); err != nil {
 			return fail("profiles.export", err)
 		}
 		out := parsed.value("out")
@@ -144,11 +163,22 @@ func cmdProfiles(client *ipc.Client, args []string) int {
 	case "import":
 		return importProfile(client, args[1:])
 	case "delete":
-		parsed, err := parseCLI(args[1:])
+		parsed, err := parseCLI(args[1:], "restore-workers")
 		if err != nil || parsed.arg(0) == "" {
 			return usage("用法: profiles delete <id>")
 		}
-		if err := client.Call("profiles.delete", map[string]any{"id": parsed.arg(0)}, nil); err != nil {
+		var refs []storage.ProfileReference
+		if err := client.Call("profiles.references", map[string]any{"id": parsed.arg(0)}, &refs); err != nil {
+			return fail("profiles.references", err)
+		}
+		method := "profiles.archive"
+		if len(refs) > 0 {
+			if parsed.value("replace") == "" && !parsed.flags["restore-workers"] {
+				return usage("此 Profile 被 worker 引用；删除需使用 --replace <ProfileID> 或 --restore-workers")
+			}
+			method = "profiles.replaceArchive"
+		}
+		if err := client.Call(method, map[string]any{"id": parsed.arg(0), "replacement": parsed.value("replace"), "own": parsed.flags["restore-workers"], "expected": refs}, nil); err != nil {
 			return fail("profiles.delete", err)
 		}
 		fmt.Println("已删除 Profile", parsed.arg(0))

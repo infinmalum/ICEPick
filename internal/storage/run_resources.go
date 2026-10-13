@@ -1,0 +1,270 @@
+package storage
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	"icepick/internal/config"
+	"icepick/internal/skills"
+)
+
+type FrozenProfile struct {
+	ID       string            `json:"id"`
+	Name     string            `json:"name"`
+	Revision int               `json:"revision"`
+	Data     ProfileData       `json:"data"`
+	Skills   []skills.Snapshot `json:"skills"`
+}
+
+type LegacyWorker struct {
+	ContextID string        `json:"contextId"`
+	Name      string        `json:"name"`
+	Profile   FrozenProfile `json:"profile"`
+	Policy    AgentPolicy   `json:"policy"`
+}
+
+type RunResources struct {
+	RootContextID string                   `json:"rootContextId"`
+	Version       int                      `json:"version"`
+	Root          FrozenProfile            `json:"root"`
+	RootPolicy    AgentPolicy              `json:"rootPolicy"`
+	Workers       map[string]FrozenProfile `json:"workers"`
+	Legacy        map[string]LegacyWorker  `json:"legacy"`
+}
+
+type SkillSnapshotter func(bool, []string) ([]skills.Snapshot, error)
+
+func validateWorkerReferences(ctx context.Context, tx *sql.Tx, id string, data ProfileData) error {
+	for _, source := range data.Execution.WorkerSources {
+		if source.ProfileID == "" {
+			continue
+		}
+		if source.ProfileID == id {
+			return errors.New("引用自身请使用当前 Profile 的 worker")
+		}
+		if err := activeProfile(ctx, tx, source.ProfileID); err != nil {
+			return fmt.Errorf("worker %q: %w", source.Name, err)
+		}
+	}
+	return nil
+}
+
+func readFrozenProfile(ctx context.Context, tx *sql.Tx, id string) (FrozenProfile, error) {
+	var item FrozenProfile
+	var raw string
+	err := tx.QueryRowContext(ctx, `SELECT id,name,revision,config FROM resolved_profiles WHERE id=? AND archived_at IS NULL`, id).Scan(&item.ID, &item.Name, &item.Revision, &raw)
+	if err == nil {
+		err = json.Unmarshal([]byte(raw), &item.Data)
+	}
+	return item, err
+}
+
+func freezeSkills(item *FrozenProfile, snapshot SkillSnapshotter) error {
+	if snapshot == nil || !item.Data.AllowsTool("local__load_skill") {
+		item.Skills = []skills.Snapshot{}
+		return nil
+	}
+	var err error
+	item.Skills, err = snapshot(item.Data.AllSkills, item.Data.EnabledSkills)
+	return err
+}
+
+// Worker capabilities cannot exceed the root's common candidate selection.
+// The main component may be narrower (for example delegation-only).
+func WorkerProjection(root, source ProfileData) (ProfileData, error) {
+	child, err := source.ResolveComponent("worker")
+	if err != nil {
+		return ProfileData{}, err
+	}
+	if !root.AllMCPServers {
+		if child.AllMCPServers {
+			child.EnabledMCPServers = append([]string(nil), root.EnabledMCPServers...)
+		} else {
+			child.EnabledMCPServers = intersectStrings(child.EnabledMCPServers, root.EnabledMCPServers)
+		}
+		child.AllMCPServers = false
+	}
+	if len(root.AllowedTools) > 0 {
+		var names []string
+		for _, name := range root.AllowedTools {
+			if child.AllowsTool(name) {
+				names = append(names, name)
+			}
+		}
+		child.AllowedTools = names
+		if len(names) == 0 {
+			child.AllMCPServers = false
+			child.EnabledMCPServers = nil
+		}
+	}
+	if !root.AllSkills {
+		if child.AllSkills {
+			child.EnabledSkills = append([]string(nil), root.EnabledSkills...)
+		} else {
+			child.EnabledSkills = intersectStrings(child.EnabledSkills, root.EnabledSkills)
+		}
+		child.AllSkills = false
+	}
+	child.MemoryEnabled = false
+	child.PlanEnabled = false
+	child.Delegation = DelegationPolicy{MaxSeconds: root.Delegation.MaxSeconds}
+	child.Execution = Execution{Workflow: "direct"}
+	return child, nil
+}
+
+func intersectStrings(a, b []string) []string {
+	set := map[string]bool{}
+	for _, v := range b {
+		set[v] = true
+	}
+	var out []string
+	for _, v := range a {
+		if set[v] {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func captureRunResources(ctx context.Context, tx *sql.Tx, root FrozenProfile, contextID string, policy AgentPolicy, defaultModel config.Model, snapshot SkillSnapshotter) (RunResources, error) {
+	resources := RunResources{Version: 1, RootContextID: contextID, RootPolicy: policy, Workers: map[string]FrozenProfile{}, Legacy: map[string]LegacyWorker{}}
+	rawRoot := root.Data
+	// Bound retained content while capturing, before allocating the final JSON.
+	snapshotBytes := 0
+	captureSkills := func(item *FrozenProfile) error {
+		if err := freezeSkills(item, snapshot); err != nil {
+			return err
+		}
+		for _, skill := range item.Skills {
+			snapshotBytes += len(skill.Content) + len(skill.Description)
+		}
+		if snapshotBytes > 16<<20 {
+			return errors.New("任务依赖快照超过 16 MiB，请收窄 Skills 或委派目标")
+		}
+		return nil
+	}
+	main, err := root.Data.ResolveComponent("main")
+	if err != nil {
+		return resources, err
+	}
+	if main.Model.Provider == "" {
+		main.Model = defaultModel
+	}
+	root.Data = main
+	if err := captureSkills(&root); err != nil {
+		return resources, err
+	}
+	resources.Root = root
+	for _, slot := range rawRoot.Execution.WorkerSources {
+		item := FrozenProfile{ID: root.ID, Name: root.Name, Revision: root.Revision, Data: rawRoot}
+		if slot.Configuration != nil {
+			item.Data = slot.Configuration.ProfileData()
+			item.Name = slot.Configuration.Name
+		}
+		if slot.ProfileID != "" {
+			item, err = readFrozenProfile(ctx, tx, slot.ProfileID)
+			if err != nil {
+				return resources, fmt.Errorf("冻结 worker %q: %w", slot.Name, err)
+			}
+		}
+		item.Data, err = WorkerProjection(rawRoot, item.Data)
+		if err != nil {
+			return resources, err
+		}
+		if item.Data.Model.Provider == "" {
+			item.Data.Model = defaultModel
+		}
+		if err := captureSkills(&item); err != nil {
+			return resources, err
+		}
+		resources.Workers[slot.Name] = item
+	}
+	// Keep legacy identities separate, even when they reference one Profile.
+	// The closure freezes all reachable legacy configuration without removing
+	// the live allowlist/grant checks at dispatch time.
+	var queue []string
+	if main.Delegation.Enabled && main.AllowsTool("local__delegate_task") {
+		queue = append(queue, policy.DelegationTargets...)
+	}
+	if main.Delegation.Enabled && main.AllowsTool("local__delegate_task") && rawRoot.Delegation.Selection == DelegationPinnedSelection && rawRoot.Delegation.TargetAgentID != "" {
+		queue = append(queue, rawRoot.Delegation.TargetAgentID)
+	}
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		if _, ok := resources.Legacy[id]; ok {
+			continue
+		}
+		if len(resources.Legacy) >= 64 {
+			return resources, errors.New("旧委派依赖超过 64 个，请收窄目标")
+		}
+		var legacy LegacyWorker
+		var profileID, rawPolicy string
+		if err := tx.QueryRowContext(ctx, `SELECT id,name,profile_id,policy FROM agents WHERE id=?`, id).Scan(&legacy.ContextID, &legacy.Name, &profileID, &rawPolicy); err != nil {
+			return resources, err
+		}
+		if err := json.Unmarshal([]byte(rawPolicy), &legacy.Policy); err != nil {
+			return resources, err
+		}
+		if id == contextID {
+			legacy.Profile = FrozenProfile{ID: root.ID, Name: root.Name, Revision: root.Revision, Data: rawRoot}
+		} else {
+			legacy.Profile, err = readFrozenProfile(ctx, tx, profileID)
+		}
+		if err != nil {
+			return resources, err
+		}
+		legacy.Profile.Data, err = legacy.Profile.Data.ResolveComponent("worker")
+		if err != nil {
+			return resources, err
+		}
+		if legacy.Profile.Data.Model.Provider == "" {
+			legacy.Profile.Data.Model = defaultModel
+		}
+		if err := captureSkills(&legacy.Profile); err != nil {
+			return resources, err
+		}
+		resources.Legacy[id] = legacy
+		if legacy.Profile.Data.Delegation.Enabled {
+			queue = append(queue, legacy.Policy.DelegationTargets...)
+		}
+	}
+	encoded, err := json.Marshal(resources)
+	if err != nil {
+		return resources, err
+	}
+	if len(encoded) > 16<<20 {
+		return resources, errors.New("任务依赖快照超过 16 MiB，请收窄 Skills 或委派目标")
+	}
+	return resources, nil
+}
+
+func resourcesInTx(ctx context.Context, tx *sql.Tx, runID string) (RunResources, error) {
+	var resources RunResources
+	seen := map[string]bool{}
+	for runID != "" {
+		if seen[runID] {
+			return resources, errors.New("运行父链循环")
+		}
+		seen[runID] = true
+		var raw string
+		var parent sql.NullString
+		if err := tx.QueryRowContext(ctx, `SELECT resources_snapshot,parent_run_id FROM runs WHERE id=?`, runID).Scan(&raw, &parent); err != nil {
+			return resources, err
+		}
+		if raw != "" {
+			return resources, json.Unmarshal([]byte(raw), &resources)
+		}
+		runID = parent.String
+	}
+	return resources, nil
+}
+
+func (s *Store) RunResources(ctx context.Context, runID string) (RunResources, error) {
+	var item RunResources
+	err := s.withTx(ctx, func(tx *sql.Tx) error { var err error; item, err = resourcesInTx(ctx, tx, runID); return err })
+	return item, err
+}

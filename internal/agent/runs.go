@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"icepick/internal/config"
 	"icepick/internal/storage"
 )
 
@@ -27,6 +28,18 @@ func NewRuns(store *storage.Store) *Runs {
 // must execute with; later profile edits affect only subsequent runs.
 func (r *Runs) Start(ctx context.Context, sessionID string) (storage.Run, context.Context, storage.AgentProfile, error) {
 	return r.start(ctx, sessionID, storage.CreateRunOptions{})
+}
+
+func (r *Runs) StartPrepared(ctx context.Context, sessionID string, model config.Model, snapshot storage.SkillSnapshotter) (storage.Run, context.Context, storage.AgentProfile, error) {
+	return r.start(ctx, sessionID, storage.CreateRunOptions{CaptureResources: true, DefaultModel: model, SnapshotSkills: snapshot})
+}
+
+func (r *Runs) StartWorker(ctx context.Context, sessionID, parentID string, depth int, name string) (storage.Run, context.Context, storage.AgentProfile, error) {
+	return r.start(ctx, sessionID, storage.CreateRunOptions{ParentRunID: parentID, Depth: depth, WorkerName: name})
+}
+
+func (r *Runs) StartPlannedWorker(ctx context.Context, sessionID, parentID string, spec storage.TaskSpec) (storage.Run, context.Context, storage.AgentProfile, error) {
+	return r.start(ctx, sessionID, storage.CreateRunOptions{ParentRunID: parentID, Depth: 1, WorkerName: spec.Worker, TaskSpec: &spec})
 }
 
 // StartChild registers a delegated subtask run: the child session already

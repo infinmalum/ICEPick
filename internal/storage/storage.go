@@ -14,11 +14,12 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"icepick/internal/config"
 )
 
 // currentVersion is the schema version this binary writes. Opening a database
 // with a higher version is refused so an old binary never writes a new schema.
-const currentVersion = 11
+const currentVersion = 15
 
 type Store struct {
 	db   *sql.DB
@@ -58,11 +59,14 @@ type Message struct {
 }
 
 type Run struct {
-	ID              string `json:"id"`
-	SessionID       string `json:"sessionId"`
-	AgentID         string `json:"agentId"`
-	ProfileID       string `json:"profileId"`
-	ProfileRevision int    `json:"profileRevision"`
+	WorkerName       string `json:"workerName,omitempty"`
+	ComponentVersion int    `json:"componentVersion"`
+	Component        string `json:"component"`
+	ID               string `json:"id"`
+	SessionID        string `json:"sessionId"`
+	AgentID          string `json:"agentId"`
+	ProfileID        string `json:"profileId"`
+	ProfileRevision  int    `json:"profileRevision"`
 	// ParentRunID links a delegated subtask run to the run whose tool call
 	// started it; top-level runs leave it empty.
 	ParentRunID string `json:"parentRunId,omitempty"`
@@ -249,6 +253,26 @@ func (s *Store) migrate() (bool, error) {
 			return false, err
 		}
 	}
+	if version < 12 {
+		if err := s.withTx(context.Background(), func(tx *sql.Tx) error { return migrateContextsV12(context.Background(), tx) }); err != nil {
+			return false, err
+		}
+	}
+	if version < 13 {
+		if err := s.withTx(context.Background(), func(tx *sql.Tx) error { return migrateRunResourcesV13(context.Background(), tx) }); err != nil {
+			return false, err
+		}
+	}
+	if version < 14 {
+		if err := s.withTx(context.Background(), func(tx *sql.Tx) error { return migratePlansV14(context.Background(), tx) }); err != nil {
+			return false, err
+		}
+	}
+	if version < 15 {
+		if err := s.withTx(context.Background(), func(tx *sql.Tx) error { return migrateTaskGraphV15(context.Background(), tx) }); err != nil {
+			return false, err
+		}
+	}
 	return migrated, nil
 }
 
@@ -411,11 +435,18 @@ func (s *Store) AddMessage(ctx context.Context, sessionID, runID, role, content 
 	created := now()
 	item := Message{ID: id, SessionID: sessionID, RunID: runID, Role: role, Content: content, CreatedAt: created}
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		return tx.QueryRowContext(ctx, `INSERT INTO messages (id, session_id, agent_id, run_id, seq, role, content, tool_calls, legacy, created_at)
+		err := tx.QueryRowContext(ctx, `INSERT INTO messages (id, session_id, agent_id, run_id, seq, role, content, tool_calls, legacy, created_at)
 			SELECT ?, id, agent_id, ?, COALESCE((SELECT MAX(seq) FROM messages WHERE session_id = ?), 0) + 1, ?, ?, '', 0, ? FROM sessions WHERE id = ?
 			RETURNING agent_id, seq`,
 			item.ID, runID, sessionID, role, content, created, sessionID).
 			Scan(&item.AgentID, &item.Seq)
+		if err != nil {
+			return err
+		}
+		if role == RoleUser {
+			_, err = tx.ExecContext(ctx, `UPDATE task_roots SET goal=? WHERE run_id=? AND goal=''`, content, runID)
+		}
+		return err
 	})
 	if err != nil {
 		return Message{}, err
@@ -517,8 +548,13 @@ func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]Message, 
 
 // CreateRunOptions distinguishes top-level runs from delegated subtask runs.
 type CreateRunOptions struct {
-	ParentRunID string
-	Depth       int
+	TaskSpec         *TaskSpec
+	CaptureResources bool
+	SnapshotSkills   SkillSnapshotter
+	DefaultModel     config.Model
+	WorkerName       string
+	ParentRunID      string
+	Depth            int
 }
 
 // CreateRun starts a run for a session and resolves the owning Agent's
@@ -536,37 +572,94 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 	if err != nil {
 		return Run{}, AgentProfile{}, err
 	}
-	item := Run{ID: id, SessionID: sessionID, ParentRunID: opts.ParentRunID, Depth: opts.Depth, Status: "running", CreatedAt: now(), UpdatedAt: now()}
+	item := Run{ID: id, SessionID: sessionID, ParentRunID: opts.ParentRunID, Depth: opts.Depth, Status: "running", CreatedAt: now(), UpdatedAt: now(), ComponentVersion: 1, WorkerName: opts.WorkerName}
 	var resolved AgentProfile
-	// The single-active-run rule and the profile resolution are checked in
-	// the same transaction as the insert so a session can never carry two
-	// running runs and the snapshot is exactly the latest committed profile.
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
 		var active int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE session_id = ? AND status = 'running'`, sessionID).Scan(&active); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM runs WHERE session_id=? AND status='running'`, sessionID).Scan(&active); err != nil {
 			return err
 		}
-		if active > 0 {
+		if active != 0 {
 			return errors.New("该会话已有运行中的任务")
 		}
-		var agentID, profileID, name, configJSON, policyJSON string
-		var revision int
-		if err := tx.QueryRowContext(ctx, `SELECT a.id, a.profile_id, p.name, p.config, p.revision, a.policy FROM sessions s JOIN agents a ON a.id = s.agent_id JOIN resolved_profiles p ON p.id = a.profile_id WHERE s.id = ?`, sessionID).
-			Scan(&agentID, &profileID, &name, &configJSON, &revision, &policyJSON); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return errors.New("会话没有可用的 Agent 或 Profile")
-			}
+		var agentID, agentName, profileID, rawPolicy, kind string
+		if err := tx.QueryRowContext(ctx, `SELECT a.id,a.name,COALESCE(NULLIF(s.profile_id,''),a.profile_id),a.policy,s.kind FROM sessions s JOIN agents a ON a.id=s.agent_id WHERE s.id=?`, sessionID).Scan(&agentID, &agentName, &profileID, &rawPolicy, &kind); err != nil {
 			return err
 		}
-		var data ProfileData
-		if err := json.Unmarshal([]byte(configJSON), &data); err != nil {
-			return fmt.Errorf("解析 Profile 配置: %w", err)
-		}
 		var policy AgentPolicy
-		if err := json.Unmarshal([]byte(policyJSON), &policy); err != nil {
-			return fmt.Errorf("解析 Agent 策略: %w", err)
+		if err := json.Unmarshal([]byte(rawPolicy), &policy); err != nil {
+			return err
 		}
-		snapshot, err := json.Marshal(data)
+		item.Component = "main"
+		var frozen FrozenProfile
+		var resources RunResources
+		var resourcesRaw string
+		frozenMode := false
+		if opts.TaskSpec != nil && (opts.ParentRunID == "" || opts.Depth != 1 || opts.WorkerName == "") {
+			return errors.New("计划执行仅支持根任务的 worker 子运行")
+		}
+		if opts.ParentRunID != "" {
+			item.Component = "worker"
+			var parentStatus, parentAgent string
+			var parentDepth int
+			if err := tx.QueryRowContext(ctx, `SELECT status,agent_id,depth FROM runs WHERE id=?`, opts.ParentRunID).Scan(&parentStatus, &parentAgent, &parentDepth); err != nil {
+				return err
+			}
+			if parentStatus != "running" || kind != SessionKindDelegation || opts.Depth != parentDepth+1 {
+				return errors.New("子任务的父运行、会话或深度无效")
+			}
+			var err error
+			resources, err = resourcesInTx(ctx, tx, opts.ParentRunID)
+			if err != nil {
+				return err
+			}
+			if opts.WorkerName != "" {
+				if parentDepth != 0 || agentID != parentAgent {
+					return errors.New("worker 槽位仅用于同一上下文的直接子任务")
+				}
+				var ok bool
+				frozen, ok = resources.Workers[opts.WorkerName]
+				if !ok {
+					return errors.New("worker 未包含在任务起始快照中")
+				}
+				policy = resources.RootPolicy
+				frozenMode = true
+			} else if resources.Version != 0 {
+				legacy, ok := resources.Legacy[agentID]
+				if !ok {
+					return errors.New("旧委派目标未包含在任务起始快照中")
+				}
+				frozen = legacy.Profile
+				policy = legacy.Policy
+				frozenMode = true
+			}
+		}
+		if !frozenMode {
+			var err error
+			frozen, err = readFrozenProfile(ctx, tx, profileID)
+			if err != nil {
+				return errors.New("会话没有可用的 Profile")
+			}
+			if opts.ParentRunID == "" && opts.CaptureResources {
+				resources, err = captureRunResources(ctx, tx, frozen, agentID, policy, opts.DefaultModel, opts.SnapshotSkills)
+				if err != nil {
+					return err
+				}
+				encoded, err := json.Marshal(resources)
+				if err != nil {
+					return err
+				}
+				resourcesRaw = string(encoded)
+				frozen = resources.Root
+				frozenMode = true
+			} else {
+				frozen.Data, err = frozen.Data.ResolveComponent(item.Component)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		snapshot, err := json.Marshal(frozen.Data)
 		if err != nil {
 			return err
 		}
@@ -574,24 +667,34 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 		if opts.ParentRunID != "" {
 			parent = opts.ParentRunID
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO runs (id, session_id, agent_id, profile_id, profile_revision, profile_snapshot, parent_run_id, depth, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-			item.ID, sessionID, agentID, profileID, revision, string(snapshot), parent, opts.Depth, item.Status, item.CreatedAt, item.UpdatedAt); err != nil {
+		_, err = tx.ExecContext(ctx, `INSERT INTO runs(id,session_id,agent_id,profile_id,profile_revision,profile_snapshot,parent_run_id,depth,status,created_at,updated_at,component,component_version,worker_name,resources_snapshot) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, sessionID, agentID, frozen.ID, frozen.Revision, string(snapshot), parent, opts.Depth, item.Status, item.CreatedAt, item.UpdatedAt, item.Component, item.ComponentVersion, opts.WorkerName, resourcesRaw)
+		if err != nil {
 			return err
 		}
-		item.AgentID, item.ProfileID, item.ProfileRevision = agentID, profileID, revision
-		resolved = AgentProfile{
-			AgentID: agentID, ProfileID: profileID, ProfileName: name,
-			ProfileData: data, Policy: policy, ProfileRevision: revision,
+		if opts.ParentRunID == "" {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO task_roots(run_id) VALUES(?)`, id); err != nil {
+				return err
+			}
+		}
+		if opts.TaskSpec != nil {
+			if err := claimTaskInTx(ctx, tx, opts.ParentRunID, *opts.TaskSpec, id, opts.WorkerName); err != nil {
+				return err
+			}
+		}
+		if opts.WorkerName != "" {
+			if _, err := tx.ExecContext(ctx, `UPDATE sessions SET profile_id=? WHERE id=?`, frozen.ID, sessionID); err != nil {
+				return err
+			}
+		}
+		item.AgentID, item.ProfileID, item.ProfileRevision = agentID, frozen.ID, frozen.Revision
+		resolved = AgentProfile{AgentID: agentID, AgentName: agentName, ProfileID: frozen.ID, ProfileName: frozen.Name, ProfileRevision: frozen.Revision, ProfileData: frozen.Data, Policy: policy, ResourcesFrozen: frozenMode, FrozenSkills: frozen.Skills}
+		if resources.Version != 0 {
+			resolved.Resources = &resources
 		}
 		return nil
 	})
 	if err != nil {
 		return Run{}, AgentProfile{}, err
-	}
-	var agentName string
-	err = s.db.QueryRowContext(ctx, `SELECT name FROM agents WHERE id = ?`, item.AgentID).Scan(&agentName)
-	if err == nil {
-		resolved.AgentName = agentName
 	}
 	return item, resolved, nil
 }
@@ -652,7 +755,13 @@ func (s *Store) SetRunStatus(ctx context.Context, id, status, detail string) err
 		} else if n == 0 {
 			return errors.New("任务不存在或已结束")
 		}
-		return sweepRunArtifacts(ctx, tx, id)
+		if err := sweepRunArtifacts(ctx, tx, id); err != nil {
+			return err
+		}
+		if err := settleTaskAttempt(ctx, tx, id); err != nil {
+			return err
+		}
+		return settleTaskRoot(ctx, tx, id)
 	})
 }
 
@@ -680,12 +789,12 @@ func sweepRunArtifacts(ctx context.Context, tx *sql.Tx, runID string) error {
 	return nil
 }
 
-const runColumns = `id, session_id, agent_id, profile_id, profile_revision, parent_run_id, depth, status, error, created_at, updated_at`
+const runColumns = `id, session_id, agent_id, profile_id, profile_revision, parent_run_id, depth, status, error, created_at, updated_at, component, component_version, worker_name`
 
 func scanRun(scanner interface{ Scan(...any) error }) (Run, error) {
 	var item Run
 	var parent sql.NullString
-	err := scanner.Scan(&item.ID, &item.SessionID, &item.AgentID, &item.ProfileID, &item.ProfileRevision, &parent, &item.Depth, &item.Status, &item.Error, &item.CreatedAt, &item.UpdatedAt)
+	err := scanner.Scan(&item.ID, &item.SessionID, &item.AgentID, &item.ProfileID, &item.ProfileRevision, &parent, &item.Depth, &item.Status, &item.Error, &item.CreatedAt, &item.UpdatedAt, &item.Component, &item.ComponentVersion, &item.WorkerName)
 	if err != nil {
 		return Run{}, err
 	}

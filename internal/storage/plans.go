@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -13,9 +15,13 @@ import (
 // the whole plan through local__update_plan; the host validates and persists
 // it so a restart or a later run picks the plan back up.
 type PlanStep struct {
-	Title  string `json:"title"`
-	Status string `json:"status"`
-	Note   string `json:"note,omitempty"`
+	ID         string   `json:"id"`
+	DependsOn  []string `json:"dependsOn,omitempty"`
+	Acceptance string   `json:"acceptance,omitempty"`
+	InputRefs  []string `json:"inputRefs,omitempty"`
+	Title      string   `json:"title"`
+	Status     string   `json:"status"`
+	Note       string   `json:"note,omitempty"`
 }
 
 // Valid plan step statuses.
@@ -32,6 +38,7 @@ type SessionPlan struct {
 	AgentID   string `json:"agentId"`
 	Plan      string `json:"plan"` // JSON array of PlanStep
 	UpdatedAt string `json:"updatedAt"`
+	Revision  int    `json:"revision"`
 }
 
 // ValidatePlanSteps checks a plan the model or a client submitted: a bounded
@@ -53,53 +60,221 @@ func ValidatePlanSteps(steps []PlanStep) error {
 			return errors.New("计划备注过长")
 		}
 	}
+	ids := map[string]PlanStep{}
+	for _, step := range steps {
+		if step.ID == "" {
+			continue
+		} // Legacy lists remain readable.
+		if !planID.MatchString(step.ID) {
+			return errors.New("任务 ID 需使用文字、数字、下划线或连字符，最多 64 字符")
+		}
+		if _, exists := ids[step.ID]; exists {
+			return errors.New("任务 ID 重复")
+		}
+		ids[step.ID] = step
+	}
+	for _, step := range steps {
+		if len(step.Acceptance) > 4000 || len(step.InputRefs) > 20 || len(step.DependsOn) > 20 {
+			return errors.New("任务条件或引用过长")
+		}
+		for _, ref := range step.InputRefs {
+			if strings.TrimSpace(ref) == "" || len(ref) > 500 {
+				return errors.New("无效输入引用")
+			}
+		}
+		seen := map[string]bool{}
+		for _, dep := range step.DependsOn {
+			parent, ok := ids[dep]
+			if !ok || dep == step.ID || seen[dep] {
+				return errors.New("任务依赖缺失、自引用或重复")
+			}
+			seen[dep] = true
+			if (step.Status == PlanInProgress || step.Status == PlanDone) && parent.Status != PlanDone {
+				return errors.New("前置任务未完成，不能开始或完成后继任务")
+			}
+		}
+	}
+	visiting, visited := map[string]bool{}, map[string]bool{}
+	var visit func(string) error
+	visit = func(id string) error {
+		if visiting[id] {
+			return errors.New("任务依赖存在环")
+		}
+		if visited[id] {
+			return nil
+		}
+		visiting[id] = true
+		for _, dep := range ids[id].DependsOn {
+			if err := visit(dep); err != nil {
+				return err
+			}
+		}
+		visiting[id] = false
+		visited[id] = true
+		return nil
+	}
+	for id := range ids {
+		if err := visit(id); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
+var planID = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_-]{0,63}$`)
+
 // SetSessionPlan replaces the session's plan. The agent ownership is derived
 // from the session row in the same statement, so a plan can never be
-// attributed to a foreign agent.
+// attributed to a foreign context.
+// SetSessionPlan is a compatibility entry for older local callers. New model
+// updates must use CompareAndSetSessionPlan with the revision they observed.
 func (s *Store) SetSessionPlan(ctx context.Context, sessionID string, steps []PlanStep) (SessionPlan, error) {
-	if err := ValidatePlanSteps(steps); err != nil {
-		return SessionPlan{}, err
+	return s.setSessionPlan(ctx, sessionID, steps, nil)
+}
+
+func (s *Store) CompareAndSetSessionPlan(ctx context.Context, sessionID string, steps []PlanStep, revision int) (SessionPlan, error) {
+	return s.setSessionPlan(ctx, sessionID, steps, &revision)
+}
+
+func assignPlanIDs(steps, old []PlanStep) ([]PlanStep, error) {
+	result := append([]PlanStep(nil), steps...)
+	used := map[string]bool{}
+	for _, step := range result {
+		if step.ID != "" {
+			used[step.ID] = true
+		}
 	}
-	payload, err := json.Marshal(steps)
-	if err != nil {
-		return SessionPlan{}, err
+	for i := range result {
+		if result[i].ID != "" {
+			continue
+		}
+		// Preserve identity when a legacy caller updates an unchanged title.
+		for _, previous := range old {
+			if previous.Title == result[i].Title && !used[previous.ID] && previous.ID != "" {
+				result[i].ID = previous.ID
+				break
+			}
+		}
+		if result[i].ID == "" {
+			id, err := newID()
+			if err != nil {
+				return nil, err
+			}
+			result[i].ID = id
+		}
+		used[result[i].ID] = true
 	}
-	item := SessionPlan{SessionID: sessionID, Plan: string(payload), UpdatedAt: now()}
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		return tx.QueryRowContext(ctx, `INSERT INTO session_plans (session_id, agent_id, plan, updated_at)
-			SELECT ?, agent_id, ?, ? FROM sessions WHERE id = ?
-			ON CONFLICT(session_id) DO UPDATE SET plan = excluded.plan, updated_at = excluded.updated_at
-			RETURNING agent_id`,
-			sessionID, item.Plan, item.UpdatedAt, sessionID).Scan(&item.AgentID)
+	return result, nil
+}
+
+func (s *Store) setSessionPlan(ctx context.Context, sessionID string, steps []PlanStep, expected *int) (SessionPlan, error) {
+	var item SessionPlan
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		current, _, err := readSessionPlan(ctx, tx, sessionID)
+		if err != nil {
+			return err
+		}
+		if expected != nil && *expected != current.Revision {
+			raw, _ := json.Marshal(current)
+			return fmt.Errorf("计划修订冲突；当前状态 %s", raw)
+		}
+		var old []PlanStep
+		if current.Plan != "" {
+			if err := json.Unmarshal([]byte(current.Plan), &old); err != nil {
+				return err
+			}
+		}
+		steps, err = assignPlanIDs(steps, old)
+		if err != nil {
+			return err
+		}
+		if err := ValidatePlanSteps(steps); err != nil {
+			return err
+		}
+		// Started dependency tasks cannot disappear or change their execution
+		// contract in a replacement. Notes and status may still advance.
+		if expected != nil {
+			next := map[string]PlanStep{}
+			for _, step := range steps {
+				next[step.ID] = step
+			}
+			for _, step := range old {
+				if step.Status == PlanPending {
+					continue
+				}
+				n, ok := next[step.ID]
+				if !ok {
+					return errors.New("不能移除已开始的任务；新任务请清除旧计划后创建")
+				}
+				if n.Status == PlanPending || (step.Status == PlanDone && n.Status != PlanDone) {
+					return errors.New("已开始任务不能退回待执行，已完成任务不能重置；返工请添加新任务 ID")
+				}
+				if step.Title != n.Title || step.Acceptance != n.Acceptance || !samePlanRefs(step.DependsOn, n.DependsOn) || !samePlanRefs(step.InputRefs, n.InputRefs) {
+					return errors.New("不能改写已开始任务的输入、依赖或验收条件")
+				}
+			}
+		}
+		payload, err := json.Marshal(steps)
+		if err != nil {
+			return err
+		}
+		item = SessionPlan{SessionID: sessionID, Plan: string(payload), UpdatedAt: now(), Revision: current.Revision + 1}
+		if err := tx.QueryRowContext(ctx, `INSERT INTO session_plans(session_id,agent_id,plan,updated_at,revision)
+   SELECT ?,agent_id,?,?,? FROM sessions WHERE id=?
+   ON CONFLICT(session_id) DO UPDATE SET plan=excluded.plan,updated_at=excluded.updated_at,revision=excluded.revision
+   RETURNING agent_id`, sessionID, item.Plan, item.UpdatedAt, item.Revision, sessionID).Scan(&item.AgentID); err != nil {
+			return err
+		}
+		return recordPlanRevision(ctx, tx, item)
 	})
 	if errors.Is(err, sql.ErrNoRows) {
-		return SessionPlan{}, errors.New("会话不存在")
+		err = errors.New("会话不存在")
 	}
-	if err != nil {
-		return SessionPlan{}, err
-	}
-	return item, nil
+	return item, err
 }
 
-func (s *Store) GetSessionPlan(ctx context.Context, sessionID string) (SessionPlan, bool, error) {
-	var item SessionPlan
-	err := s.db.QueryRowContext(ctx, `SELECT session_id, agent_id, plan, updated_at FROM session_plans WHERE session_id = ?`, sessionID).
-		Scan(&item.SessionID, &item.AgentID, &item.Plan, &item.UpdatedAt)
+func samePlanRefs(a, b []string) bool {
+	a = append([]string(nil), a...)
+	b = append([]string(nil), b...)
+	slices.Sort(a)
+	slices.Sort(b)
+	return slices.Equal(a, b)
+}
+
+type planReader interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func readSessionPlan(ctx context.Context, db planReader, sessionID string) (SessionPlan, bool, error) {
+	item := SessionPlan{SessionID: sessionID, Plan: "[]"}
+	err := db.QueryRowContext(ctx, `SELECT session_id,agent_id,plan,updated_at,revision FROM session_plans WHERE session_id=?`, sessionID).Scan(&item.SessionID, &item.AgentID, &item.Plan, &item.UpdatedAt, &item.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
-		return SessionPlan{}, false, nil
+		return item, false, nil
 	}
-	if err != nil {
-		return SessionPlan{}, false, err
-	}
-	return item, true, nil
+	return item, err == nil && item.Plan != "[]", err
+}
+func (s *Store) GetSessionPlan(ctx context.Context, sessionID string) (SessionPlan, bool, error) {
+	return readSessionPlan(ctx, s.db, sessionID)
+}
+func recordPlanRevision(ctx context.Context, tx *sql.Tx, item SessionPlan) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO session_plan_revisions(session_id,revision,plan,created_at) VALUES(?,?,?,?)`, item.SessionID, item.Revision, item.Plan, item.UpdatedAt)
+	return err
 }
 
-// ClearSessionPlan removes the session's plan; clearing a session without a
-// plan is a no-op so a stale review panel never errors.
+// Clearing leaves a revision tombstone, so stale model updates cannot resurrect
+// the old plan. Earlier revisions remain available for recovery and diagnosis.
 func (s *Store) ClearSessionPlan(ctx context.Context, sessionID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM session_plans WHERE session_id = ?`, sessionID)
-	return err
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		item, found, err := readSessionPlan(ctx, tx, sessionID)
+		if err != nil || !found {
+			return err
+		}
+		item.Plan = "[]"
+		item.Revision++
+		item.UpdatedAt = now()
+		if _, err := tx.ExecContext(ctx, `UPDATE session_plans SET plan=?,revision=?,updated_at=? WHERE session_id=?`, item.Plan, item.Revision, item.UpdatedAt, sessionID); err != nil {
+			return err
+		}
+		return recordPlanRevision(ctx, tx, item)
+	})
 }

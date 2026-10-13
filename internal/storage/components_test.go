@@ -70,6 +70,7 @@ func TestV8MigrationSeparatesComponentsAndDoesNotRegrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(p.Data)
+	downgradeToV11(t, s)
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
 		// The v8 rollback also strips the newer v11 delegation structures so the
 		// migration chain can be re-exercised from this state (indexes first).

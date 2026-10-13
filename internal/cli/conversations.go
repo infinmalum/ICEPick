@@ -1,0 +1,163 @@
+package cli
+
+import (
+	"fmt"
+	"os"
+
+	"icepick/internal/ipc"
+	"icepick/internal/storage"
+)
+
+func cmdConversations(client *ipc.Client, args []string) int {
+	if len(args) == 0 {
+		return usage("conversations 需要 list|create|select|start|show")
+	}
+	parsed, err := parseCLI(args[1:], "wait", "unrestricted", "restricted", "memory", "no-memory")
+	if err != nil {
+		return usage(err.Error())
+	}
+	switch args[0] {
+	case "permissions":
+		if parsed.arg(0) == "" {
+			return usage("conversations permissions <id> [--mode manual|semi|automatic] [--workspace <路径>] [--unrestricted|--restricted] [--memory|--no-memory]")
+		}
+		var c storage.Conversation
+		if err := client.Call("conversations.get", map[string]any{"id": parsed.arg(0)}, &c); err != nil {
+			return fail("conversations.get", err)
+		}
+		var local storage.LocalContext
+		if err := client.Call("contexts.get", map[string]any{"id": c.ContextID}, &local); err != nil {
+			return fail("contexts.get", err)
+		}
+		changed := false
+		if mode := parsed.value("mode"); mode != "" {
+			local.Policy.ApprovalMode = mode
+			changed = true
+		}
+		if path := parsed.value("workspace"); path != "" {
+			local.Policy.Permissions.WorkspacePaths = []string{path}
+			changed = true
+		}
+		if parsed.flags["unrestricted"] && parsed.flags["restricted"] {
+			return usage("权限范围选项不能同时使用")
+		}
+		if parsed.flags["memory"] && parsed.flags["no-memory"] {
+			return usage("记忆选项不能同时使用")
+		}
+		if parsed.flags["unrestricted"] {
+			local.Policy.Permissions.Unrestricted = true
+			changed = true
+		}
+		if parsed.flags["restricted"] {
+			local.Policy.Permissions.Unrestricted = false
+			changed = true
+		}
+		if parsed.flags["memory"] {
+			local.Policy.Memory = true
+			changed = true
+		}
+		if parsed.flags["no-memory"] {
+			local.Policy.Memory = false
+			changed = true
+		}
+		if changed {
+			if err := client.Call("contexts.update", map[string]any{"id": c.ContextID, "policy": local.Policy}, &local); err != nil {
+				return fail("contexts.update", err)
+			}
+		}
+		fmt.Printf("审批: %s\n一般资源范围不限: %t\n工作区: %v\n记忆授权: %t\n", local.Policy.ApprovalMode, local.Policy.Permissions.Unrestricted, local.Policy.Permissions.WorkspacePaths, local.Policy.Memory)
+		return 0
+	case "list":
+		var items []storage.Conversation
+		if err := client.Call("conversations.list", nil, &items); err != nil {
+			return fail("conversations.list", err)
+		}
+		rows := [][]string{{"ID", "标题", "Profile"}}
+		for _, c := range items {
+			name := c.ProfileName
+			if c.ProfileArchived {
+				name += "（已删除）"
+			}
+			rows = append(rows, []string{c.ID, c.Title, name})
+		}
+		printTable(rows)
+		return 0
+	case "create":
+		if parsed.value("profile") == "" {
+			return usage("conversations create --profile <id> [--reuse <sessionID>] [--title <标题>]")
+		}
+		var c storage.Conversation
+		if err := client.Call("conversations.create", map[string]any{"profileId": parsed.value("profile"), "reuseSession": parsed.value("reuse"), "title": parsed.value("title")}, &c); err != nil {
+			return fail("conversations.create", err)
+		}
+		fmt.Printf("已创建对话 %s（%s）\n", c.ID, c.ProfileName)
+		return 0
+	case "select":
+		if parsed.arg(0) == "" || parsed.value("profile") == "" {
+			return usage("conversations select <id> --profile <id>")
+		}
+		var c storage.Conversation
+		if err := client.Call("conversations.select", map[string]any{"id": parsed.arg(0), "profileId": parsed.value("profile")}, &c); err != nil {
+			return fail("conversations.select", err)
+		}
+		fmt.Printf("后续任务使用 %s；历史与权限保留\n", c.ProfileName)
+		return 0
+	case "start", "show":
+		if parsed.arg(0) == "" {
+			return usage("conversations start <id> <任务内容…> [--wait] | show <id>")
+		}
+		var c storage.Conversation
+		if err := client.Call("conversations.get", map[string]any{"id": parsed.arg(0)}, &c); err != nil {
+			return fail("conversations.get", err)
+		}
+		if args[0] == "show" {
+			return cmdSessions(client, []string{"show", c.ID, "--agent", c.ContextID})
+		}
+		if len(parsed.positional) < 2 {
+			return usage("conversations start <id> <任务内容…> [--wait]")
+		}
+		var run storage.Run
+		if err := client.Call("conversations.start", map[string]any{"id": c.ID, "input": joinArgs(parsed.positional[1:])}, &run); err != nil {
+			return fail("conversations.start", err)
+		}
+		fmt.Printf("任务已启动：run %s\n", run.ID)
+		if !parsed.flags["wait"] {
+			return 0
+		}
+		var prompt approvalPrompter
+		if interactiveTerminal() {
+			prompt = terminalPrompter()
+		}
+		return waitTask(client, c.ContextID, c.ID, run.ID, prompt, os.Stdout)
+	default:
+		return usage("未知 conversations 子命令")
+	}
+}
+
+func cmdTemplates(client *ipc.Client, args []string) int {
+	if len(args) == 0 || args[0] == "list" {
+		var templates []storage.ProfileTemplate
+		if err := client.Call("templates.list", nil, &templates); err != nil {
+			return fail("templates.list", err)
+		}
+		rows := [][]string{{"ID", "名称", "验证"}}
+		for _, t := range templates {
+			rows = append(rows, []string{t.ID, t.Name, t.Validation})
+		}
+		printTable(rows)
+		return 0
+	}
+	if args[0] != "create" {
+		return usage("templates list | create <模板ID> [名称]")
+	}
+	parsed, err := parseCLI(args[1:])
+	if err != nil || parsed.arg(0) == "" {
+		return usage("templates create <模板ID> [名称]")
+	}
+	var p storage.Profile
+	if err := client.Call("templates.create", map[string]any{"id": parsed.arg(0), "name": parsed.arg(1)}, &p); err != nil {
+		return fail("templates.create", err)
+	}
+	fmt.Printf("已创建 Profile %s（%s）\n", p.ID, p.Name)
+	return 0
+}

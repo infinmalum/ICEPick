@@ -427,6 +427,13 @@ func (s *Service) StartAgentTask(agentID, sessionID, input string) (storage.Run,
 	if agentID == "" || agentID != profile.AgentID {
 		return storage.Run{}, errors.New("会话不属于所选 Agent")
 	}
+	session, err := s.store.GetSession(context.Background(), sessionID)
+	if err != nil {
+		return storage.Run{}, err
+	}
+	if session.Kind == storage.SessionKindDelegation {
+		return storage.Run{}, errors.New("子任务会话仅供查看与审批，不能作为普通对话重新执行")
+	}
 	if s.runs == nil || s.tools == nil || s.chat == nil {
 		return storage.Run{}, errors.New("Agent 尚未初始化")
 	}
@@ -449,7 +456,10 @@ func (s *Service) StartAgentTask(agentID, sessionID, input string) (storage.Run,
 		}
 		delete(s.running, sessionID)
 	}
-	item, runCtx, resolved, err := s.runs.Start(context.Background(), sessionID)
+	s.mu.RLock()
+	defaultModel := s.config.Model
+	s.mu.RUnlock()
+	item, runCtx, resolved, err := s.runs.StartPrepared(context.Background(), sessionID, defaultModel, s.skills.Snapshot)
 	if err != nil {
 		return storage.Run{}, err
 	}

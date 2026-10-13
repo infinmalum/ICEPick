@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Events } from '@wailsio/runtime'
 import { StatusService, type AppStatus } from '../bindings/icepick'
-import type { Agent, AgentPolicy, ExfilGrant, Memory, Message, Profile, Run, Session, SessionSummary, ToolCall } from '../bindings/icepick/internal/storage'
+import type { TaskGraph, AgentPolicy, Conversation, LocalContext, ProfileTemplate, ProfileReference, ExfilGrant, Memory, Message, Profile, Run, SessionSummary, ToolCall } from '../bindings/icepick/internal/storage'
 import type { CredentialStatus, ExportResult, ImportPreview, MCPEndpointStatus, SessionPlanView } from '../bindings/icepick/internal/app'
 
 type ModelDraft = { provider: string; baseUrl: string; name: string }
@@ -46,10 +46,14 @@ function bytesToBase64(bytes: Uint8Array): string {
 function App() {
   const [status, setStatus] = useState<AppStatus | null>(null)
   const [error, setError] = useState('')
-  const [sessions, setSessions] = useState<Session[]>([])
-  const [agents, setAgents] = useState<Agent[]>([])
+  const [sessions, setSessions] = useState<Conversation[]>([])
+  const [templates, setTemplates] = useState<ProfileTemplate[]>([])
+  const [reuseContext, setReuseContext] = useState(false)
+  const [restoreGroup, setRestoreGroup] = useState('')
+  const [deleteReplacement, setDeleteReplacement] = useState('__own__')
+  const [profileRefs, setProfileRefs] = useState<ProfileReference[]>([])
   const [agentID, setAgentID] = useState('default')
-  const [agentDraft, setAgentDraft] = useState<Agent | null>(null)
+  const [agentDraft, setAgentDraft] = useState<LocalContext | null>(null)
   const [agentBusy, setAgentBusy] = useState(false)
   const [agentError, setAgentError] = useState('')
   const [profiles, setProfiles] = useState<Profile[]>([])
@@ -88,12 +92,12 @@ function App() {
   const [memoryError, setMemoryError] = useState('')
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null)
   const [sessionPlan, setSessionPlan] = useState<SessionPlanView | null>(null)
+  const [taskGraph, setTaskGraph] = useState<TaskGraph | null>(null)
   const [childRuns, setChildRuns] = useState<Run[]>([])
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null)
   const [importData, setImportData] = useState('')
   const [importBusy, setImportBusy] = useState(false)
   const importInputRef = useRef<HTMLInputElement>(null)
-  const pendingSessionRef = useRef<string | null>(null)
 
   useEffect(() => {
     StatusService.GetStatus()
@@ -102,8 +106,9 @@ function App() {
         setModelDraft(value.model)
       })
       .catch((reason: unknown) => setError(String(reason)))
-    StatusService.ListAgents().then((items) => setAgents(items ?? [])).catch((reason: unknown) => setError(String(reason)))
-    StatusService.ListProfiles().then((items) => setProfiles(items ?? [])).catch((reason: unknown) => setError(String(reason)))
+    StatusService.ListProfileTemplates().then((items) => setTemplates(items ?? [])).catch((reason: unknown) => setError(String(reason)))
+    StatusService.ListConversations().then((items) => setSessions(items ?? [])).catch((reason: unknown) => setError(String(reason)))
+    StatusService.ListProfiles().then((items) => { setProfiles(items ?? []); setProfileEditID(items?.[0]?.id ?? null) }).catch((reason: unknown) => setError(String(reason)))
     StatusService.ListMCPEndpoints().then((items) => setMcpServers(items ?? [])).catch((reason: unknown) => setError(String(reason)))
     StatusService.ListCredentialStatus().then((items) => setCredStatus(items ?? [])).catch((reason: unknown) => setCredError(String(reason)))
   }, [])
@@ -125,29 +130,28 @@ function App() {
   // The compaction summary and the resumable plan are session facts; they
   // can appear or change while a run compacts or updates the plan.
   function refreshSessionKnowledge(id: string) {
-    StatusService.GetSessionSummary(agentID, id).then((value) => setSessionSummary(value)).catch(() => setSessionSummary(null))
-    StatusService.GetSessionPlan(agentID, id).then((value) => setSessionPlan(value)).catch(() => setSessionPlan(null))
+    const current = () => activeAgentID.current === agentID && activeSessionID.current === id
+    StatusService.GetSessionSummary(agentID, id).then(value => { if (current()) setSessionSummary(value) }).catch(() => { if (current()) setSessionSummary(null) })
+    StatusService.GetSessionPlan(agentID, id).then(value => { if (current()) setSessionPlan(value) }).catch(() => { if (current()) setSessionPlan(null) })
   }
 
   const activeAgentID = useRef(agentID)
   activeAgentID.current = agentID
+  const activeSessionID = useRef(selected)
+  activeSessionID.current = selected
 
-  const activeAgent = agents.find((item) => item.id === agentID) ?? null
+  const activeConversation = sessions.find((item) => item.id === selected) ?? null
 
   useEffect(() => {
-    setAgentDraft(activeAgent ? structuredClone(activeAgent) : null)
-  }, [activeAgent?.id, agents])
+    let current = true
+    setAgentDraft(null)
+    if (selected) StatusService.GetLocalContext(agentID).then((item) => { if (current) setAgentDraft(item) }).catch(reason => { if (current) setAgentError(String(reason)) })
+    return () => { current = false }
+  }, [agentID, selected])
 
-  // When the active agent changes, follow the profile it currently
-  // references so the editor shows what the next run will use.
   useEffect(() => {
-    if (!activeAgent) {
-      setProfileEditID(null)
-      setProfileDraft(null)
-      return
-    }
-    setProfileEditID(activeAgent.profileId)
-  }, [activeAgent?.profileId])
+    if (activeConversation && !activeConversation.profileArchived) setProfileEditID(activeConversation.profileId)
+  }, [activeConversation?.id, activeConversation?.profileId])
 
   useEffect(() => {
     const target = profiles.find((item) => item.id === profileEditID) ?? null
@@ -155,20 +159,11 @@ function App() {
   }, [profileEditID, profiles])
 
   useEffect(() => {
-    setSelected(null)
-    setSessions([])
-    setToolCalls([])
-    setStreamText('')
-    setChildRuns([])
-    StatusService.ListAgentSessions(agentID).then((items) => {
-      setSessions(items ?? [])
-      const wanted = pendingSessionRef.current
-      if (wanted && (items ?? []).some((session) => session.id === wanted)) {
-        pendingSessionRef.current = null
-        setSelected(wanted)
-      }
-    }).catch((reason: unknown) => setError(String(reason)))
-  }, [agentID])
+    let current = true
+    setProfileRefs([])
+    if (profileEditID) StatusService.ProfileReferences(profileEditID).then(refs => { if (current) setProfileRefs(refs ?? []) }).catch(() => {})
+    return () => { current = false }
+  }, [profileEditID, profiles])
 
   useEffect(() => {
     if (!selected) {
@@ -181,6 +176,7 @@ function App() {
     }
     let cancelled = false
     setLoadingSession(true)
+    setTaskGraph(null)
     Promise.all([StatusService.ListMessages(agentID, selected), StatusService.ListRuns(agentID, selected), StatusService.ListToolCalls(agentID, selected)])
       .then(([history, previousRuns, calls]) => {
         if (cancelled) return
@@ -245,11 +241,37 @@ function App() {
     return profiles.find((item) => item.id === id)?.name ?? `Profile ${id.slice(0, 8)}…`
   }
 
-  async function refreshAgents() {
-    const items = await StatusService.ListAgents()
-    setAgents(items ?? [])
-    const refreshed = (items ?? []).find((item) => item.id === agentID) ?? null
-    setAgentDraft(refreshed ? structuredClone(refreshed) : null)
+  async function refreshContext() {
+    if (selected) { const item = await StatusService.GetLocalContext(agentID); if (activeAgentID.current === agentID) setAgentDraft(item) }
+  }
+
+  async function refreshConversations() {
+    setSessions((await StatusService.ListConversations()) ?? [])
+  }
+
+  function openConversation(item: Conversation) {
+    setAgentID(item.contextId)
+    setSelected(item.id)
+    setMessages([])
+    setRuns([])
+    setActiveRun(null)
+    setStreamText('')
+    setToolCalls([])
+    setChildRuns([])
+    setSessionSummary(null)
+    setSessionPlan(null)
+    setTaskError('')
+    setAgentError('')
+  }
+
+  async function createTemplate(id: string) {
+    setProfileBusy(true)
+    try {
+      const created = await StatusService.CreateTemplateProfile(id, '')
+      await refreshProfiles()
+      setProfileEditID(created.id)
+      setProfileError('')
+    } catch (reason) { setProfileError(String(reason)) } finally { setProfileBusy(false) }
   }
 
   async function refreshProfiles() {
@@ -299,55 +321,24 @@ function App() {
     } catch (reason) { setTaskError(String(reason)) } finally { setApprovalBusy(false) }
   }
 
-  async function createAgent(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!agentDraft) return
-    const form = event.currentTarget
-    const name = (form.elements.namedItem('newAgentName') as HTMLInputElement).value.trim()
-    const profileID = (form.elements.namedItem('newAgentProfile') as HTMLSelectElement).value
-    if (!name || !profileID) return
-    setAgentBusy(true)
-    try {
-      const created = await StatusService.CreateAgent(name, profileID)
-      await refreshAgents()
-      setAgentID(created.id)
-      setAgentError('')
-    } catch (reason) { setAgentError(String(reason)) } finally { setAgentBusy(false) }
-  }
-
   async function saveAgent(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!agentDraft) return
+    if (!agentDraft || !selected) return
     setAgentBusy(true)
     try {
-      await StatusService.UpdateAgent(agentDraft.id, agentDraft.name, agentDraft.policy)
+      await StatusService.UpdateContextPolicy(agentID, agentDraft.policy)
+      await refreshContext()
       setAgentError('')
-      await refreshAgents()
     } catch (reason) { setAgentError(String(reason)) } finally { setAgentBusy(false) }
   }
 
-  async function switchProfile(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!agentDraft) return
-    const profileID = (event.currentTarget.elements.namedItem('switchProfile') as HTMLSelectElement).value
-    if (!profileID || profileID === agentDraft.profileId) return
-    setAgentBusy(true)
+  async function selectConversationProfile(profileID: string) {
+    if (!selected) return
     try {
-      await StatusService.SwitchAgentProfile(agentDraft.id, profileID)
-      setAgentError('')
-      await refreshAgents()
-    } catch (reason) { setAgentError(String(reason)) } finally { setAgentBusy(false) }
-  }
-
-  async function deleteAgent() {
-    if (!agentDraft || !window.confirm(`删除 Agent「${agentDraft.name}」？其会话保留前必须先转移；共享 Profile 不会被删除。`)) return
-    setAgentBusy(true)
-    try {
-      await StatusService.DeleteAgent(agentDraft.id)
-      await refreshAgents()
-      setAgentID('default')
-      setAgentError('')
-    } catch (reason) { setAgentError(String(reason)) } finally { setAgentBusy(false) }
+      await StatusService.SelectConversationProfile(selected, profileID)
+      await refreshConversations()
+      setTaskError('')
+    } catch (reason) { setTaskError(String(reason)) }
   }
 
   async function saveProfile(event: React.FormEvent<HTMLFormElement>) {
@@ -378,12 +369,20 @@ function App() {
   }
 
   async function deleteProfile() {
-    if (!profileDraft || !window.confirm(`删除 Profile「${profileDraft.name}」？仅当没有 Agent 引用它时才会成功。`)) return
+    if (!profileDraft) return
     setProfileBusy(true)
     try {
-      await StatusService.DeleteProfile(profileDraft.id)
+      const refs = (await StatusService.ProfileReferences(profileDraft.id)) ?? []
+      const own = deleteReplacement === '__own__'
+      const replacement = own ? '' : deleteReplacement
+      const consequence = refs.length ? `\n被引用的 worker：${refs.map(ref => `${ref.name}（${(ref.workers ?? []).join('、')}）`).join('；')}。\n这些来源将${own ? '恢复为各自 Profile 的 worker 配置' : `替换为「${profileName(replacement)}」`}。` : ''
+      if (!window.confirm(`删除 Profile「${profileDraft.name}」？历史与在途任务保留，后续任务需选择可用配置。${consequence}`)) return
+      if (refs.length) await StatusService.ArchiveProfileReplacing(profileDraft.id, replacement, own, refs)
+      else await StatusService.ArchiveProfile(profileDraft.id)
       await refreshProfiles()
-      setProfileEditID(activeAgent?.profileId ?? 'default')
+      await refreshConversations()
+      const remaining = (await StatusService.ListProfiles()) ?? []
+      setProfileEditID(remaining[0]?.id ?? null)
       setProfileError('')
     } catch (reason) { setProfileError(String(reason)) } finally { setProfileBusy(false) }
   }
@@ -392,7 +391,9 @@ function App() {
     if (!profileDraft) return
     setProfileBusy(true)
     try {
-      const restored = await StatusService.RestoreProfileDefault(profileDraft.revision)
+      const restored = profileDraft.data.templateId
+        ? await StatusService.RestoreTemplateProfile(profileDraft.id, profileDraft.revision, restoreGroup ? [restoreGroup] : [])
+        : await StatusService.RestoreProfileDefault(profileDraft.revision)
       await refreshProfiles()
       setProfileDraft(restored)
       setProfileError('')
@@ -477,9 +478,11 @@ function App() {
   async function createSession() {
     setCreating(true)
     try {
-      const session = await StatusService.CreateAgentSession(agentID)
-      setSessions((current) => [session, ...current])
-      setSelected(session.id)
+      if (!profileEditID) throw new Error('请先创建或选择一个 Profile')
+      const session = await StatusService.CreateConversation(profileEditID, reuseContext && selected && activeConversation?.kind !== 'delegation' ? selected : '', '')
+      await refreshConversations()
+      openConversation(session)
+      setReuseContext(false)
       setError('')
     } catch (reason) {
       setError(String(reason))
@@ -488,13 +491,18 @@ function App() {
     }
   }
 
+  async function refreshMemories(contextID: string) {
+    const items = (await StatusService.ListMemories(contextID)) ?? []
+    if (activeAgentID.current === contextID) setMemories(items)
+  }
+
   async function addMemory(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!memoryDraft.trim()) return
     setMemoryBusy(true)
     try {
       await StatusService.AddMemory(agentID, memoryDraft)
-      setMemories((await StatusService.ListMemories(agentID)) ?? [])
+      await refreshMemories(agentID)
       setMemoryDraft('')
       setMemoryError('')
     } catch (reason) { setMemoryError(String(reason)) } finally { setMemoryBusy(false) }
@@ -505,7 +513,7 @@ function App() {
     setMemoryBusy(true)
     try {
       await StatusService.UpdateMemory(agentID, memoryEdit.id, memoryEdit.content)
-      setMemories((await StatusService.ListMemories(agentID)) ?? [])
+      await refreshMemories(agentID)
       setMemoryEdit(null)
       setMemoryError('')
     } catch (reason) { setMemoryError(String(reason)) } finally { setMemoryBusy(false) }
@@ -516,7 +524,7 @@ function App() {
     setMemoryBusy(true)
     try {
       await StatusService.DeleteMemory(agentID, id)
-      setMemories((await StatusService.ListMemories(agentID)) ?? [])
+      await refreshMemories(agentID)
       setMemoryError('')
     } catch (reason) { setMemoryError(String(reason)) } finally { setMemoryBusy(false) }
   }
@@ -546,26 +554,37 @@ function App() {
 
   async function refreshChildRuns(latestRunID: string | undefined) {
     if (!latestRunID) {
+      setTaskGraph(null)
       setChildRuns([])
       return
     }
     try {
-      setChildRuns((await StatusService.ListChildRuns(agentID, latestRunID)) ?? [])
+      const sessionID = activeSessionID.current
+      const [items, graph] = await Promise.all([StatusService.ListChildRuns(agentID, latestRunID), StatusService.GetTaskGraph(agentID, latestRunID).catch(() => null)])
+      if (activeAgentID.current === agentID && activeSessionID.current === sessionID) { setChildRuns(items ?? []); setTaskGraph(graph) }
     } catch { setChildRuns([]) }
   }
 
   // A delegated subtask lives in a hidden session of the target Agent; the
   // task tree jumps there so its transcript and approvals become visible.
-  function openChildSession(child: Run) {
-    pendingSessionRef.current = child.sessionId
-    setAgentID(child.agentId)
+  async function openChildSession(child: Run) {
+    try {
+      const item = await StatusService.GetConversation(child.sessionId)
+      setSessions(current => current.some(c => c.id === item.id) ? current : [item, ...current])
+      openConversation(item)
+    } catch (reason) { setTaskError(String(reason)) }
   }
 
   async function exportProfile() {
     if (!profileDraft) return
     setProfileBusy(true)
     try {
-      const result: ExportResult = await StatusService.ExportProfile(profileDraft.id)
+      const saved = await StatusService.GetProfile(profileDraft.id)
+      const refs = (saved.data.execution.workerSources ?? []).filter(source => source.profileId)
+      if (refs.length && !window.confirm(`分享包将包含这些 worker 来源的独立配置：${refs.map(source => `${source.name} → ${profileName(source.profileId)}`).join('；')}。不携带会话、记忆或本机授权。继续导出？`)) return
+      const result: ExportResult = refs.length
+        ? await StatusService.ExportProfileIncludingWorkers(profileDraft.id)
+        : await StatusService.ExportProfile(profileDraft.id)
       downloadBase64(result.data, result.filename, 'application/zip')
       setProfileError('')
     } catch (reason) { setProfileError(String(reason)) } finally { setProfileBusy(false) }
@@ -638,7 +657,6 @@ function App() {
     setAgentDraft({ ...agentDraft, policy: { ...agentDraft.policy, permissions: { ...agentDraft.policy.permissions, ...patch } } })
   }
 
-  const referencesOf = (id: string) => agents.filter((item) => item.profileId === id)
 
   return (
     <div className="shell">
@@ -646,17 +664,15 @@ function App() {
         <div className="brand"><span className="brand-mark">◈</span> ICEPick</div>
         <div className="sidebar-label">工作区</div>
         <div className="sidebar-item active">概览</div>
-        <div className="sidebar-label sessions-label">Agents</div>
-        {agents.map((item) => (
-          <button key={item.id} className={`sidebar-item session-item ${agentID === item.id ? 'selected' : ''}`} onClick={() => setAgentID(item.id)}>
-            {item.name}
-            <span className="agent-profile-hint"> · {profileName(item.profileId)}</span>
-          </button>
+        <div className="sidebar-label sessions-label">Profiles</div>
+        {profiles.map((item) => (
+          <button key={item.id} className={`sidebar-item session-item ${profileEditID === item.id ? 'selected' : ''}`} onClick={() => setProfileEditID(item.id)}>{item.name}</button>
         ))}
-        <div className="sidebar-label sessions-label">会话</div>
-        <button className="new-session" onClick={createSession} disabled={creating || !!error || !status?.storageReady}>＋ 新建会话</button>
+        <div className="sidebar-label sessions-label">对话</div>
+        <button className="new-session" onClick={createSession} disabled={creating || !profileEditID || !status?.storageReady}>＋ 使用所选 Profile 开始对话</button>
+        {selected && activeConversation?.kind !== 'delegation' && <label className="checkbox-label"><input type="checkbox" checked={reuseContext} onChange={event => setReuseContext(event.target.checked)} />新对话沿用当前记忆与权限</label>}
         {sessions.map((session) => (
-          <button key={session.id} className={`sidebar-item session-item ${selected === session.id ? 'selected' : ''}`} onClick={() => setSelected(session.id)}>{session.title}</button>
+          <button key={session.id} className={`sidebar-item session-item ${selected === session.id ? 'selected' : ''}`} onClick={() => openConversation(session)}>{session.title}<span className="agent-profile-hint"> · {session.profileName}{session.profileArchived ? '（已删除）' : ''}</span></button>
         ))}
         <div className="sidebar-label sessions-label">MCP 服务</div>
         {mcpServers.map((server) => (
@@ -670,8 +686,8 @@ function App() {
 
       <main className="content">
         <div className="eyebrow">LOCAL AGENT / DESKTOP</div>
-        <h1>{activeAgent?.name ?? 'ICEPick'}</h1>
-        <p className="intro">Agent 是稳定实例（会话与授权随它走），Profile 是可共享的配置组合；同一 Profile 可被多个 Agent 引用，编辑只影响后续运行。</p>
+        <h1>{activeConversation?.title ?? 'ICEPick'}</h1>
+        <p className="intro">选择 Profile 开始对话，或从场景模板创建自己的配置。新对话默认隔离历史、记忆与权限。</p>
 
         <section className="status-card" aria-live="polite">
           <div className="card-title">运行状态</div>
@@ -680,7 +696,7 @@ function App() {
           ) : status ? (
             <>
               <div className="status-row"><span>本地存储</span><strong className={status.storageReady ? 'ok' : ''}>{status.storageReady ? '已就绪' : '异常'}</strong></div>
-              <div className="status-row"><span>Agent</span><strong className={status.agentReady ? 'ok' : ''}>{status.agentReady ? '已就绪' : '请配置模型'}</strong></div>
+              <div className="status-row"><span>任务执行</span><strong className={status.agentReady ? 'ok' : ''}>{status.agentReady ? '已就绪' : '请配置模型'}</strong></div>
               <div className="status-row"><span>模型服务</span><strong className={status.modelConnected ? 'ok' : ''}>{status.modelConnected ? '已连接' : '未连接'}</strong></div>
               <p className="hint">{status.message}</p>
             </>
@@ -689,59 +705,152 @@ function App() {
           )}
         </section>
 
-        {agentDraft && <details className="session-card agent-config" open>
-          <summary className="card-title">Agent「{agentDraft.name}」 <span className="revision">{profileName(agentDraft.profileId)} v{profiles.find((item) => item.id === agentDraft.profileId)?.revision ?? '?'}</span></summary>
+        <section className="session-card">
+          <div className="card-title">{selected ? sessions.find((item) => item.id === selected)?.title : '空会话'}</div>
+          {!selected ? <p className="hint">先新建或选择会话。</p> : <>
+            {sessionSummary && <details className="summary-banner" open>
+              <summary>已压缩历史 · 覆盖至消息 #{sessionSummary.coversSeq} · 范围 {scopeLabels[sessionSummary.scope] ?? sessionSummary.scope}（原文仍在下方记录中）</summary>
+              <pre className="summary-text">{sessionSummary.summary}</pre>
+            </details>}
+            {sessionPlan && sessionPlan.steps && <div className="plan-panel">
+              <div className="plan-head">
+                <span className="card-title">当前计划 · 修订 {sessionPlan.revision}</span>
+                <button type="button" className="secondary" onClick={clearPlan}>清除计划</button>
+              </div>
+              <ul className="plan-steps">
+                {sessionPlan.steps.map((step, index) => (
+                  <li key={step.id || index} className={`plan-step plan-${step.status}`}>
+                    <span className="plan-marker">{step.status === 'done' ? '✓' : step.status === 'in_progress' ? '▶' : '·'}</span>
+                    {step.title}{step.note && <span className="plan-note">（{step.note}）</span>}
+                    <small className="plan-note"> ID: {step.id}</small>
+                    {!!step.dependsOn?.length && <small className="plan-note"> 前置：{step.dependsOn.join('、')}</small>}
+                    {step.acceptance && <small className="plan-note"> 验收：{step.acceptance}</small>}
+                    {!!step.inputRefs?.length && <small className="plan-note"> 材料：{step.inputRefs.join('、')}</small>}
+                  </li>
+                ))}
+              </ul>
+              <p className="hint">前置步骤完成后才能开始后继，更新有修订保护。状态由模型记录，尚未接入自动调度或独立验收；工具调用仍走审批。</p>
+            </div>}
+            {!!taskGraph?.tasks?.length && <div className="plan-panel task-graph">
+              <span className="card-title">本次执行计划 · 修订 {taskGraph.revision}</span>
+              <p>{taskGraph.goal}</p>
+              {(taskGraph.tasks ?? []).map(item => <details key={item.spec.id}>
+                <summary>{item.spec.id} · {item.spec.worker} · {item.state}</summary>
+                <p>{item.spec.task}</p>
+                {item.spec.materials && <pre>{item.spec.materials}</pre>}
+                {!!item.spec.dependsOn?.length && <p>前置任务：{item.spec.dependsOn.join('、')}</p>}
+                {item.spec.acceptance && <p>验收条件：{item.spec.acceptance}</p>}
+                {(taskGraph.attempts ?? []).filter(a => a.taskId === item.spec.id).map(a => <p key={a.id}>执行尝试 {a.id} · {a.status} · 运行 {a.runId}</p>)}
+              </details>)}
+              <p className="hint">状态来自实际执行；succeeded 表示执行结束，独立审查尚未接入。领取前可展开查看任务条件；中断或结果未知的任务不会自动重跑。</p>
+            </div>}
+            {(pendingCalls.length > 0 || unknownCalls.length > 0) && (
+              <div className="approval-panel">
+                <div className="card-title">待处理工具调用</div>
+                {pendingCalls.map((call) => (
+                  <div className="approval-row" key={call.id}>
+                    <div className="approval-info">
+                      <code>{call.toolName}</code>
+                      <pre>{call.arguments}</pre>
+                    </div>
+                    <div className="approval-actions">
+                      <button disabled={approvalBusy} onClick={() => approveCall(call)}>批准执行</button>
+                      <button className="secondary" disabled={approvalBusy} onClick={() => denyCall(call)}>拒绝</button>
+                    </div>
+                  </div>
+                ))}
+                {unknownCalls.map((call) => (
+                  <div className="approval-row" key={call.id}>
+                    <div className="approval-info">
+                      <code>{call.toolName}</code>
+                      <p className="error">{call.error || '结果未知，等待处置'}</p>
+                    </div>
+                    <div className="approval-actions">
+                      <button disabled={approvalBusy} onClick={() => resolveUnknown(call, true)}>确认为成功</button>
+                      <button className="secondary" disabled={approvalBusy} onClick={() => resolveUnknown(call, false)}>确认为失败</button>
+                    </div>
+                  </div>
+                ))}
+                <p className="hint">批准只对当前这条调用的参数生效；结果未知的调用需要你说明依据后处置，会话才能继续。</p>
+              </div>
+            )}
+            {activeRun && runs[0] && <p className="hint profile-run-hint">本次运行使用 Profile「{profileName(runs[0].profileId)}」快照 v{runs[0].profileRevision}；后续运行将使用「{activeConversation?.profileArchived ? '请选择新 Profile' : activeConversation?.profileName ?? '…'}」当前内容。</p>}
+            {(childRuns ?? []).length > 0 && <div className="task-tree">
+              <span className="card-title">子任务（任务树）</span>
+              {(childRuns ?? []).map((child) => (
+                <div className="tree-child" key={child.id}>
+                  <span className={`tree-state tree-${child.status}`}>{child.status}</span>
+                  <span>{profileName(child.profileId)} · 深度 {child.depth}</span>
+                  {child.error && <span className="tree-error">{child.error}</span>}
+                  <button type="button" className="secondary" onClick={() => openChildSession(child)}>查看子会话</button>
+                </div>
+              ))}
+              <p className="hint">子任务使用目标配置快照与独立上下文：不写入其普通会话，不访问其长期记忆；权限与外发取父任务与旧委派目标授权的交集，审批取更严格者。</p>
+            </div>}
+            <div className="message-list" aria-live="polite">
+              {messages.length === 0 && !streamText && <p className="hint">还没有消息。可以试试“现在几点？”来验证 MCP 时间工具。</p>}
+              {messages.map((item) => <div className={`message message-${item.role}`} key={item.id}><span className="message-role">{item.role === 'user' ? '你' : item.role === 'tool' ? 'MCP 工具' : 'ICEPick'}</span><p>{item.content}</p></div>)}
+              {streamText && <div className="message message-assistant streaming"><span className="message-role">ICEPick · 生成中</span><p>{streamText}</p></div>}
+            </div>
+            <form className="task-form" onSubmit={sendTask}>
+              <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="给 ICEPick 一个任务…" rows={3} />
+              <div className="model-actions">
+                <button type="submit" disabled={sending || loadingSession || !!activeRun || activeConversation?.kind === 'delegation' || activeConversation?.profileArchived || !status?.storageReady || !prompt.trim()}>发送任务</button>
+                {activeRun && <button type="button" className="secondary" onClick={cancelTask}>取消任务</button>}
+              </div>
+            </form>
+            {activeRun && <p className="hint">任务正在运行…</p>}
+            {taskError && <p className="error">{taskError}</p>}
+            {runs[0]?.status === 'failed' && <p className="error">任务失败：{runs[0].error}</p>}
+            {runs[0]?.status === 'cancelled' && <p className="hint">任务已取消。</p>}
+          </>}
+        </section>
+
+        <section className="session-card">
+          <div className="card-title">场景模板</div>
+          <p className="hint">模板由程序提供，删除本地 Profile 后仍可重新创建。以下模板已接入直接执行，尚待真实模型验收。</p>
+          <div className="model-actions">
+            {templates.map(item => <button key={item.id} type="button" className="secondary" disabled={profileBusy} onClick={() => createTemplate(item.id)}>＋ {item.name}</button>)}
+            <button type="button" className="secondary" disabled={profileBusy} onClick={() => createProfile('')}>＋ 空白 Profile</button>
+          </div>
+          {!profileDraft && <p className="hint">请创建或选择 Profile。研究分析与开发协作模板将在规划、审查与工具依赖就绪后提供。</p>}
+          {!profileDraft && profileError && <p className="error">{profileError}</p>}
+        </section>
+
+        {activeConversation && <section className="session-card">
+          <div className="card-title">此对话后续使用的 Profile</div>
+          <select disabled={activeConversation.kind === 'delegation'} value={activeConversation.profileArchived ? '' : activeConversation.profileId} onChange={event => selectConversationProfile(event.target.value)}>
+            <option value="" disabled>请选择可用 Profile</option>
+            {profiles.map(item => <option key={item.id} value={item.id}>{item.name}（v{item.revision}）</option>)}
+          </select>
+          <p className="hint">切换保留此对话历史、记忆与权限；正在执行的任务使用启动时的配置。</p>
+          {activeConversation.profileArchived && <p className="error">原 Profile 已删除；历史可继续查看，启动新任务前请选择可用配置。</p>}
+        </section>}
+
+        {agentDraft && selected && <details className="session-card agent-config">
+          <summary className="card-title">此对话的本机权限与记忆授权</summary>
           <form className="model-form" onSubmit={saveAgent}>
-            <label>Agent 名称<input value={agentDraft.name} onChange={(event) => setAgentDraft({ ...agentDraft, name: event.target.value })} required /></label>
-            <label>审批模式<select value={agentDraft.policy.approvalMode} onChange={(event) => updatePolicy({ approvalMode: event.target.value })}>
+            <label>审批模式<select value={agentDraft.policy.approvalMode} onChange={event => updatePolicy({ approvalMode: event.target.value })}>
               <option value="manual">全人工</option><option value="semi">半自动</option><option value="automatic">全自动</option>
             </select></label>
-            <label className="checkbox-label"><input type="checkbox" checked={agentDraft.policy.permissions.unrestricted} onChange={(event) => updatePermissions({ unrestricted: event.target.checked })} />不限工作区、命令和网络目标</label>
-            <label className="checkbox-label"><input type="checkbox" checked={agentDraft.policy.memory} onChange={(event) => updatePolicy({ memory: event.target.checked })} />允许使用长期记忆（与 Profile 偏好同时开启才生效）</label>
-            <div className="scope-checks">
-              <span className="agent-profile-hint">可委派目标（勾选后此 Agent 可把子任务委派给这些 Agent，可含自身；Profile 委派开关也须开启）：</span>
-              {agents.map((item) => (
-                <label className="checkbox-label" key={item.id}>
-                  <input type="checkbox" checked={(agentDraft.policy.delegationTargets ?? []).includes(item.id)} onChange={(event) => {
-                    const current = agentDraft.policy.delegationTargets ?? []
-                    updatePolicy({ delegationTargets: event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id) })
-                  }} />
-                  {item.name}{item.id === agentDraft.id ? '（自身）' : ''}
-                </label>
-              ))}
-              {agents.length <= 1 && <span className="agent-profile-hint">还没有其他 Agent；也可把自身列为目标。</span>}
-            </div>
-            {!agentDraft.policy.permissions.unrestricted && <><label>允许的工作区路径（每行一个）<textarea rows={2} value={(agentDraft.policy.permissions.workspacePaths ?? []).join('\n')} onChange={(event) => updatePermissions({ workspacePaths: event.target.value.split('\n').map((path) => path.trim()).filter(Boolean) })} /></label><label>允许的命令（每行一个）<textarea rows={2} value={(agentDraft.policy.permissions.commands ?? []).join('\n')} onChange={(event) => updatePermissions({ commands: event.target.value.split('\n').map((cmd) => cmd.trim()).filter(Boolean) })} /></label><label>允许的网络目标（每行一个）<textarea rows={2} value={(agentDraft.policy.permissions.networkHosts ?? []).join('\n')} onChange={(event) => updatePermissions({ networkHosts: event.target.value.split('\n').map((host) => host.trim()).filter(Boolean) })} /></label></>}
-            <div className="model-actions"><button type="submit" disabled={agentBusy}>保存 Agent（名称与策略）</button><button type="button" className="secondary" disabled={agentBusy || agentDraft.id === 'default'} onClick={deleteAgent}>删除 Agent</button></div>
-          </form>
-          <form className="model-form" onSubmit={switchProfile}>
-            <label>切换 Profile（会话与授权保留，下一个运行生效）
-              <select name="switchProfile" defaultValue={agentDraft.profileId}>
-                {profiles.map((item) => <option key={item.id} value={item.id}>{item.name}（v{item.revision}）</option>)}
-              </select>
-            </label>
-            <div className="model-actions"><button type="submit" disabled={agentBusy}>切换 Profile</button></div>
-          </form>
-          <form className="model-form" onSubmit={createAgent}>
-            <label>新建 Agent（引用已有 Profile，授权独立初始化）
-              <input name="newAgentName" placeholder="新 Agent 名称" required />
-            </label>
-            <label>引用 Profile
-              <select name="newAgentProfile" defaultValue={agentDraft.profileId}>
-                {profiles.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-              </select>
-            </label>
-            <div className="model-actions"><button type="submit" disabled={agentBusy}>创建 Agent</button></div>
+            <label className="checkbox-label"><input type="checkbox" checked={agentDraft.policy.permissions.unrestricted} onChange={event => updatePermissions({ unrestricted: event.target.checked })} />允许一般资源范围不限（敏感访问与外发仍单独检查）</label>
+            <label className="checkbox-label"><input type="checkbox" checked={agentDraft.policy.memory} onChange={event => updatePolicy({ memory: event.target.checked })} />允许长期记忆（Profile 也须开启）</label>
+            {!agentDraft.policy.permissions.unrestricted && <>
+              <label>允许的工作区路径（每行一个）<textarea rows={2} value={(agentDraft.policy.permissions.workspacePaths ?? []).join('\n')} onChange={event => updatePermissions({ workspacePaths: event.target.value.split('\n').map(path => path.trim()).filter(Boolean) })} /></label>
+              <label>允许的命令（每行一个）<textarea rows={2} value={(agentDraft.policy.permissions.commands ?? []).join('\n')} onChange={event => updatePermissions({ commands: event.target.value.split('\n').map(cmd => cmd.trim()).filter(Boolean) })} /></label>
+              <label>允许的网络目标（每行一个）<textarea rows={2} value={(agentDraft.policy.permissions.networkHosts ?? []).join('\n')} onChange={event => updatePermissions({ networkHosts: event.target.value.split('\n').map(host => host.trim()).filter(Boolean) })} /></label>
+            </>}
+            <button type="submit" disabled={agentBusy}>保存本机权限</button>
           </form>
           {agentError && <p className="error">{agentError}</p>}
-          <p className="hint">审批与资源范围属于 Agent 本机策略；Profile 只承载提示词、模型和能力选择。切换 Profile 不会清空会话历史，也不会扩大授权。</p>
+          <p className="hint">这些授权保存在本机，不进入 Profile 分享包。显式沿用记忆与权限的对话共享此处设置。</p>
         </details>}
 
         {profileDraft && <section className="session-card">
-          <div className="card-title">Profile「{profileDraft.name}」 <span className="revision">v{profileDraft.revision}{profileDraft.isDefault ? ' · 内置默认' : ` · 被 ${referencesOf(profileDraft.id).length} 个 Agent 引用`}</span></div>
+          <div className="card-title">Profile「{profileDraft.name}」 <span className="revision">v{profileDraft.revision}{profileDraft.data.templateId ? ' · 场景模板副本' : ''}</span></div>
           <label className="model-form">编辑目标
             <select value={profileEditID ?? ''} onChange={(event) => setProfileEditID(event.target.value)}>
-              {profiles.map((item) => <option key={item.id} value={item.id}>{item.name}{item.isDefault ? '（内置默认）' : `（${referencesOf(item.id).length} 个引用）`}</option>)}
+              {profiles.map((item) => <option key={item.id} value={item.id}>{item.name}{item.data.templateId ? '（模板副本）' : ''}</option>)}
             </select>
           </label>
           <div className="model-actions">
@@ -750,8 +859,15 @@ function App() {
             <button type="button" className="secondary" disabled={profileBusy} onClick={exportProfile}>导出分享包</button>
             <button type="button" className="secondary" disabled={profileBusy} onClick={() => importInputRef.current?.click()}>导入分享包…</button>
             <input ref={importInputRef} type="file" accept=".zip,application/zip" style={{ display: 'none' }} onChange={onImportFile} />
-            <button type="button" className="secondary" disabled={profileBusy || profileDraft.isDefault} onClick={deleteProfile}>删除</button>
-            {profileDraft.isDefault && <button type="button" className="secondary" disabled={profileBusy} onClick={restoreProfileDefault}>恢复内置内容</button>}
+            {profileRefs.length > 0 && <label>删除时替代引用<select value={deleteReplacement} onChange={event => setDeleteReplacement(event.target.value)}>
+              <option value="__own__">恢复引用者自身的 worker 配置</option>
+              {profiles.filter(item => item.id !== profileDraft.id).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select></label>}
+            <button type="button" className="secondary" disabled={profileBusy} onClick={deleteProfile}>删除</button>
+            {(profileDraft.data.templateId || profileDraft.isDefault) && <>
+              {profileDraft.data.templateId && <select aria-label="恢复配置组" value={restoreGroup} onChange={event => setRestoreGroup(event.target.value)}><option value="">全部配置</option>{['persona', 'prompt', 'model', 'capabilities', 'runtime', 'execution'].map(group => <option key={group} value={group}>{({persona:'人格与说明',prompt:'提示词',model:'模型',capabilities:'工具与 Skills',runtime:'运行偏好',execution:'组件设置'} as Record<string,string>)[group]}</option>)}</select>}
+              <button type="button" className="secondary" disabled={profileBusy} onClick={restoreProfileDefault}>恢复出厂配置</button>
+            </>}
           </div>
           <form className="model-form" onSubmit={saveProfile}>
             <label>Profile 名称<input value={profileDraft.name} onChange={(event) => setProfileDraft({ ...profileDraft, name: event.target.value })} required /></label>
@@ -771,42 +887,65 @@ function App() {
             <label>人格<textarea value={profileDraft.data.persona} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, persona: event.target.value } })} /></label>
             <label>上下文预算（token）<input type="number" min={1024} max={1000000} value={profileDraft.data.contextBudget} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, contextBudget: Number(event.target.value) } })} /></label>
             <label className="checkbox-label"><input type="checkbox" checked={profileDraft.data.memoryEnabled} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, memoryEnabled: event.target.checked } })} />启用长期记忆（运行开始时检索，模型可用 local__memory_save 写入）</label>
-            <label className="checkbox-label"><input type="checkbox" checked={profileDraft.data.planEnabled} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, planEnabled: event.target.checked } })} />启用任务规划（模型用 local__update_plan 维护可恢复计划）</label>
-            <label className="checkbox-label"><input type="checkbox" checked={profileDraft.data.delegation.enabled} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, delegation: { ...profileDraft.data.delegation, enabled: event.target.checked } } })} />允许委派子 Agent（每次委派都需要审批；目标受各 Agent 允许列表约束）</label>
-            {profileDraft.data.delegation.enabled && <>
-              <label>最大委派深度<input type="number" min={0} max={4} value={profileDraft.data.delegation.maxDepth} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, delegation: { ...profileDraft.data.delegation, maxDepth: Number(event.target.value) } } })} /></label>
-              <label>并发子任务上限（默认 2）<input type="number" min={1} max={8} value={profileDraft.data.delegation.maxConcurrency || 2} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, delegation: { ...profileDraft.data.delegation, maxConcurrency: Number(event.target.value) } } })} /></label>
-              <label>单次子任务时间预算（秒，0 表示随运行上限 600）<input type="number" min={0} max={600} value={profileDraft.data.delegation.maxSeconds} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, delegation: { ...profileDraft.data.delegation, maxSeconds: Number(event.target.value) } } })} /></label>
-              <label>目标选择方式
-                <select value={profileDraft.data.delegation.selection || 'model'} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, delegation: { ...profileDraft.data.delegation, selection: event.target.value } } })}>
-                  <option value="model">由模型从允许列表中选择</option>
-                  <option value="pinned">固定目标（本机 Agent）</option>
-                </select>
-              </label>
-              {profileDraft.data.delegation.selection === 'pinned' && <label>固定目标 Agent（分享包不携带此选择）
-                <select value={profileDraft.data.delegation.targetAgentId ?? ''} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, delegation: { ...profileDraft.data.delegation, targetAgentId: event.target.value } } })}>
-                  <option value="">（未设置）</option>
-                  {agents.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-                </select>
-              </label>}
-            </>}
+            <label className="checkbox-label"><input type="checkbox" checked={profileDraft.data.planEnabled} onChange={(event) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, planEnabled: event.target.checked } })} />启用任务规划（会话待办；配置 worker 后可声明本次执行计划）</label>
+            <details><summary>高级：执行组件</summary>
+              <p className="hint">当前执行流程为直接执行。main 和 worker 共用运行循环；规划、独立审查、并行调度与配置改进将在后续阶段提供。</p>
+              {(['main', 'worker'] as const).map(role => {
+                const component = profileDraft.data.execution[role]
+                const update = (patch: Partial<typeof component>) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, execution: { ...profileDraft.data.execution, [role]: { ...component, ...patch } } } })
+                return <div key={role} className="model-form">
+                  <strong>{role === 'main' ? '主执行' : '子任务执行'}</strong>
+                  <label>组件提示词（留空使用公共提示词）<textarea rows={3} value={component.systemPrompt} onChange={event => update({ systemPrompt: event.target.value })} /></label>
+                  <label>组件模型<select value={component.model?.provider ?? ''} onChange={event => update({ model: event.target.value ? { provider: event.target.value, baseUrl: providerDefaults[event.target.value] ?? '', name: '' } : null })}>
+                    <option value="">使用 Profile 公共模型</option>{Object.entries(providerLabels).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+                  </select></label>
+                  {component.model && <><label>模型地址<input value={component.model.baseUrl} onChange={event => update({ model: { ...component.model!, baseUrl: event.target.value } })} /></label><label>模型 ID<input value={component.model.name} onChange={event => update({ model: { ...component.model!, name: event.target.value } })} /></label></>}
+                  <label className="checkbox-label"><input type="checkbox" checked={component.restrictTools} onChange={event => update({ restrictTools: event.target.checked })} />限制为公共能力中的工具子集</label>
+                  {component.restrictTools && <label>允许的工具（每行一个，空列表表示不允许工具）<textarea rows={2} value={(component.allowedTools ?? []).join('\n')} onChange={event => update({ allowedTools: event.target.value.split('\n').map(name => name.trim()).filter(Boolean) })} /></label>}
+                </div>
+              })}
+              <label className="checkbox-label"><input type="checkbox" checked={profileDraft.data.delegation.enabled} onChange={event => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, delegation: { ...profileDraft.data.delegation, enabled: event.target.checked, maxDepth: event.target.checked ? Math.max(1, profileDraft.data.delegation.maxDepth) : profileDraft.data.delegation.maxDepth } } })} />允许调用 worker（受对话授权与审批策略约束）</label>
+              <div className="card-title">Worker 配置来源</div>
+              <p className="hint">选择当前 Profile 的 worker 或其他 Profile 的 worker 配置。任务开始时固定配置和 Skill 内容；子任务只使用明确材料和此对话的权限，不读取配置来源的历史或记忆。</p>
+              {(profileDraft.data.execution.workerSources ?? []).map((source, index) => <div key={index} className="model-form">
+                <label>Worker 名称<input value={source.name} onChange={event => {
+                  const sources = [...(profileDraft.data.execution.workerSources ?? [])]; sources[index] = { ...source, name: event.target.value }
+                  setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, execution: { ...profileDraft.data.execution, workerSources: sources } } })
+                }} /></label>
+                <label>配置来源<select value={source.configuration ? '__bundled__' : source.profileId} onChange={event => {
+                  const sources = [...(profileDraft.data.execution.workerSources ?? [])]; sources[index] = { ...source, profileId: event.target.value, configuration: null }
+                  setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, execution: { ...profileDraft.data.execution, workerSources: sources } } })
+                }}>
+                  {source.configuration && <option value="__bundled__" disabled>包内配置：{source.configuration.name}</option>}
+                  <option value="">当前 Profile 的 worker</option>
+                  {profiles.filter(item => item.id !== profileDraft.id).map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select></label>
+                <button type="button" className="secondary" onClick={() => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, execution: { ...profileDraft.data.execution, workerSources: (profileDraft.data.execution.workerSources ?? []).filter((_, i) => i !== index) } } })}>移除此 worker</button>
+              </div>)}
+              <button type="button" className="secondary" disabled={(profileDraft.data.execution.workerSources ?? []).length >= 8} onClick={() => {
+                const current = profileDraft.data.execution.workerSources ?? []; let n = 1; while (current.some(source => source.name === `worker${n}`)) n++
+                setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, execution: { ...profileDraft.data.execution, workerSources: [...current, { name: `worker${n}`, profileId: '', configuration: null }] } } })
+              }}>＋ 添加 worker</button>
+              <p className="hint">当前委派按调用顺序同步执行。旧委派目标继续保留原本机授权；新的 worker 来源不需要创建持久 Agent。</p>
+            </details>
             <div className="model-actions"><button type="submit" disabled={profileBusy}>保存 Profile</button></div>
           </form>
           {profileError && <p className="error">{profileError}</p>}
-          <p className="hint">Profile 可复制分享、不含实例数据与授权；保存后立即原子生效，被引用时编辑影响所有引用 Agent 的后续运行。分享包只承载配置与 Skills 文件，不含授权、会话、记忆、密钥或本机委派目标。</p>
+          <p className="hint">Profile 可复制分享；保存以新修订原子发布，仅影响后续任务。分享包只承载配置与 Skills 文件，不含授权、会话、记忆、密钥或本机委派目标。</p>
         </section>}
 
         {importPreview && <section className="session-card">
           <div className="card-title">导入预览「{importPreview.name}」</div>
           <div className="import-preview">
             <p>模型：{importPreview.model.provider || '（应用默认）'}{importPreview.model.name ? `/${importPreview.model.name}` : ''} · 上下文预算 {importPreview.contextBudget} tokens · 人格 {importPreview.personaChars} 字符 · 提示词 {importPreview.promptChars} 字符</p>
-            <p>委派：{importPreview.delegation.enabled ? `启用（深度 ${importPreview.delegation.maxDepth} · 并发 ${importPreview.delegation.maxConcurrency || 2} · ${importPreview.delegation.maxSeconds > 0 ? `${importPreview.delegation.maxSeconds} 秒` : '随运行上限'}）` : '关闭'} · 记忆偏好：{importPreview.memoryEnabled ? '开（需接收方 Agent 授权才生效）' : '关'} · 规划：{importPreview.planEnabled ? '开' : '关'}</p>
+            <p>委派：{importPreview.delegation.enabled ? `启用（深度 ${importPreview.delegation.maxDepth} · 并发 ${importPreview.delegation.maxConcurrency || 2} · ${importPreview.delegation.maxSeconds > 0 ? `${importPreview.delegation.maxSeconds} 秒` : '随运行上限'}）` : '关闭'} · 记忆偏好：{importPreview.memoryEnabled ? '开（需接收方 本机记忆授权才生效）' : '关'} · 规划：{importPreview.planEnabled ? '开' : '关'}</p>
             {importPreview.mcpServers && importPreview.mcpServers.length > 0 && <ul className="import-list">
               {importPreview.mcpServers.map((server) => <li key={server.name}>MCP {server.name}（命令 {server.command}）{server.configured ? ' · 已接入本机' : ' · 未接入本机，需自行配置'}</li>)}
             </ul>}
             {importPreview.skills && importPreview.skills.length > 0 && <ul className="import-list">
               {importPreview.skills.map((skill) => <li key={skill.name}>Skill {skill.name}{skill.bundled ? ' · 包内包含文件' : ''}{skill.installed ? ' · 已安装' : ' · 未安装，导入不会自动安装'}</li>)}
             </ul>}
+            {(importPreview.workers ?? []).length > 0 && <ul className="import-list">{(importPreview.workers ?? []).map(worker => <li key={worker.name}>Worker {worker.name} → {worker.source}{worker.bundled ? '（独立配置副本）' : ''}</li>)}</ul>}
             {(importPreview.warnings ?? []).map((warning, index) => <p className="hint" key={index}>注意：{warning}</p>)}
           </div>
           <div className="model-actions">
@@ -867,9 +1006,9 @@ function App() {
           {credError && <p className="error">{credError}</p>}
         </section>
 
-        <section className="session-card">
-          <div className="card-title">数据外发授权 · {activeAgent?.name ?? '未选择 Agent'}</div>
-          <p className="hint">授权仅用于当前 Agent。远端发送检查会话累计来源、提示词及工具定义；本机处理也保留来源限制，供之后切换远端时检查。旧版全局授权需在每个 Agent 下重新设置。</p>
+        {selected && <section className="session-card">
+          <div className="card-title">数据外发授权 · {activeConversation?.title ?? '未选择对话'}</div>
+          <p className="hint">授权用于当前对话的本机上下文。远端发送检查会话累计来源、提示词及工具定义；本机处理也保留来源限制，供之后切换远端时检查。显式沿用权限的对话共享此设置。</p>
           {(grants ?? []).length === 0 && <p className="hint">还没有外发授权。配置远端模型并首次发送时，会在此提示需要授权。</p>}
           {(grants ?? []).map((grant) => (
             <div className="grant-row" key={grant.destination}>
@@ -896,12 +1035,12 @@ function App() {
             <div className="model-actions"><button type="submit" disabled={grantBusy || !grantForm.destination.trim() || grantForm.scopes.length === 0}>保存授权</button></div>
           </form>
           {grantError && <p className="error">{grantError}</p>}
-        </section>
+        </section>}
 
-        <section className="session-card">
-          <div className="card-title">长期记忆 · {activeAgent?.name ?? '未选择 Agent'}</div>
-          <p className="hint">记忆按 Agent 归属：切换 Profile 不清空、共享 Profile 不共享、复制 Profile 不携带。记忆会注入后续运行的提示词，其数据范围计入外发检查；关闭记忆只停止读写，内容保留到你手动删除。</p>
-          {(memories ?? []).length === 0 && <p className="hint">还没有长期记忆。Agent 在运行中可调用 local__memory_save 保存，也可以在下方手动添加。</p>}
+        {selected && <section className="session-card">
+          <div className="card-title">长期记忆 · {activeConversation?.title ?? '未选择对话'}</div>
+          <p className="hint">记忆按本机上下文归属：切换 Profile 不清空、共享 Profile 不共享、复制 Profile 不携带。记忆会注入后续运行的提示词，其数据范围计入外发检查；关闭记忆只停止读写，内容保留到你手动删除。</p>
+          {(memories ?? []).length === 0 && <p className="hint">还没有长期记忆。模型在获准运行中可调用 local__memory_save 保存，也可以在下方手动添加。</p>}
           {(memories ?? []).map((memory) => (
             <div className="memory-row" key={memory.id}>
               {memoryEdit && memoryEdit.id === memory.id ? (
@@ -932,93 +1071,11 @@ function App() {
             </div>
           </form>
           {memoryError && <p className="error">{memoryError}</p>}
-        </section>
+        </section>}
 
-        <section className="session-card">
-          <div className="card-title">{selected ? sessions.find((item) => item.id === selected)?.title : '空会话'}</div>
-          {!selected ? <p className="hint">先新建或选择会话。</p> : <>
-            {sessionSummary && <details className="summary-banner" open>
-              <summary>已压缩历史 · 覆盖至消息 #{sessionSummary.coversSeq} · 范围 {scopeLabels[sessionSummary.scope] ?? sessionSummary.scope}（原文仍在下方记录中）</summary>
-              <pre className="summary-text">{sessionSummary.summary}</pre>
-            </details>}
-            {sessionPlan && sessionPlan.steps && <div className="plan-panel">
-              <div className="plan-head">
-                <span className="card-title">当前计划</span>
-                <button type="button" className="secondary" onClick={clearPlan}>清除计划</button>
-              </div>
-              <ul className="plan-steps">
-                {sessionPlan.steps.map((step, index) => (
-                  <li key={index} className={`plan-step plan-${step.status}`}>
-                    <span className="plan-marker">{step.status === 'done' ? '✓' : step.status === 'in_progress' ? '▶' : '·'}</span>
-                    {step.title}{step.note && <span className="plan-note">（{step.note}）</span>}
-                  </li>
-                ))}
-              </ul>
-              <p className="hint">计划由模型通过 local__update_plan 维护，重启后可恢复；计划本身不授予权限，工具调用仍走审批。</p>
-            </div>}
-            {(pendingCalls.length > 0 || unknownCalls.length > 0) && (
-              <div className="approval-panel">
-                <div className="card-title">待处理工具调用</div>
-                {pendingCalls.map((call) => (
-                  <div className="approval-row" key={call.id}>
-                    <div className="approval-info">
-                      <code>{call.toolName}</code>
-                      <pre>{call.arguments}</pre>
-                    </div>
-                    <div className="approval-actions">
-                      <button disabled={approvalBusy} onClick={() => approveCall(call)}>批准执行</button>
-                      <button className="secondary" disabled={approvalBusy} onClick={() => denyCall(call)}>拒绝</button>
-                    </div>
-                  </div>
-                ))}
-                {unknownCalls.map((call) => (
-                  <div className="approval-row" key={call.id}>
-                    <div className="approval-info">
-                      <code>{call.toolName}</code>
-                      <p className="error">{call.error || '结果未知，等待处置'}</p>
-                    </div>
-                    <div className="approval-actions">
-                      <button disabled={approvalBusy} onClick={() => resolveUnknown(call, true)}>确认为成功</button>
-                      <button className="secondary" disabled={approvalBusy} onClick={() => resolveUnknown(call, false)}>确认为失败</button>
-                    </div>
-                  </div>
-                ))}
-                <p className="hint">批准只对当前这条调用的参数生效；结果未知的调用需要你说明依据后处置，会话才能继续。</p>
-              </div>
-            )}
-            {activeRun && runs[0] && <p className="hint profile-run-hint">本次运行使用 Profile「{profileName(runs[0].profileId)}」快照 v{runs[0].profileRevision}；后续运行将使用「{activeAgent ? profileName(activeAgent.profileId) : '…'}」当前内容。</p>}
-            {(childRuns ?? []).length > 0 && <div className="task-tree">
-              <span className="card-title">子任务（任务树）</span>
-              {(childRuns ?? []).map((child) => (
-                <div className="tree-child" key={child.id}>
-                  <span className={`tree-state tree-${child.status}`}>{child.status}</span>
-                  <span>{agents.find((item) => item.id === child.agentId)?.name ?? child.agentId} · 深度 {child.depth}</span>
-                  {child.error && <span className="tree-error">{child.error}</span>}
-                  <button type="button" className="secondary" onClick={() => openChildSession(child)}>查看子会话</button>
-                </div>
-              ))}
-              <p className="hint">子任务使用目标 Agent 的 Profile 快照与独立上下文：不写入其普通会话，不访问其长期记忆；权限与外发取父任务与目标 Agent 的交集，审批取更严格者。</p>
-            </div>}
-            <div className="message-list" aria-live="polite">
-              {messages.length === 0 && !streamText && <p className="hint">还没有消息。可以试试“现在几点？”来验证 MCP 时间工具。</p>}
-              {messages.map((item) => <div className={`message message-${item.role}`} key={item.id}><span className="message-role">{item.role === 'user' ? '你' : item.role === 'tool' ? 'MCP 工具' : 'ICEPick'}</span><p>{item.content}</p></div>)}
-              {streamText && <div className="message message-assistant streaming"><span className="message-role">ICEPick · 生成中</span><p>{streamText}</p></div>}
-            </div>
-            <form className="task-form" onSubmit={sendTask}>
-              <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="给 ICEPick 一个任务…" rows={3} />
-              <div className="model-actions">
-                <button type="submit" disabled={sending || loadingSession || !!activeRun || !status?.storageReady || !prompt.trim()}>发送任务</button>
-                {activeRun && <button type="button" className="secondary" onClick={cancelTask}>取消任务</button>}
-              </div>
-            </form>
-            {activeRun && <p className="hint">任务正在运行…</p>}
-            {taskError && <p className="error">{taskError}</p>}
-            {runs[0]?.status === 'failed' && <p className="error">任务失败：{runs[0].error}</p>}
-            {runs[0]?.status === 'cancelled' && <p className="hint">任务已取消。</p>}
-          </>}
-        </section>
 
-        <p className="next-step">内置工具：local__current_time、local__read_file、local__load_skill、local__memory_save、local__update_plan、local__delegate_task。工具调用受权限网关与审批约束；委派每次需确认；远端模型发送前会检查数据外发授权；长会话超预算时自动压缩旧轮次并保留原文。</p>
+
+        <p className="next-step">内置工具：local__current_time、local__read_file、local__load_skill、local__memory_save、local__update_plan、local__task_plan、local__delegate_task。工具调用受权限网关与审批约束；委派每次需确认；远端模型发送前会检查数据外发授权；长会话超预算时自动压缩旧轮次并保留原文。</p>
       </main>
     </div>
   )

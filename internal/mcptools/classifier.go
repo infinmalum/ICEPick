@@ -61,7 +61,7 @@ func (c Classifier) Classify(name, arguments string) (Effect, Sensitivity) {
 		// sensitivity cannot be decided statically; unknown keeps the write
 		// out of automatic execution everywhere.
 		return EffectWrite, SensUnknown
-	case "local__update_plan":
+	case "local__update_plan", "local__task_plan":
 		// Plan state is host-local bookkeeping: nothing is read and nothing
 		// leaves the machine.
 		return EffectPure, SensPublic

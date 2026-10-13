@@ -1,8 +1,10 @@
 # MCP 与 Agent Skills
 
-ICEPick 的产品能力按内部接口装配，但不以自有格式替代已有的外部标准。工具使用 [MCP 官方 Go SDK](https://github.com/modelcontextprotocol/go-sdk)，可复用指令按 [Agent Skills 规范](https://agentskills.io/specification) 放在 `SKILL.md`；独立 Agent 互联使用 A2A。各标准通过对应适配器接入；运行循环、模型适配和存储使用普通内部模块组织。项目不建设通用插件加载器或自有插件包格式。
+本文描述当前已实现的 MCP/Skills 接入方式。2026-10-12 的 Profile/内置组件重新设计及迁移见[设计文档](architecture.md)，不表示新运行流程已经交付。
 
-目标设计中，MCP/Skills 选择保存在 Profile，运行时与 Agent 本机授权取交集；切换 Profile 不转移会话、记忆或授权。当前实现仍按单体 Agent 配置保存，独立 Profile 尚待迁移。
+ICEPick 的产品能力按内部接口装配，但不以自有格式替代已有的外部标准。工具使用 [MCP 官方 Go SDK](https://github.com/modelcontextprotocol/go-sdk)，可复用指令按 [Agent Skills 规范](https://agentskills.io/specification) 放在 `SKILL.md`；独立系统互联计划使用可选 A2A，当前尚未实现。运行循环、模型适配和存储使用普通内部模块组织。项目不建设通用插件加载器或自有插件包格式。
+
+当前 Profile 已独立保存，MCP/Skills 选择保存在 Profile，运行时与 Agent 本机授权取交集；切换 Profile 不转移会话、记忆或授权。v12 已用 contexts 兼容视图将原身份作为宿主自动管理的本机上下文，继续保留相同的访问边界；新对话自动创建独立上下文，组件调用仍走同一权限网关。
 
 ## MCP 工具
 
@@ -38,4 +40,4 @@ description: Review code changes when the user asks for a code review.
 Read the changed files, identify concrete defects, and cite file locations.
 ```
 
-启动时由应用统一发现 Skills，只读取标准 `name` 和 `description` 元数据。当前默认 Agent 启用全部已安装 Skills；其他 Agent 可启用全部、指定名称或都不启用。当前实现还要求允许 `local__load_skill` 工具（启用 `local` 服务且工具白名单未排除它），才能按需读取完整 `SKILL.md`；调用时会再次检查当前 Agent 是否启用了目标 Skill。目标架构将 Skill 发现与加载作为独立指令来源能力，不把“通过 MCP 工具读取 Skill”固定为唯一执行方式。用户主动安装或编辑 Skill 正文不要求每次重新授权；第三方可执行依赖及影响风险的变更单独评估，发现 Skill 不自动安装或执行其依赖。Skill 中的相对资源引用、脚本执行和权限声明目前尚未接入；加载 Skill 不会自动运行脚本，也不会授予工具权限。修改 Skill 后重启应用以刷新发现列表。
+启动时由应用统一发现 Skills，只读取标准 `name` 和 `description` 元数据。当前默认 Agent 启用全部已安装 Skills；其他 Agent 可启用全部、指定名称或都不启用。当前实现还要求允许 `local__load_skill` 工具（启用 `local` 服务且工具白名单未排除它），才能按需读取完整 `SKILL.md`；新任务开始时固定选中 SKILL.md 的内容、元数据与 SHA-256，根任务及其 worker 后续加载使用这些副本；修改或删除安装文件不影响在途任务，新任务读取最新内容。旧运行保留兼容加载行为。调用时会再次检查目标 Skill 是否在运行快照的选择范围内。目标架构将 Skill 发现与加载作为独立指令来源能力，不把“通过 MCP 工具读取 Skill”固定为唯一执行方式。用户主动安装或编辑 Skill 正文不要求每次重新授权；第三方可执行依赖及影响风险的变更单独评估，发现 Skill 不自动安装或执行其依赖。Skill 中的相对资源引用、脚本执行和权限声明目前尚未接入；加载 Skill 不会自动运行脚本，也不会授予工具权限。修改 Skill 后重启应用以刷新发现列表。

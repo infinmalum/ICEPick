@@ -74,13 +74,21 @@ func cmdSessions(client *ipc.Client, args []string) int {
 		}
 		var plan app.SessionPlanView
 		if err := client.Call("plans.get", map[string]any{"agentId": agentID, "sessionId": sessionID}, &plan); err == nil {
-			fmt.Println("--- 当前计划 ---")
+			fmt.Printf("--- 当前计划（修订 %d）---\n", plan.Revision)
 			for _, step := range plan.Steps {
 				note := ""
 				if step.Note != "" {
 					note = "（" + step.Note + "）"
 				}
 				fmt.Printf("%s %s%s\n", map[string]string{storage.PlanPending: "[ ]", storage.PlanInProgress: "[~]", storage.PlanDone: "[x]"}[step.Status], step.Title, note)
+				fmt.Printf("  ID: %s", step.ID)
+				if len(step.DependsOn) > 0 {
+					fmt.Printf(" · 前置：%s", strings.Join(step.DependsOn, ", "))
+				}
+				if step.Acceptance != "" {
+					fmt.Printf(" · 验收：%s", step.Acceptance)
+				}
+				fmt.Println()
 			}
 		}
 		for _, message := range messages {
@@ -131,6 +139,16 @@ func cmdTasks(client *ipc.Client, args []string) int {
 		}
 		printRun(run)
 		printChildRuns(client, run, "")
+		var graph storage.TaskGraph
+		if err := client.Call("tasks.graph", map[string]any{"agentId": agentID, "runId": parsed.arg(0)}, &graph); err == nil && len(graph.Tasks) > 0 {
+			fmt.Printf("执行计划修订 %d\n", graph.Revision)
+			for _, item := range graph.Tasks {
+				fmt.Printf("%s · %s · %s · %s\n", item.Spec.ID, item.Spec.Worker, item.State, item.Spec.Task)
+			}
+			for _, attempt := range graph.Attempts {
+				fmt.Printf("尝试 %s · 任务 %s · %s · 运行 %s\n", attempt.ID, attempt.TaskID, attempt.Status, attempt.RunID)
+			}
+		}
 		return 0
 	case "cancel":
 		parsed, err := parseCLI(args[1:])

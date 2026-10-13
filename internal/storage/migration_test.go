@@ -92,6 +92,7 @@ func downgradeToVersion(t *testing.T, store *Store, version int) {
 // v7→v8 migration can be exercised against a genuine old-shape file.
 func downgradeToV7(t *testing.T, store *Store) {
 	t.Helper()
+	downgradeToV11(t, store)
 	ctx := context.Background()
 	// Reverse the v11 delegation structures first: indexes must go before
 	// their columns can be dropped.
@@ -196,6 +197,26 @@ func downgradeToV7(t *testing.T, store *Store) {
 		{`PRAGMA user_version = 7`},
 	} {
 		if _, err := store.db.ExecContext(ctx, statement.sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Strip the additive v12 structures before constructing old fixtures.
+func downgradeToV11(t *testing.T, store *Store) {
+	t.Helper()
+	downgradeToV12(t, store)
+	for _, q := range []string{`DROP VIEW contexts`, `DROP VIEW resolved_profiles`, `DROP TABLE profile_execution`, `DROP TABLE profile_revisions`, `ALTER TABLE profiles DROP COLUMN archived_at`, `ALTER TABLE sessions DROP COLUMN profile_id`, `ALTER TABLE runs DROP COLUMN component`, `ALTER TABLE runs DROP COLUMN component_version`, profileView, `PRAGMA user_version=11`} {
+		if _, err := store.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func downgradeToV12(t *testing.T, store *Store) {
+	t.Helper()
+	for _, q := range []string{`DROP TABLE task_attempts`, `DROP TABLE task_items`, `DROP TABLE task_plan_revisions`, `DROP TABLE task_roots`, `DROP TABLE session_plan_revisions`, `ALTER TABLE session_plans DROP COLUMN revision`, `ALTER TABLE runs DROP COLUMN resources_snapshot`, `ALTER TABLE runs DROP COLUMN worker_name`, `PRAGMA user_version=12`} {
+		if _, err := store.db.Exec(q); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -230,7 +230,7 @@ func TestPlanToolPersistsAndReviews(t *testing.T) {
 		func([]model.Message) (model.ChatResponse, error) {
 			call := model.ToolCall{ID: "p1", Type: "function"}
 			call.Function.Name = "local__update_plan"
-			call.Function.Arguments = `{"steps":[{"title":"查时间","status":"done"},{"title":"汇报","status":"in_progress","note":"等待结果"}]}`
+			call.Function.Arguments = `{"expected_revision":0,"steps":[{"title":"查时间","status":"done"},{"title":"汇报","status":"in_progress","note":"等待结果"}]}`
 			return model.ChatResponse{Message: model.Message{Role: "assistant", ToolCalls: []model.ToolCall{call}}}, nil
 		},
 		func([]model.Message) (model.ChatResponse, error) {
@@ -367,5 +367,56 @@ func TestMemoryServiceIsolation(t *testing.T) {
 	}
 	if list, err := svc.ListMemories(storage.DefaultAgentID); err != nil || len(list) != 0 {
 		t.Fatalf("delete failed: %+v %v", list, err)
+	}
+}
+
+// A simulated model must recover from both an invalid dependency update and
+// a stale revision without damaging the accepted plan. No provider is called.
+func TestPlanToolDependencyConflictRecovery(t *testing.T) {
+	call := func(id, args string) model.ChatResponse {
+		c := model.ToolCall{ID: id, Type: "function"}
+		c.Function.Name = "local__update_plan"
+		c.Function.Arguments = args
+		return model.ChatResponse{Message: model.Message{Role: "assistant", ToolCalls: []model.ToolCall{c}}}
+	}
+	chat := &scriptModel{steps: []func([]model.Message) (model.ChatResponse, error){
+		func([]model.Message) (model.ChatResponse, error) {
+			return call("create", `{"expected_revision":0,"steps":[{"id":"a","title":"收集","status":"pending","acceptance":"材料有出处"},{"id":"b","title":"总结","status":"pending","dependsOn":["a"]}]}`), nil
+		},
+		func(messages []model.Message) (model.ChatResponse, error) {
+			if !strings.Contains(messages[len(messages)-1].Content, `"revision":1`) {
+				t.Fatal("model did not receive current revision")
+			}
+			return call("invalid", `{"expected_revision":1,"steps":[{"id":"a","title":"收集","status":"pending","acceptance":"材料有出处"},{"id":"b","title":"总结","status":"in_progress","dependsOn":["a"]}]}`), nil
+		},
+		func(messages []model.Message) (model.ChatResponse, error) {
+			if !strings.Contains(messages[len(messages)-1].Content, "前置任务未完成") {
+				t.Fatal("dependency rejection missing")
+			}
+			return call("stale", `{"expected_revision":0,"steps":[{"id":"replacement","title":"覆盖","status":"done"}]}`), nil
+		},
+		func(messages []model.Message) (model.ChatResponse, error) {
+			if !strings.Contains(messages[len(messages)-1].Content, "修订冲突") {
+				t.Fatal("revision rejection missing")
+			}
+			return call("advance", `{"expected_revision":1,"steps":[{"id":"a","title":"收集","status":"done","acceptance":"材料有出处"},{"id":"b","title":"总结","status":"in_progress","dependsOn":["a"]}]}`), nil
+		},
+		func([]model.Message) (model.ChatResponse, error) {
+			return model.ChatResponse{Message: model.Message{Role: "assistant", Content: "已收集，开始总结"}}, nil
+		},
+	}}
+	svc, _ := newTestService(t, chat, &scriptTools{})
+	session, err := svc.CreateSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := svc.StartTask(session.ID, "先收集再总结")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForRun(t, svc, storage.DefaultAgentID, run.ID, "completed")
+	p, err := svc.GetSessionPlan(storage.DefaultAgentID, session.ID)
+	if err != nil || p.Revision != 2 || len(p.Steps) != 2 || p.Steps[0].Status != storage.PlanDone || p.Steps[1].ID != "b" {
+		t.Fatalf("recovery: %+v %v", p, err)
 	}
 }

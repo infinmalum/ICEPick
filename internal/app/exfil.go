@@ -166,10 +166,7 @@ func (s *Service) sessionScopes(ctx context.Context, sessionID string, profile s
 		set[scope] = true
 	}
 	if profile.AllowsTool("local__load_skill") {
-		summary := s.skills.SummaryFor(profile.EnabledSkills)
-		if profile.AllSkills {
-			summary = s.skills.Summary()
-		}
+		summary := s.profileSkillSummary(profile)
 		if summary != "" {
 			set[storage.ScopeWorkspace] = true
 		}
