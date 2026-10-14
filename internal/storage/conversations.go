@@ -9,9 +9,9 @@ import (
 )
 
 type LocalContext struct {
-	ID     string      `json:"id"`
-	Name   string      `json:"name"`
-	Policy AgentPolicy `json:"policy"`
+	ID     string        `json:"id"`
+	Name   string        `json:"name"`
+	Policy ContextPolicy `json:"policy"`
 }
 
 type ConversationOptions struct {
@@ -73,16 +73,16 @@ func (s *Store) CreateConversation(ctx context.Context, profileID, reuseSession,
 			return err
 		}
 		if reuseSession != "" {
-			if err := tx.QueryRowContext(ctx, `SELECT agent_id FROM sessions WHERE id=? AND kind='normal'`, reuseSession).Scan(&contextID); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT context_id FROM sessions WHERE id=? AND kind='normal'`, reuseSession).Scan(&contextID); err != nil {
 				return errors.New("找不到可复用的普通对话")
 			}
 		} else {
-			policy, _ := json.Marshal(AgentPolicy{ApprovalMode: "semi"})
-			if _, err := tx.ExecContext(ctx, `INSERT INTO contexts(id,name,profile_id,policy,created_at,updated_at) VALUES(?,?,?,?,?,?)`, contextID, title, profileID, string(policy), now(), now()); err != nil {
+			policy, _ := json.Marshal(ContextPolicy{ApprovalMode: "semi"})
+			if _, err := tx.ExecContext(ctx, `INSERT INTO contexts(id,name,policy,created_at,updated_at) VALUES(?,?,?,?,?)`, contextID, title, string(policy), now(), now()); err != nil {
 				return err
 			}
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO sessions(id,agent_id,kind,title,created_at,profile_id) VALUES(?,?,'normal',?,?,?)`, sessionID, contextID, title, now(), profileID)
+		_, err := tx.ExecContext(ctx, `INSERT INTO sessions(id,context_id,kind,title,created_at,profile_id) VALUES(?,?,'normal',?,?,?)`, sessionID, contextID, title, now(), profileID)
 		return err
 	})
 	if err != nil {
@@ -91,7 +91,7 @@ func (s *Store) CreateConversation(ctx context.Context, profileID, reuseSession,
 	return s.GetConversation(ctx, sessionID)
 }
 
-const conversationSelect = `SELECT s.id,s.agent_id,COALESCE(NULLIF(s.profile_id,''),a.profile_id),p.name,s.title,s.created_at,p.archived_at IS NOT NULL,s.kind,s.options FROM sessions s JOIN contexts a ON a.id=s.agent_id JOIN profiles p ON p.id=COALESCE(NULLIF(s.profile_id,''),a.profile_id)`
+const conversationSelect = `SELECT s.id,s.context_id,s.profile_id,p.name,s.title,s.created_at,p.archived_at IS NOT NULL,s.kind,s.options FROM sessions s JOIN contexts a ON a.id=s.context_id JOIN profiles p ON p.id=s.profile_id`
 
 func scanConversation(row interface{ Scan(...any) error }) (Conversation, error) {
 	var c Conversation
@@ -229,4 +229,33 @@ func (s *Store) SetConversationOptions(ctx context.Context, id string, options C
 		return Conversation{}, errors.New("找不到普通对话")
 	}
 	return s.GetConversation(ctx, id)
+}
+
+// UpdateContextPolicy changes live authorization and wakes affected tasks atomically.
+func (s *Store) UpdateContextPolicy(ctx context.Context, id string, policy ContextPolicy) (LocalContext, error) {
+	if err := validatePolicy(policy); err != nil {
+		return LocalContext{}, err
+	}
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		return LocalContext{}, err
+	}
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `UPDATE contexts SET policy=?,updated_at=? WHERE id=?`, string(raw), now(), id)
+		if err != nil {
+			return err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return errors.New("本机上下文不存在")
+		}
+		return signalContextChange(ctx, tx, id, "policy.changed")
+	})
+	if err != nil {
+		return LocalContext{}, err
+	}
+	return s.GetLocalContext(ctx, id)
 }

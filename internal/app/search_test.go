@@ -96,12 +96,12 @@ func TestConversationSearchFrozenOptionAndNativeRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	close(m.release)
-	waitForRun(t, s, c.ContextID, r.ID, "completed")
+	waitForRun(t, s, r.ID, "completed")
 	records, err := s.ListConversationSearch(c.ID)
 	if err != nil || len(records) != 1 || records[0].State != "completed" || len(records[0].Report.Citations) != 1 || len(records[0].Report.Events) != 1 || records[0].Report.Cost != nil {
 		t.Fatal(records, err)
 	}
-	scopes, err := s.sessionScopes(context.Background(), c.ID, storage.AgentProfile{})
+	scopes, err := s.sessionScopes(context.Background(), c.ID, storage.RunProfile{})
 	if err != nil || !containsTool(scopes, storage.ScopeUnknown) {
 		t.Fatal(scopes, err)
 	}
@@ -109,7 +109,7 @@ func TestConversationSearchFrozenOptionAndNativeRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, s, c.ContextID, next.ID, "completed")
+	waitForRun(t, s, next.ID, "completed")
 	if m.searched.Load() != 1 || m.plain.Load() != 1 {
 		t.Fatal(m.searched.Load(), m.plain.Load())
 	}
@@ -134,12 +134,12 @@ func TestConversationSearchExfilFailureAndCancellation(t *testing.T) {
 				case <-time.After(3 * time.Second):
 					t.Fatal("search not started")
 				}
-				if err := s.CancelTask(c.ContextID, r.ID); err != nil {
+				if err := s.CancelTask(r.ID); err != nil {
 					t.Fatal(err)
 				}
 				want = "cancelled"
 			}
-			run := waitForRun(t, s, c.ContextID, r.ID, want)
+			run := waitForRun(t, s, r.ID, want)
 			records, err := s.ListConversationSearch(c.ID)
 			if err != nil {
 				t.Fatal(err)
@@ -286,14 +286,14 @@ func TestConversationSearchMCPUsesExistingApprovalAndCitations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pending := waitForCallState(t, s, c.ContextID, c.ID, storage.CallPending)
+	pending := waitForCallState(t, s, c.ID, storage.CallPending)
 	if pending.ToolName != "web__lookup" {
 		t.Fatal(pending)
 	}
-	if _, err := s.ApproveToolCall(c.ContextID, pending.ID); err != nil {
+	if _, err := s.ApproveToolCall(pending.ID); err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, s, c.ContextID, run.ID, "completed")
+	waitForRun(t, s, run.ID, "completed")
 	records, err := s.ListConversationSearch(c.ID)
 	if err != nil || len(records) != 1 || records[0].Provider != "web__lookup" || records[0].State != "succeeded" || len(records[0].Report.Citations) != 1 {
 		t.Fatal(records, err)
@@ -325,7 +325,7 @@ func TestConversationSearchDoesNotWidenReadWorker(t *testing.T) {
 	if _, err := s.store.SetTaskGraph(ctx, root.ID, 0, []storage.TaskSpec{spec}); err != nil {
 		t.Fatal(err)
 	}
-	session, err := s.store.CreateDelegationSession(ctx, c.ContextID, "reader")
+	session, err := s.store.CreateDelegationSession(ctx, c.ContextID, storage.DefaultProfileID, "reader")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +350,7 @@ func TestConversationNativeSearchLoopbackDoesNotBypassGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, s, c.ContextID, run.ID, "failed")
+	waitForRun(t, s, run.ID, "failed")
 	if m.searched.Load() != 0 {
 		t.Fatal("loopback gateway bypassed search exfil grant")
 	}
@@ -361,7 +361,7 @@ func TestConversationNativeSearchLoopbackDoesNotBypassGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, s, c.ContextID, next.ID, "completed")
+	waitForRun(t, s, next.ID, "completed")
 	if m.searched.Load() != 1 {
 		t.Fatal("authorized loopback gateway did not dispatch search")
 	}

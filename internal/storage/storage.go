@@ -19,7 +19,7 @@ import (
 
 // currentVersion is the schema version this binary writes. Opening a database
 // with a different version is refused; development releases do not migrate data.
-const currentVersion = 20
+const currentVersion = 21
 
 type Store struct {
 	db   *sql.DB
@@ -28,7 +28,7 @@ type Store struct {
 
 type Session struct {
 	ID        string `json:"id"`
-	AgentID   string `json:"agentId"`
+	ContextID string `json:"contextId"`
 	Title     string `json:"title"`
 	Kind      string `json:"kind"`
 	CreatedAt string `json:"createdAt"`
@@ -46,7 +46,7 @@ type Message struct {
 	ProviderState []json.RawMessage `json:"-"`
 	ID            string            `json:"id"`
 	SessionID     string            `json:"sessionId"`
-	AgentID       string            `json:"agentId"`
+	ContextID     string            `json:"contextId"`
 	RunID         string            `json:"runId"`
 	Seq           int               `json:"seq"`
 	Role          string            `json:"role"`
@@ -61,7 +61,7 @@ type Run struct {
 	Component        string `json:"component"`
 	ID               string `json:"id"`
 	SessionID        string `json:"sessionId"`
-	AgentID          string `json:"agentId"`
+	ContextID        string `json:"contextId"`
 	ProfileID        string `json:"profileId"`
 	ProfileRevision  int    `json:"profileRevision"`
 	// ParentRunID links a delegated subtask run to the run whose tool call
@@ -128,11 +128,7 @@ func (s *Store) withTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	return tx.Commit()
 }
 
-func (s *Store) CreateSession(ctx context.Context, title string) (Session, error) {
-	return s.CreateAgentSession(ctx, DefaultAgentID, title)
-}
-
-func (s *Store) CreateAgentSession(ctx context.Context, agentID, title string) (Session, error) {
+func (s *Store) CreateContextSession(ctx context.Context, contextID, profileID, title string) (Session, error) {
 	if title == "" {
 		title = "新会话"
 	}
@@ -140,19 +136,30 @@ func (s *Store) CreateAgentSession(ctx context.Context, agentID, title string) (
 	if err != nil {
 		return Session{}, err
 	}
-	item := Session{ID: id, AgentID: agentID, Title: title, Kind: SessionKindNormal, CreatedAt: now()}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO sessions (id, agent_id, kind, title, created_at) SELECT ?, id, 'normal', ?, ? FROM contexts WHERE id = ?`, item.ID, item.Title, item.CreatedAt, agentID)
-	if err == nil {
-		var found string
-		err = s.db.QueryRowContext(ctx, `SELECT id FROM sessions WHERE id = ?`, item.ID).Scan(&found)
-	}
+	item := Session{ID: id, ContextID: contextID, Title: title, Kind: SessionKindNormal, CreatedAt: now()}
+	err = s.withTx(ctx, func(tx *sql.Tx) error {
+		if err := activeProfile(ctx, tx, profileID); err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, `INSERT INTO sessions (id, context_id, profile_id, kind, title, created_at) SELECT ?, id, ?, 'normal', ?, ? FROM contexts WHERE id = ?`, item.ID, profileID, item.Title, item.CreatedAt, contextID)
+		if err != nil {
+			return err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return errors.New("本机上下文不存在")
+		}
+		return nil
+	})
 	return item, err
 }
 
-// CreateDelegationSession opens the independent temporary context one
-// delegated subtask runs in. It belongs to the target Agent and is excluded
-// from the normal session list; the messages stay for audit.
-func (s *Store) CreateDelegationSession(ctx context.Context, agentID, title string) (Session, error) {
+// CreateDelegationSession opens a separate transcript under the root Context.
+// It is excluded from the normal conversation list; messages remain for audit.
+func (s *Store) CreateDelegationSession(ctx context.Context, contextID, profileID, title string) (Session, error) {
 	if title == "" {
 		title = "委派子任务"
 	}
@@ -160,16 +167,16 @@ func (s *Store) CreateDelegationSession(ctx context.Context, agentID, title stri
 	if err != nil {
 		return Session{}, err
 	}
-	item := Session{ID: id, AgentID: agentID, Title: title, Kind: SessionKindDelegation, CreatedAt: now()}
+	item := Session{ID: id, ContextID: contextID, Title: title, Kind: SessionKindDelegation, CreatedAt: now()}
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		result, err := tx.ExecContext(ctx, `INSERT INTO sessions (id, agent_id, kind, title, created_at) SELECT ?, id, 'delegation', ?, ? FROM contexts WHERE id = ?`, item.ID, item.Title, item.CreatedAt, agentID)
+		result, err := tx.ExecContext(ctx, `INSERT INTO sessions (id, context_id, profile_id, kind, title, created_at) SELECT ?, id, ?, 'delegation', ?, ? FROM contexts WHERE id = ?`, item.ID, profileID, item.Title, item.CreatedAt, contextID)
 		if err != nil {
 			return err
 		}
 		if n, err := result.RowsAffected(); err != nil {
 			return err
 		} else if n == 0 {
-			return errors.New("Agent 不存在")
+			return errors.New("本机上下文不存在")
 		}
 		return nil
 	})
@@ -179,14 +186,10 @@ func (s *Store) CreateDelegationSession(ctx context.Context, agentID, title stri
 	return item, nil
 }
 
-func (s *Store) ListSessions(ctx context.Context) ([]Session, error) {
-	return s.ListAgentSessions(ctx, DefaultAgentID)
-}
-
-// ListAgentSessions returns the agent's normal sessions. Delegation sessions
+// ListContextSessions returns the context's normal sessions. Delegation sessions
 // are temporary subtask contexts owned by runs, not conversation history.
-func (s *Store) ListAgentSessions(ctx context.Context, agentID string) ([]Session, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, agent_id, title, kind, created_at FROM sessions WHERE agent_id = ? AND kind = 'normal' ORDER BY created_at DESC, id DESC`, agentID)
+func (s *Store) ListContextSessions(ctx context.Context, contextID string) ([]Session, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, context_id, title, kind, created_at FROM sessions WHERE context_id = ? AND kind = 'normal' ORDER BY created_at DESC, id DESC`, contextID)
 	if err != nil {
 		return nil, err
 	}
@@ -194,7 +197,7 @@ func (s *Store) ListAgentSessions(ctx context.Context, agentID string) ([]Sessio
 	items := []Session{}
 	for rows.Next() {
 		var item Session
-		if err := rows.Scan(&item.ID, &item.AgentID, &item.Title, &item.Kind, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.ContextID, &item.Title, &item.Kind, &item.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -202,11 +205,11 @@ func (s *Store) ListAgentSessions(ctx context.Context, agentID string) ([]Sessio
 	return items, rows.Err()
 }
 
-// ListAgentSessionsAll returns every session of the agent including hidden
+// ListContextSessionsAll returns every session of the context including hidden
 // delegation sessions; the approval sweep needs those to surface subtask
 // approval requests.
-func (s *Store) ListAgentSessionsAll(ctx context.Context, agentID string) ([]Session, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, agent_id, title, kind, created_at FROM sessions WHERE agent_id = ? ORDER BY created_at DESC, id DESC`, agentID)
+func (s *Store) ListContextSessionsAll(ctx context.Context, contextID string) ([]Session, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, context_id, title, kind, created_at FROM sessions WHERE (?='' OR context_id = ?) ORDER BY created_at DESC, id DESC`, contextID, contextID)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +217,7 @@ func (s *Store) ListAgentSessionsAll(ctx context.Context, agentID string) ([]Ses
 	items := []Session{}
 	for rows.Next() {
 		var item Session
-		if err := rows.Scan(&item.ID, &item.AgentID, &item.Title, &item.Kind, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.ContextID, &item.Title, &item.Kind, &item.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -224,7 +227,7 @@ func (s *Store) ListAgentSessionsAll(ctx context.Context, agentID string) ([]Ses
 
 func (s *Store) GetSession(ctx context.Context, sessionID string) (Session, error) {
 	var item Session
-	err := s.db.QueryRowContext(ctx, `SELECT id, agent_id, title, kind, created_at FROM sessions WHERE id = ?`, sessionID).Scan(&item.ID, &item.AgentID, &item.Title, &item.Kind, &item.CreatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id, context_id, title, kind, created_at FROM sessions WHERE id = ?`, sessionID).Scan(&item.ID, &item.ContextID, &item.Title, &item.Kind, &item.CreatedAt)
 	return item, err
 }
 
@@ -242,11 +245,11 @@ func (s *Store) AddMessage(ctx context.Context, sessionID, runID, role, content 
 	created := now()
 	item := Message{ID: id, SessionID: sessionID, RunID: runID, Role: role, Content: content, CreatedAt: created}
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		err := tx.QueryRowContext(ctx, `INSERT INTO messages (id, session_id, agent_id, run_id, seq, role, content, tool_calls, created_at)
-			SELECT ?, id, agent_id, ?, COALESCE((SELECT MAX(seq) FROM messages WHERE session_id = ?), 0) + 1, ?, ?, '', ? FROM sessions WHERE id = ?
-			RETURNING agent_id, seq`,
+		err := tx.QueryRowContext(ctx, `INSERT INTO messages (id, session_id, run_id, seq, role, content, tool_calls, created_at)
+			SELECT ?, id, ?, COALESCE((SELECT MAX(seq) FROM messages WHERE session_id = ?), 0) + 1, ?, ?, '', ? FROM sessions WHERE id = ?
+			RETURNING (SELECT context_id FROM sessions WHERE id=session_id), seq`,
 			item.ID, runID, sessionID, role, content, created, sessionID).
-			Scan(&item.AgentID, &item.Seq)
+			Scan(&item.ContextID, &item.Seq)
 		if err != nil {
 			return err
 		}
@@ -292,11 +295,11 @@ func (s *Store) AddAssistantMessage(ctx context.Context, sessionID, runID, conte
 	}
 	rows := make([]ToolCall, 0, len(calls))
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		if err := tx.QueryRowContext(ctx, `INSERT INTO messages (id, session_id, agent_id, run_id, seq, role, content, tool_calls, created_at, provider_state)
-			SELECT ?, id, agent_id, ?, COALESCE((SELECT MAX(seq) FROM messages WHERE session_id = ?), 0) + 1, ?, ?, ?, ?, ? FROM sessions WHERE id = ?
-			RETURNING agent_id, seq`,
+		if err := tx.QueryRowContext(ctx, `INSERT INTO messages (id, session_id, run_id, seq, role, content, tool_calls, created_at, provider_state)
+			SELECT ?, id, ?, COALESCE((SELECT MAX(seq) FROM messages WHERE session_id = ?), 0) + 1, ?, ?, ?, ?, ? FROM sessions WHERE id = ?
+			RETURNING (SELECT context_id FROM sessions WHERE id=session_id), seq`,
 			item.ID, runID, sessionID, RoleAssistant, content, string(payload), created, string(stateRaw), sessionID).
-			Scan(&item.AgentID, &item.Seq); err != nil {
+			Scan(&item.ContextID, &item.Seq); err != nil {
 			return err
 		}
 		for _, call := range calls {
@@ -334,7 +337,7 @@ func (s *Store) AddAssistantMessage(ctx context.Context, sessionID, runID, conte
 }
 
 func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]Message, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, agent_id, run_id, seq, role, content, tool_calls, created_at, provider_state FROM messages WHERE session_id = ? ORDER BY seq`, sessionID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, (SELECT context_id FROM sessions WHERE id=messages.session_id), run_id, seq, role, content, tool_calls, created_at, provider_state FROM messages WHERE session_id = ? ORDER BY seq`, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -344,7 +347,7 @@ func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]Message, 
 		var item Message
 		var payload string
 		var stateRaw string
-		if err := rows.Scan(&item.ID, &item.SessionID, &item.AgentID, &item.RunID, &item.Seq, &item.Role, &item.Content, &payload, &item.CreatedAt, &stateRaw); err != nil {
+		if err := rows.Scan(&item.ID, &item.SessionID, &item.ContextID, &item.RunID, &item.Seq, &item.Role, &item.Content, &payload, &item.CreatedAt, &stateRaw); err != nil {
 			return nil, err
 		}
 		if payload != "" {
@@ -372,23 +375,23 @@ type CreateRunOptions struct {
 	Depth          int
 }
 
-// CreateRun starts a run for a session and resolves the owning Agent's
+// CreateRun starts a run for a session and resolves the owning Context's
 // current Profile inside the same transaction: the run row records the
 // profile id, revision and a full content snapshot, so in-flight approvals
 // and historical runs read exactly what they started with, even after the
-// Profile is later edited or deleted. The returned AgentProfile is the
+// Profile is later edited or deleted. The returned RunProfile is the
 // snapshot the engine must execute with.
-func (s *Store) CreateRun(ctx context.Context, sessionID string) (Run, AgentProfile, error) {
+func (s *Store) CreateRun(ctx context.Context, sessionID string) (Run, RunProfile, error) {
 	return s.CreateRunWithOptions(ctx, sessionID, CreateRunOptions{})
 }
 
-func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts CreateRunOptions) (Run, AgentProfile, error) {
+func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts CreateRunOptions) (Run, RunProfile, error) {
 	id, err := newID()
 	if err != nil {
-		return Run{}, AgentProfile{}, err
+		return Run{}, RunProfile{}, err
 	}
 	item := Run{ID: id, SessionID: sessionID, ParentRunID: opts.ParentRunID, Depth: opts.Depth, Status: "running", CreatedAt: now(), UpdatedAt: now(), ComponentVersion: 1, WorkerName: opts.WorkerName}
-	var resolved AgentProfile
+	var resolved RunProfile
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
 		var active int
 		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM runs WHERE session_id=? AND status='running'`, sessionID).Scan(&active); err != nil {
@@ -397,11 +400,11 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 		if active != 0 {
 			return errors.New("该会话已有运行中的任务")
 		}
-		var agentID, agentName, profileID, rawPolicy, kind string
-		if err := tx.QueryRowContext(ctx, `SELECT a.id,a.name,COALESCE(NULLIF(s.profile_id,''),a.profile_id),a.policy,s.kind FROM sessions s JOIN contexts a ON a.id=s.agent_id WHERE s.id=?`, sessionID).Scan(&agentID, &agentName, &profileID, &rawPolicy, &kind); err != nil {
+		var contextID, contextName, profileID, rawPolicy, kind string
+		if err := tx.QueryRowContext(ctx, `SELECT a.id,a.name,s.profile_id,a.policy,s.kind FROM sessions s JOIN contexts a ON a.id=s.context_id WHERE s.id=?`, sessionID).Scan(&contextID, &contextName, &profileID, &rawPolicy, &kind); err != nil {
 			return err
 		}
-		var policy AgentPolicy
+		var policy ContextPolicy
 		if err := json.Unmarshal([]byte(rawPolicy), &policy); err != nil {
 			return err
 		}
@@ -415,9 +418,9 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 		}
 		if opts.ParentRunID != "" {
 			item.Component = "worker"
-			var parentStatus, parentAgent string
+			var parentStatus, parentContext string
 			var parentDepth int
-			if err := tx.QueryRowContext(ctx, `SELECT status,agent_id,depth FROM runs WHERE id=?`, opts.ParentRunID).Scan(&parentStatus, &parentAgent, &parentDepth); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT status,(SELECT context_id FROM sessions WHERE id=runs.session_id),depth FROM runs WHERE id=?`, opts.ParentRunID).Scan(&parentStatus, &parentContext, &parentDepth); err != nil {
 				return err
 			}
 			if parentStatus != "running" || kind != SessionKindDelegation || opts.Depth != parentDepth+1 {
@@ -429,7 +432,7 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 				return err
 			}
 			if opts.WorkerName != "" {
-				if parentDepth != 0 || agentID != parentAgent {
+				if parentDepth != 0 || contextID != parentContext {
 					return errors.New("worker 槽位仅用于同一上下文的直接子任务")
 				}
 				var ok bool
@@ -459,7 +462,7 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 			if err != nil {
 				return errors.New("会话没有可用的 Profile")
 			}
-			resources, err = captureRunResources(ctx, tx, frozen, agentID, policy, opts.DefaultModel, opts.SnapshotSkills)
+			resources, err = captureRunResources(ctx, tx, frozen, contextID, policy, opts.DefaultModel, opts.SnapshotSkills)
 			if err != nil {
 				return err
 			}
@@ -509,7 +512,7 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 		}
 		item.ComponentVersion = componentVersion(item.Component)
 		persistedComponent := item.Component
-		_, err = tx.ExecContext(ctx, `INSERT INTO runs(id,session_id,agent_id,profile_id,profile_revision,profile_snapshot,parent_run_id,depth,status,created_at,updated_at,component,component_version,worker_name,resources_snapshot) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, sessionID, agentID, frozen.ID, frozen.Revision, string(snapshot), parent, opts.Depth, item.Status, item.CreatedAt, item.UpdatedAt, persistedComponent, item.ComponentVersion, opts.WorkerName, resourcesRaw)
+		_, err = tx.ExecContext(ctx, `INSERT INTO runs(id,session_id,profile_id,profile_revision,profile_snapshot,parent_run_id,depth,status,created_at,updated_at,component,component_version,worker_name,resources_snapshot) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, sessionID, frozen.ID, frozen.Revision, string(snapshot), parent, opts.Depth, item.Status, item.CreatedAt, item.UpdatedAt, persistedComponent, item.ComponentVersion, opts.WorkerName, resourcesRaw)
 		if err != nil {
 			return err
 		}
@@ -533,13 +536,13 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 				return err
 			}
 		}
-		item.AgentID, item.ProfileID, item.ProfileRevision = agentID, frozen.ID, frozen.Revision
-		resolved = AgentProfile{AgentID: agentID, AgentName: agentName, ProfileID: frozen.ID, ProfileName: frozen.Name, ProfileRevision: frozen.Revision, ProfileData: frozen.Data, Policy: policy, ResourcesFrozen: frozenMode, FrozenSkills: frozen.Skills}
+		item.ContextID, item.ProfileID, item.ProfileRevision = contextID, frozen.ID, frozen.Revision
+		resolved = RunProfile{ContextID: contextID, ContextName: contextName, ProfileID: frozen.ID, ProfileName: frozen.Name, ProfileRevision: frozen.Revision, ProfileData: frozen.Data, Policy: policy, ResourcesFrozen: frozenMode, FrozenSkills: frozen.Skills}
 		resolved.Resources = &resources
 		return nil
 	})
 	if err != nil {
-		return Run{}, AgentProfile{}, err
+		return Run{}, RunProfile{}, err
 	}
 	return item, resolved, nil
 }
@@ -642,12 +645,12 @@ func sweepRunArtifacts(ctx context.Context, tx *sql.Tx, runID string) error {
 	return nil
 }
 
-const runColumns = `id, session_id, agent_id, profile_id, profile_revision, parent_run_id, depth, CASE WHEN status='failed' AND (SELECT state FROM task_coordination WHERE root_run_id=runs.id) IN ('waiting','blocked') THEN (SELECT state FROM task_coordination WHERE root_run_id=runs.id) ELSE status END, error, created_at, updated_at, component, component_version, worker_name`
+const runColumns = `id, session_id, (SELECT context_id FROM sessions WHERE id=runs.session_id), profile_id, profile_revision, parent_run_id, depth, CASE WHEN status='failed' AND (SELECT state FROM task_coordination WHERE root_run_id=runs.id) IN ('waiting','blocked') THEN (SELECT state FROM task_coordination WHERE root_run_id=runs.id) ELSE status END, error, created_at, updated_at, component, component_version, worker_name`
 
 func scanRun(scanner interface{ Scan(...any) error }) (Run, error) {
 	var item Run
 	var parent sql.NullString
-	err := scanner.Scan(&item.ID, &item.SessionID, &item.AgentID, &item.ProfileID, &item.ProfileRevision, &parent, &item.Depth, &item.Status, &item.Error, &item.CreatedAt, &item.UpdatedAt, &item.Component, &item.ComponentVersion, &item.WorkerName)
+	err := scanner.Scan(&item.ID, &item.SessionID, &item.ContextID, &item.ProfileID, &item.ProfileRevision, &parent, &item.Depth, &item.Status, &item.Error, &item.CreatedAt, &item.UpdatedAt, &item.Component, &item.ComponentVersion, &item.WorkerName)
 	if err != nil {
 		return Run{}, err
 	}

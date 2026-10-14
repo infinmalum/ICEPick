@@ -78,7 +78,7 @@ func modelVisibleResult(call ToolCall) string {
 		return "工具错误：" + call.Error
 	case CallCancelled:
 		return "工具错误：调用已取消：" + call.Error
-	case CallExecutionUnknow:
+	case CallExecutionUnknown:
 		return "工具错误：结果未知，等待处置：" + call.Error
 	default:
 		return fmt.Sprintf("工具错误：调用处于未完成状态 %q", call.State)
@@ -87,10 +87,10 @@ func modelVisibleResult(call ToolCall) string {
 
 // SessionSummary is the compaction summary of one session. It replaces the
 // oldest history entries in the prompt; the originals stay on disk and the
-// summary belongs to the owning Agent only.
+// summary belongs to the owning Context only.
 type SessionSummary struct {
 	SessionID   string `json:"sessionId"`
-	AgentID     string `json:"agentId"`
+	ContextID   string `json:"contextId"`
 	CoversSeq   int    `json:"coversSeq"`
 	CoversCalls int    `json:"coversCalls"`
 	Summary     string `json:"summary"`
@@ -101,8 +101,8 @@ type SessionSummary struct {
 
 func (s *Store) GetSessionSummary(ctx context.Context, sessionID string) (SessionSummary, bool, error) {
 	var item SessionSummary
-	err := s.db.QueryRowContext(ctx, `SELECT session_id, agent_id, covers_seq, covers_calls, summary, scope, created_at, updated_at FROM session_summaries WHERE session_id = ?`, sessionID).
-		Scan(&item.SessionID, &item.AgentID, &item.CoversSeq, &item.CoversCalls, &item.Summary, &item.Scope, &item.CreatedAt, &item.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT session_id, (SELECT context_id FROM sessions WHERE id=session_summaries.session_id), covers_seq, covers_calls, summary, scope, created_at, updated_at FROM session_summaries WHERE session_id = ?`, sessionID).
+		Scan(&item.SessionID, &item.ContextID, &item.CoversSeq, &item.CoversCalls, &item.Summary, &item.Scope, &item.CreatedAt, &item.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SessionSummary{}, false, nil
 	}
@@ -208,12 +208,12 @@ func (s *Store) SaveSessionSummaryCovering(ctx context.Context, sessionID string
 		Summary: summary, Scope: scope, CreatedAt: now(), UpdatedAt: now(),
 	}
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		return tx.QueryRowContext(ctx, `INSERT INTO session_summaries (session_id, agent_id, covers_seq, covers_calls, summary, scope, created_at, updated_at)
-			SELECT ?, agent_id, ?, ?, ?, ?, ?, ? FROM sessions WHERE id = ?
+		return tx.QueryRowContext(ctx, `INSERT INTO session_summaries (session_id, covers_seq, covers_calls, summary, scope, created_at, updated_at)
+			SELECT ?, ?, ?, ?, ?, ?, ? FROM sessions WHERE id = ?
 			ON CONFLICT(session_id) DO UPDATE SET covers_seq = excluded.covers_seq, covers_calls = excluded.covers_calls, summary = excluded.summary, scope = excluded.scope, updated_at = excluded.updated_at
-			RETURNING agent_id, created_at`,
+			RETURNING (SELECT context_id FROM sessions WHERE id=session_id), created_at`,
 			sessionID, item.CoversSeq, item.CoversCalls, item.Summary, item.Scope, item.CreatedAt, item.UpdatedAt, sessionID).
-			Scan(&item.AgentID, &item.CreatedAt)
+			Scan(&item.ContextID, &item.CreatedAt)
 	})
 	if err != nil {
 		return SessionSummary{}, err

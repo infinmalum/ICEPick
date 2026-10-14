@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"icepick/internal/testfixture"
 	"strings"
 	"testing"
 
@@ -57,16 +58,16 @@ func TestRunContextSummaryMemoryAndPlan(t *testing.T) {
 	svc, store := newTestService(t, &scriptModel{}, &scriptTools{})
 	ctx := context.Background()
 	sessionID, _ := buildClosedTurnHistory(t, svc, store)
-	profile, err := store.ResolvedAgentProfile(ctx, storage.DefaultAgentID)
+	profile, err := testfixture.Profile(store, ctx, testfixture.ContextID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !profile.MemoryEnabled || !profile.PlanEnabled {
 		t.Fatalf("default profile runtime prefs: %+v", profile.ProfileData)
 	}
-	setAgentPolicy(t, svc, storage.DefaultAgentID, func(p *storage.AgentPolicy) { p.Memory = true })
+	setContextPolicy(t, svc, testfixture.ContextID, func(p *storage.ContextPolicy) { p.Memory = true })
 	// The run reads the live policy together with the profile snapshot.
-	profile, err = store.ResolvedAgentProfile(ctx, storage.DefaultAgentID)
+	profile, err = testfixture.Profile(store, ctx, testfixture.ContextID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,10 +75,10 @@ func TestRunContextSummaryMemoryAndPlan(t *testing.T) {
 	if _, err := store.SaveSessionSummaryCovering(ctx, sessionID, 4, "第一问已询问时间并得到回答"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.AddMemory(storage.DefaultAgentID, "用户偏好深色主题"); err != nil {
+	if _, err := svc.AddMemory(testfixture.ContextID, "用户偏好深色主题"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AddAgentMemory(ctx, storage.DefaultAgentID, "凭据备份放在保险柜", storage.MemorySourceModel, sessionID, storage.ScopeCredential); err != nil {
+	if _, err := store.AddContextMemory(ctx, testfixture.ContextID, "凭据备份放在保险柜", storage.MemorySourceModel, sessionID, storage.ScopeCredential); err != nil {
 		t.Fatal(err)
 	}
 	steps := []storage.PlanStep{{Title: "回答新任务", Status: storage.PlanInProgress}}
@@ -125,8 +126,8 @@ func TestRunContextSummaryMemoryAndPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	setAgentPolicy(t, svc, storage.DefaultAgentID, func(p *storage.AgentPolicy) { p.Memory = false })
-	profile, err = store.ResolvedAgentProfile(ctx, storage.DefaultAgentID)
+	setContextPolicy(t, svc, testfixture.ContextID, func(p *storage.ContextPolicy) { p.Memory = false })
+	profile, err = testfixture.Profile(store, ctx, testfixture.ContextID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +136,7 @@ func TestRunContextSummaryMemoryAndPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(window.history[0].Content, "深色主题") {
-		t.Fatal("memory injected although the agent revoked it")
+		t.Fatal("memory injected although the local revoked it")
 	}
 	_, toolScopes, err = store.SessionDataScopes(ctx, other.ID)
 	if err != nil {
@@ -148,7 +149,7 @@ func TestRunContextSummaryMemoryAndPlan(t *testing.T) {
 	}
 }
 
-// The memory_save tool is offered only to authorized agents, needs a user
+// The memory_save tool is offered only to authorized contexts, needs a user
 // approval in semi mode, and stores the session's data scope with the item.
 func TestMemorySaveToolApprovalAndScope(t *testing.T) {
 	chat := &scriptModel{steps: []func([]model.Message) (model.ChatResponse, error){
@@ -166,21 +167,21 @@ func TestMemorySaveToolApprovalAndScope(t *testing.T) {
 		},
 	}}
 	svc, _ := newTestService(t, chat, &scriptTools{})
-	setAgentPolicy(t, svc, storage.DefaultAgentID, func(p *storage.AgentPolicy) { p.Memory = true })
+	setContextPolicy(t, svc, testfixture.ContextID, func(p *storage.ContextPolicy) { p.Memory = true })
 	session, err := svc.CreateSession()
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := svc.StartTask(session.ID, "记住这个偏好")
+	run, err := svc.StartConversationTask(session.ID, "记住这个偏好")
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := waitForCallState(t, svc, storage.DefaultAgentID, session.ID, storage.CallPending)
-	if _, err := svc.ApproveToolCall(storage.DefaultAgentID, call.ID); err != nil {
+	call := waitForCallState(t, svc, session.ID, storage.CallPending)
+	if _, err := svc.ApproveToolCall(call.ID); err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, svc, storage.DefaultAgentID, run.ID, "completed")
-	memories, err := svc.ListMemories(storage.DefaultAgentID)
+	waitForRun(t, svc, run.ID, "completed")
+	memories, err := svc.ListMemories(testfixture.ContextID)
 	if err != nil || len(memories) != 1 {
 		t.Fatalf("memories: %+v %v", memories, err)
 	}
@@ -191,7 +192,7 @@ func TestMemorySaveToolApprovalAndScope(t *testing.T) {
 		t.Fatalf("memory row: %+v", memories[0])
 	}
 
-	// Without the agent authorization the tool is never offered; the call
+	// Without the context authorization the tool is never offered; the call
 	// comes back as an unprovided-tool denial and nothing is stored.
 	chat2 := &scriptModel{steps: []func([]model.Message) (model.ChatResponse, error){
 		func([]model.Message) (model.ChatResponse, error) {
@@ -212,12 +213,12 @@ func TestMemorySaveToolApprovalAndScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run2, err := svc2.StartTask(session2.ID, "记住这个偏好")
+	run2, err := svc2.StartConversationTask(session2.ID, "记住这个偏好")
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, svc2, storage.DefaultAgentID, run2.ID, "completed")
-	left, err := svc2.ListMemories(storage.DefaultAgentID)
+	waitForRun(t, svc2, run2.ID, "completed")
+	left, err := svc2.ListMemories(testfixture.ContextID)
 	if err != nil || len(left) != 0 {
 		t.Fatalf("unauthorized memory saved: %+v %v", left, err)
 	}
@@ -242,19 +243,19 @@ func TestPlanToolPersistsAndReviews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := svc.StartTask(session.ID, "查时间并汇报")
+	run, err := svc.StartConversationTask(session.ID, "查时间并汇报")
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, svc, storage.DefaultAgentID, run.ID, "completed")
-	plan, err := svc.GetSessionPlan(storage.DefaultAgentID, session.ID)
+	waitForRun(t, svc, run.ID, "completed")
+	plan, err := svc.GetSessionPlan(session.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(plan.Steps) != 2 || plan.Steps[0].Status != storage.PlanDone || plan.Steps[1].Note != "等待结果" {
 		t.Fatalf("plan: %+v", plan)
 	}
-	profile, err := store.ResolvedAgentProfile(context.Background(), storage.DefaultAgentID)
+	profile, err := testfixture.Profile(store, context.Background(), testfixture.ContextID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,10 +266,10 @@ func TestPlanToolPersistsAndReviews(t *testing.T) {
 	if !strings.Contains(window.history[0].Content, "查时间") {
 		t.Fatal("plan fragment missing from the next run")
 	}
-	if err := svc.ClearSessionPlan(storage.DefaultAgentID, session.ID); err != nil {
+	if err := svc.ClearSessionPlan(session.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.GetSessionPlan(storage.DefaultAgentID, session.ID); err == nil {
+	if _, err := svc.GetSessionPlan(session.ID); err == nil {
 		t.Fatal("cleared plan still readable")
 	}
 }
@@ -296,7 +297,7 @@ func TestSessionCompactorGatedByExfil(t *testing.T) {
 	if err := store.FinishToolCall(ctx, call.ID, storage.CallSucceeded, "PRIVATE KEY", "", storage.ScopeCredential); err != nil {
 		t.Fatal(err)
 	}
-	profile, err := store.ResolvedAgentProfile(ctx, storage.DefaultAgentID)
+	profile, err := testfixture.Profile(store, ctx, testfixture.ContextID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +313,7 @@ func TestSessionCompactorGatedByExfil(t *testing.T) {
 				},
 			}},
 			payloadCheck: func(c context.Context, m []model.Message, tl []model.Tool) error {
-				return svc.checkPayload(c, source, profile.AgentID, sessionID, m, tl)
+				return svc.checkPayload(c, source, profile.ContextID, sessionID, m, tl)
 			},
 			check: func(c context.Context) error {
 				return svc.exfilCheck(c, sessionID, source, profile)
@@ -329,7 +330,7 @@ func TestSessionCompactorGatedByExfil(t *testing.T) {
 	// Grant every scope the session accumulated (the older tool result is
 	// public, the fresh one credential, and the session carries the
 	// conservative unknown from unclassified input) and the remote path opens.
-	if _, err := svc.GrantExfil(storage.DefaultAgentID, remote.BaseURL, []string{
+	if _, err := svc.GrantExfil(testfixture.ContextID, remote.BaseURL, []string{
 		storage.ScopePersonal, storage.ScopeCredential, storage.ScopePublic, storage.ScopeUnknown,
 	}); err != nil {
 		t.Fatal(err)
@@ -339,14 +340,14 @@ func TestSessionCompactorGatedByExfil(t *testing.T) {
 	}
 }
 
-// Memories are agent-owned: one agent cannot list, edit or delete another's.
+// Memories are context-owned: one context cannot list, edit or delete another's.
 func TestMemoryServiceIsolation(t *testing.T) {
 	svc, _ := newTestService(t, &scriptModel{}, &scriptTools{})
-	other, err := svc.CreateAgent("other", storage.DefaultProfileID)
+	other, err := testfixture.Context(svc.store, context.Background(), "other", storage.DefaultProfileID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mine, err := svc.AddMemory(storage.DefaultAgentID, "我的记忆")
+	mine, err := svc.AddMemory(testfixture.ContextID, "我的记忆")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,18 +355,18 @@ func TestMemoryServiceIsolation(t *testing.T) {
 		t.Fatal("oversized memory accepted")
 	}
 	if list, err := svc.ListMemories(other.ID); err != nil || len(list) != 0 {
-		t.Fatalf("cross-agent list: %+v %v", list, err)
+		t.Fatalf("cross-local list: %+v %v", list, err)
 	}
 	if _, err := svc.UpdateMemory(other.ID, mine.ID, "劫持"); err == nil {
-		t.Fatal("cross-agent edit allowed")
+		t.Fatal("cross-local edit allowed")
 	}
 	if err := svc.DeleteMemory(other.ID, mine.ID); err == nil {
-		t.Fatal("cross-agent delete allowed")
+		t.Fatal("cross-local delete allowed")
 	}
-	if err := svc.DeleteMemory(storage.DefaultAgentID, mine.ID); err != nil {
+	if err := svc.DeleteMemory(testfixture.ContextID, mine.ID); err != nil {
 		t.Fatal(err)
 	}
-	if list, err := svc.ListMemories(storage.DefaultAgentID); err != nil || len(list) != 0 {
+	if list, err := svc.ListMemories(testfixture.ContextID); err != nil || len(list) != 0 {
 		t.Fatalf("delete failed: %+v %v", list, err)
 	}
 }
@@ -410,12 +411,12 @@ func TestPlanToolDependencyConflictRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := svc.StartTask(session.ID, "先收集再总结")
+	run, err := svc.StartConversationTask(session.ID, "先收集再总结")
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, svc, storage.DefaultAgentID, run.ID, "completed")
-	p, err := svc.GetSessionPlan(storage.DefaultAgentID, session.ID)
+	waitForRun(t, svc, run.ID, "completed")
+	p, err := svc.GetSessionPlan(session.ID)
 	if err != nil || p.Revision != 2 || len(p.Steps) != 2 || p.Steps[0].Status != storage.PlanDone || p.Steps[1].ID != "b" {
 		t.Fatalf("recovery: %+v %v", p, err)
 	}

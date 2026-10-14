@@ -9,10 +9,10 @@ import (
 
 // buildToolHistory crafts a session with two closed turns, the first ending
 // in a two-call tool batch, so summary coverage boundaries can be exercised.
-func buildToolHistory(t *testing.T, s *Store, agentID, credentialScope string) (string, []HistoryEntry) {
+func buildToolHistory(t *testing.T, s *Store, contextID, credentialScope string) (string, []HistoryEntry) {
 	t.Helper()
 	ctx := context.Background()
-	session, err := s.CreateAgentSession(ctx, agentID, "history")
+	session, err := s.CreateContextSession(ctx, contextID, DefaultProfileID, "history")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func buildToolHistory(t *testing.T, s *Store, agentID, credentialScope string) (
 
 func TestHistoryEntriesRenderPersistedOrder(t *testing.T) {
 	s := openTestStore(t)
-	sessionID, entries := buildToolHistory(t, s, DefaultAgentID, ScopePublic)
+	sessionID, entries := buildToolHistory(t, s, testContextID, ScopePublic)
 	if len(entries) != 6 {
 		t.Fatalf("entries: %+v", entries)
 	}
@@ -97,7 +97,7 @@ func TestHistoryEntriesRenderPersistedOrder(t *testing.T) {
 func TestSummaryCoverageBoundariesAndScope(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	sessionID, entries := buildToolHistory(t, s, DefaultAgentID, ScopeCredential)
+	sessionID, entries := buildToolHistory(t, s, testContextID, ScopeCredential)
 
 	// A boundary inside the tool batch is refused, never persisted.
 	if _, err := s.SaveSessionSummaryCovering(ctx, sessionID, 2, "x"); err == nil {
@@ -137,37 +137,38 @@ func TestSummaryCoverageBoundariesAndScope(t *testing.T) {
 	}
 }
 
-// Long-term memory is strictly per agent: same Profile, no shared rows, and
-// edits stay inside the owning agent.
-func TestMemoryAgentIsolation(t *testing.T) {
+// Long-term memory is strictly per context: same Profile, no shared rows, and
+// edits stay inside the owning local.
+func TestMemoryContextIsolation(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	other, err := s.CreateAgent(ctx, "other", DefaultProfileID)
+	other := newTestContext(t, s, "other", DefaultProfileID)
+	var err error
 	if err != nil {
 		t.Fatal(err)
 	}
-	mine, err := s.AddAgentMemory(ctx, DefaultAgentID, "记住这件事", MemorySourceModel, "session-1", ScopePersonal)
+	mine, err := s.AddContextMemory(ctx, testContextID, "记住这件事", MemorySourceModel, "session-1", ScopePersonal)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AddAgentMemory(ctx, DefaultAgentID, strings.Repeat("超", MaxMemoryContent+1), MemorySourceUser, "", ScopePersonal); err == nil {
+	if _, err := s.AddContextMemory(ctx, testContextID, strings.Repeat("超", MaxMemoryContent+1), MemorySourceUser, "", ScopePersonal); err == nil {
 		t.Fatal("oversized memory accepted")
 	}
-	if _, err := s.AddAgentMemory(ctx, DefaultAgentID, "x", MemorySourceModel, "", "not-a-scope"); err == nil {
+	if _, err := s.AddContextMemory(ctx, testContextID, "x", MemorySourceModel, "", "not-a-scope"); err == nil {
 		t.Fatal("unknown scope accepted")
 	}
-	// The other agent sees nothing and cannot touch the row.
-	theirs, err := s.ListAgentMemories(ctx, other.ID, 0)
+	// The other context sees nothing and cannot touch the row.
+	theirs, err := s.ListContextMemories(ctx, other.ID, 0)
 	if err != nil || len(theirs) != 0 {
-		t.Fatalf("cross-agent leak: %+v %v", theirs, err)
+		t.Fatalf("cross-local leak: %+v %v", theirs, err)
 	}
-	if _, err := s.UpdateAgentMemory(ctx, other.ID, mine.ID, "劫持"); err == nil {
-		t.Fatal("cross-agent edit allowed")
+	if _, err := s.UpdateContextMemory(ctx, other.ID, mine.ID, "劫持"); err == nil {
+		t.Fatal("cross-local edit allowed")
 	}
-	if err := s.DeleteAgentMemory(ctx, other.ID, mine.ID); err == nil {
-		t.Fatal("cross-agent delete allowed")
+	if err := s.DeleteContextMemory(ctx, other.ID, mine.ID); err == nil {
+		t.Fatal("cross-local delete allowed")
 	}
-	updated, err := s.UpdateAgentMemory(ctx, DefaultAgentID, mine.ID, "改后的内容")
+	updated, err := s.UpdateContextMemory(ctx, testContextID, mine.ID, "改后的内容")
 	if err != nil || updated.Content != "改后的内容" || updated.Scope != ScopePersonal {
 		t.Fatalf("update: %+v %v", updated, err)
 	}
@@ -176,7 +177,7 @@ func TestMemoryAgentIsolation(t *testing.T) {
 func TestSessionPlanRoundtrip(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	session, err := s.CreateAgentSession(ctx, DefaultAgentID, "plan")
+	session, err := s.CreateContextSession(ctx, testContextID, DefaultProfileID, "plan")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +186,7 @@ func TestSessionPlanRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.AgentID != DefaultAgentID {
+	if plan.ContextID != testContextID {
 		t.Fatalf("plan ownership: %+v", plan)
 	}
 	if err := s.ClearSessionPlan(ctx, session.ID); err != nil {

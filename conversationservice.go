@@ -21,7 +21,7 @@ func (s *StatusService) SelectConversationProfile(id, profileID string) (storage
 func (s *StatusService) GetLocalContext(id string) (storage.LocalContext, error) {
 	return s.svc.GetLocalContext(id)
 }
-func (s *StatusService) UpdateContextPolicy(id string, policy storage.AgentPolicy) (storage.LocalContext, error) {
+func (s *StatusService) UpdateContextPolicy(id string, policy storage.ContextPolicy) (storage.LocalContext, error) {
 	return s.svc.UpdateContextPolicy(id, policy)
 }
 func (s *StatusService) ListComponents() []storage.Component { return storage.Components() }
@@ -48,12 +48,12 @@ func (s *StatusService) ExportProfileIncludingWorkers(id string) (app.ExportResu
 
 func (s *StatusService) GetProfile(id string) (storage.Profile, error) { return s.svc.GetProfile(id) }
 
-func (s *StatusService) GetTaskGraph(agentID, runID string) (storage.TaskGraph, error) {
-	return s.svc.GetTaskGraph(agentID, runID)
+func (s *StatusService) GetTaskGraph(runID string) (storage.TaskGraph, error) {
+	return s.svc.GetTaskGraph(runID)
 }
 
-func (s *StatusService) ListTaskReviews(agentID, runID string) ([]storage.TaskReview, error) {
-	return s.svc.ListTaskReviews(agentID, runID)
+func (s *StatusService) ListTaskReviews(runID string) ([]storage.TaskReview, error) {
+	return s.svc.ListTaskReviews(runID)
 }
 func (s *StatusService) StartConversationReview(sessionID, target string) (storage.Run, error) {
 	return s.svc.StartConversationReview(sessionID, target)

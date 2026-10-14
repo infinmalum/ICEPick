@@ -56,7 +56,7 @@ func (t bookkeepingTools) taskPlan(ctx context.Context, raw string) (string, err
 
 // Resolve the complete approved contract from the current root only. A
 // fingerprint binds approval to the saved spec, including explicit materials.
-func (s *Service) resolvePlannedTask(ctx context.Context, p storage.AgentProfile, runID string, args delegateArgs) (delegateArgs, *storage.TaskSpec, error) {
+func (s *Service) resolvePlannedTask(ctx context.Context, p storage.RunProfile, runID string, args delegateArgs) (delegateArgs, *storage.TaskSpec, error) {
 	if args.TaskID == "" {
 		if args.TaskFingerprint != "" {
 			return args, nil, errors.New("taskFingerprint 需要 taskId")
@@ -138,8 +138,8 @@ func (s *Service) resolvePlannedTask(ctx context.Context, p storage.AgentProfile
 	return args, selected, nil
 }
 
-func (s *Service) GetTaskGraph(agentID, runID string) (storage.TaskGraph, error) {
-	run, err := s.GetRun(agentID, runID)
+func (s *Service) GetTaskGraph(runID string) (storage.TaskGraph, error) {
+	run, err := s.GetRun(runID)
 	if err != nil {
 		return storage.TaskGraph{}, err
 	}

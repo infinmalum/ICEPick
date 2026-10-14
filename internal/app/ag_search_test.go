@@ -86,7 +86,7 @@ func TestAGNativeSearchThroughHostGrantBudgetAndRecords(t *testing.T) {
 				if !grant {
 					want = "failed"
 				}
-				finished := waitForRun(t, s, c.ContextID, run.ID, want)
+				finished := waitForRun(t, s, run.ID, want)
 				records, err := s.ListConversationSearch(c.ID)
 				if err != nil {
 					t.Fatal(err)
@@ -103,11 +103,11 @@ func TestAGNativeSearchThroughHostGrantBudgetAndRecords(t *testing.T) {
 				if provider == "gemini" && (records[0].Reserved != 1 || records[0].Report.Calls != nil || records[0].Report.BudgetUnit != "grounded_request") {
 					t.Fatal(records)
 				}
-				graph, err := s.GetTaskGraph(c.ContextID, run.ID)
+				graph, err := s.GetTaskGraph(run.ID)
 				if err != nil || graph.Budget.ToolCalls != 1 {
 					t.Fatal(graph.Budget, err)
 				}
-				messages, err := s.ListMessages(c.ContextID, c.ID)
+				messages, err := s.ListMessages(c.ID)
 				if err != nil || len(messages) != 2 || messages[1].Content != "回答" {
 					t.Fatal(messages, err)
 				}

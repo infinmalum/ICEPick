@@ -81,7 +81,7 @@ func TestStreamDeltasBroadcastMergeAndClear(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := svc.StartTask(session.ID, "几点了")
+	run, err := svc.StartConversationTask(session.ID, "几点了")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestStreamDeltasBroadcastMergeAndClear(t *testing.T) {
 	// through the reconnect surface.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		pending, err := svc.PendingStreamText(storage.DefaultAgentID, run.ID)
+		pending, err := svc.PendingStreamText(run.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -103,7 +103,7 @@ func TestStreamDeltasBroadcastMergeAndClear(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	close(release)
-	waitForRun(t, svc, storage.DefaultAgentID, run.ID, "completed")
+	waitForRun(t, svc, run.ID, "completed")
 
 	mu.Lock()
 	joined := ""
@@ -117,10 +117,10 @@ func TestStreamDeltasBroadcastMergeAndClear(t *testing.T) {
 		t.Fatalf("broadcast deltas = %q", joined)
 	}
 	// After the run finished, everything is durable and the buffer is gone.
-	if pending, _ := svc.PendingStreamText(storage.DefaultAgentID, run.ID); pending != "" {
+	if pending, _ := svc.PendingStreamText(run.ID); pending != "" {
 		t.Fatalf("buffer survived run completion: %q", pending)
 	}
-	messages, err := svc.ListMessages(storage.DefaultAgentID, session.ID)
+	messages, err := svc.ListMessages(session.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -94,26 +94,26 @@ func TestPlannedWorkersExecuteDependenciesAndKeepAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := waitForPlannedApproval(t, svc, c.ContextID, c.ID, "first")
-	if _, err = svc.ApproveToolCall(c.ContextID, first.ID); err != nil {
+	first := waitForPlannedApproval(t, svc, c.ID, "first")
+	if _, err = svc.ApproveToolCall(first.ID); err != nil {
 		t.Fatal(err)
 	}
-	second := waitForPlannedApproval(t, svc, c.ContextID, c.ID, "second")
+	second := waitForPlannedApproval(t, svc, c.ID, "second")
 	if second.ID == first.ID {
 		t.Fatal("approval call did not advance")
 	}
-	if _, err = svc.ApproveToolCall(c.ContextID, second.ID); err != nil {
+	if _, err = svc.ApproveToolCall(second.ID); err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, svc, c.ContextID, run.ID, "completed")
-	graph, err := svc.GetTaskGraph(c.ContextID, run.ID)
+	waitForRun(t, svc, run.ID, "completed")
+	graph, err := svc.GetTaskGraph(run.ID)
 	if err != nil || len(graph.Attempts) != 2 || graph.Tasks[0].State != "succeeded" || graph.Tasks[1].State != "succeeded" || graph.Goal != "收集并总结" {
 		t.Fatalf("end to end: %+v %v", graph, err)
 	}
-	if _, err = svc.GetTaskGraph(storage.DefaultAgentID, run.ID); err == nil {
-		t.Fatal("foreign context read graph")
+	if _, err = svc.GetTaskGraph("missing"); err == nil {
+		t.Fatal("missing root accepted")
 	}
-	if _, err = svc.GetTaskGraph(c.ContextID, graph.Attempts[0].RunID); err == nil {
+	if _, err = svc.GetTaskGraph(graph.Attempts[0].RunID); err == nil {
 		t.Fatal("child read root graph")
 	}
 }
@@ -160,11 +160,11 @@ func TestPlannedTaskApprovalBindsContract(t *testing.T) {
 	}
 }
 
-func waitForPlannedApproval(t *testing.T, svc *Service, contextID, sessionID, callID string) storage.ToolCall {
+func waitForPlannedApproval(t *testing.T, svc *Service, sessionID, callID string) storage.ToolCall {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		calls, err := svc.ListToolCalls(contextID, sessionID)
+		calls, err := svc.ListToolCalls(sessionID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -175,7 +175,7 @@ func waitForPlannedApproval(t *testing.T, svc *Service, contextID, sessionID, ca
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	runs, _ := svc.ListRuns(contextID, sessionID)
+	runs, _ := svc.ListRuns(sessionID)
 	t.Fatalf("planned call %s not pending; runs %+v", callID, runs)
 	return storage.ToolCall{}
 }

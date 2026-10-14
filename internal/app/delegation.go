@@ -37,9 +37,9 @@ type delegateArgs struct {
 }
 
 // delegationOffered reports whether a run may offer the delegation tool at
-// all: the Profile switch, the agent's allowlist and the depth budget must
+// all: the Profile switch, configured worker slots and the depth budget must
 // all allow it. The gate re-checks every call against the live policy.
-func delegationOffered(ctx context.Context, svc *Service, profile storage.AgentProfile, runID string) bool {
+func delegationOffered(ctx context.Context, svc *Service, profile storage.RunProfile, runID string) bool {
 	if !profile.Delegation.Enabled || !profile.AllowsTool(delegateDefinition.Function.Name) {
 		return false
 	}
@@ -57,7 +57,7 @@ func delegationOffered(ctx context.Context, svc *Service, profile storage.AgentP
 // parent's tool call. The child run is a first-class persisted run: it has
 // its own delegation session (hidden from the normal list), its own Profile
 // snapshot of the selected worker, its own recorder, gate and guarded sends.
-func (s *Service) executeDelegation(ctx context.Context, parentProfile storage.AgentProfile, parentSessionID, parentRunID string, raw string) (string, error) {
+func (s *Service) executeDelegation(ctx context.Context, parentProfile storage.RunProfile, parentSessionID, parentRunID string, raw string) (string, error) {
 	if ctx.Err() != nil {
 		return "", ctx.Err()
 	}
@@ -96,7 +96,7 @@ func (s *Service) executeDelegation(ctx context.Context, parentProfile storage.A
 // runDelegatedSubtask executes the child loop and maps its terminal state to
 // the parent-visible tool result. `parentCtx` is the delegating run's
 // context, `ctx` the child's own (parent-derived, budget-bounded) context.
-func (s *Service) runDelegatedSubtask(parentCtx context.Context, ctx context.Context, childRun storage.Run, childSession storage.Session, childProfile storage.AgentProfile, parentProfile storage.AgentProfile, parentSessionID string, userContent, materialScope string) (string, error) {
+func (s *Service) runDelegatedSubtask(parentCtx context.Context, ctx context.Context, childRun storage.Run, childSession storage.Session, childProfile storage.RunProfile, parentProfile storage.RunProfile, parentSessionID string, userContent, materialScope string) (string, error) {
 	finalize := func(status, detail string) {
 		_ = s.runs.Finish(childRun.ID, status, detail)
 		s.publish(Event{Type: "run.updated", SessionID: childRun.SessionID, RunID: childRun.ID, Detail: "委派子任务结束"})
@@ -190,13 +190,8 @@ func (s *Service) runDelegatedSubtask(parentCtx context.Context, ctx context.Con
 		return "", err
 	}
 
-	actorIDs, err := s.runActorIDs(ctx, childRun.ID)
-	if err != nil {
-		finalize("failed", err.Error())
-		return "", err
-	}
 	guarded := guardedChat{svc: s, runID: childRun.ID, inner: s.chat, payloadCheck: func(c context.Context, m []model.Message, t []model.Tool) error {
-		return s.checkPayloadFor(c, source, actorIDs, childRun.SessionID, m, t)
+		return s.checkPayload(c, source, childProfile.ContextID, childRun.SessionID, m, t)
 	}, check: func(checkCtx context.Context) error {
 		// Frozen grants and current context authorization cover every send.
 		return s.exfilCheckRun(checkCtx, childRun.ID, childRun.SessionID, source, childProfile)
@@ -205,7 +200,7 @@ func (s *Service) runDelegatedSubtask(parentCtx context.Context, ctx context.Con
 		Model:    guarded,
 		Tools:    runner,
 		Recorder: runRecorder{svc: s, runID: childRun.ID, sessionID: childRun.SessionID, classifier: s.classifierFor(childProfile)},
-		Gate:     toolGate{svc: s, agentID: childProfile.AgentID, snapshot: &childProfile, runID: childRun.ID, parent: &parentProfile},
+		Gate:     toolGate{svc: s, contextID: childProfile.ContextID, snapshot: &childProfile, runID: childRun.ID, parent: &parentProfile},
 		Approver: s,
 		OnDelta: func(text string) error {
 			s.appendStream(childRun.ID, childRun.SessionID, text)
@@ -275,18 +270,17 @@ func finalizeOnPanic(s *Service, runID string) {
 // profile's own prompt plus a fixed note that this is a delegated subtask
 // working only from explicitly passed materials. Memory and plan injection
 // never run for delegated sessions.
-func (s *Service) delegationSystemPrompt(parentProfile, childProfile storage.AgentProfile) string {
+func (s *Service) delegationSystemPrompt(parentProfile, childProfile storage.RunProfile) string {
 	prompt := s.systemPrompt(childProfile)
-	note := fmt.Sprintf("[委派说明] 本会话是 Agent「%s」委派的子任务：只使用用户消息中给出的任务描述与材料完成工作，不要假设可以访问你既有的会话、记忆或计划。", parentProfile.AgentName)
+	note := fmt.Sprintf("[委派说明] 本会话是上下文「%s」中主任务委派的子任务：只使用用户消息中给出的任务描述与材料完成工作，不要假设可以访问你既有的会话、记忆或计划。", parentProfile.ContextName)
 	if prompt == "" {
 		return note
 	}
 	return prompt + "\n\n" + note
 }
 
-// intersectPermissions is the effective machine authorization of a delegated
-// subtask: the intersection of the parent task's and the target Agent's own
-// permission scopes. An empty list means "nothing granted".
+// intersectPermissions combines frozen and live permission ceilings.
+// An empty list means nothing granted.
 func intersectPermissions(parent, target storage.PermissionScope) storage.PermissionScope {
 	out := storage.PermissionScope{}
 	out.Unrestricted = parent.Unrestricted && target.Unrestricted

@@ -32,7 +32,7 @@ func cmdStatus(client *ipc.Client) int {
 	}
 	fmt.Printf("存储: %s\nAgent: %s\n模型: %s\n提供方: %s\n模型地址: %s\n模型 ID: %s\n",
 		boolText(status.StorageReady, "已就绪", "异常"),
-		boolText(status.AgentReady, "已就绪", "未配置"),
+		boolText(status.RuntimeReady, "已就绪", "未配置"),
 		boolText(status.ModelConnected, "已连接", "未连接"),
 		status.Model.Provider, status.Model.EffectiveBaseURL(), status.Model.Name)
 	if status.Message != "" {
@@ -191,7 +191,7 @@ func cmdProfiles(client *ipc.Client, args []string) int {
 // importProfile reads a share package (zip file or directory with the same
 // layout), shows the dependency preview and — only with --yes — imports it.
 // The preview step is mandatory: import never auto-installs, auto-authorizes
-// or switches agents.
+// or switches contexts.
 func importProfile(client *ipc.Client, args []string) int {
 	parsed, err := parseCLI(args, "yes")
 	if err != nil || parsed.arg(0) == "" {

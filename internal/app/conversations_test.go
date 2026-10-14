@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"icepick/internal/testfixture"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,11 +57,11 @@ func TestConversationWithHTTPModelService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, svc, c.ContextID, run.ID, "completed")
+	waitForRun(t, svc, run.ID, "completed")
 	if got := <-requests; got != "HTTP component prompt" {
 		t.Fatal("model override lost", got)
 	}
-	history, err := svc.ListMessages(c.ContextID, c.ID)
+	history, err := svc.ListMessages(c.ID)
 	if err != nil || len(history) != 2 || history[1].Content != "HTTP 模拟响应" {
 		t.Fatalf("protocol result: %+v %v", history, err)
 	}
@@ -102,7 +103,7 @@ func TestProfileFirstTaskUsesComponentAndAuthorizedTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, svc, c.ContextID, run.ID, "completed")
+	waitForRun(t, svc, run.ID, "completed")
 	if len(tools.calls) != 1 || run.Component != "main" {
 		t.Fatalf("execution: %+v %v", run, tools.calls)
 	}
@@ -112,7 +113,7 @@ func TestProfileFirstTaskUsesComponentAndAuthorizedTool(t *testing.T) {
 	if _, err := svc.StartConversationTask(c.ID, "继续"); err == nil {
 		t.Fatal("deleted configuration executed")
 	}
-	history, err := svc.ListMessages(c.ContextID, c.ID)
+	history, err := svc.ListMessages(c.ID)
 	if err != nil || len(history) == 0 {
 		t.Fatal("archive hid transcript", err)
 	}
@@ -123,7 +124,7 @@ func TestProfileFirstTaskUsesComponentAndAuthorizedTool(t *testing.T) {
 
 func TestChildTranscriptCannotStartOrdinaryTask(t *testing.T) {
 	svc, store := newTestService(t, &scriptModel{}, &scriptTools{})
-	child, err := store.CreateDelegationSession(context.Background(), storage.DefaultAgentID, "child")
+	child, err := store.CreateDelegationSession(context.Background(), testfixture.ContextID, storage.DefaultProfileID, "child")
 	if err != nil {
 		t.Fatal(err)
 	}

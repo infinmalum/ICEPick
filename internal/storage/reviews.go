@@ -118,7 +118,7 @@ func reviewSnapshotInTx(ctx context.Context, tx *sql.Tx, root string) (ReviewSna
 		out.Tasks = append(out.Tasks, task.Spec)
 	}
 	// Final assistant messages with no tool calls are the delivery candidate.
-	rows, err := tx.QueryContext(ctx, `SELECT id,session_id,agent_id,run_id,seq,role,content,tool_calls,created_at FROM messages WHERE run_id=? AND role='assistant' AND NOT EXISTS(SELECT 1 FROM tool_calls WHERE message_id=messages.id) ORDER BY seq DESC LIMIT 1`, root)
+	rows, err := tx.QueryContext(ctx, `SELECT id,session_id,(SELECT context_id FROM sessions WHERE id=messages.session_id),run_id,seq,role,content,tool_calls,created_at FROM messages WHERE run_id=? AND role='assistant' AND NOT EXISTS(SELECT 1 FROM tool_calls WHERE message_id=messages.id) ORDER BY seq DESC LIMIT 1`, root)
 	if err != nil {
 		return out, err
 	}
@@ -127,7 +127,7 @@ func reviewSnapshotInTx(ctx context.Context, tx *sql.Tx, root string) (ReviewSna
 		return out, errors.New("没有可审查的交付消息")
 	}
 	var callsRaw string
-	err = rows.Scan(&out.Delivery.ID, &out.Delivery.SessionID, &out.Delivery.AgentID, &out.Delivery.RunID, &out.Delivery.Seq, &out.Delivery.Role, &out.Delivery.Content, &callsRaw, &out.Delivery.CreatedAt)
+	err = rows.Scan(&out.Delivery.ID, &out.Delivery.SessionID, &out.Delivery.ContextID, &out.Delivery.RunID, &out.Delivery.Seq, &out.Delivery.Role, &out.Delivery.Content, &callsRaw, &out.Delivery.CreatedAt)
 	rows.Close()
 	if err != nil {
 		return out, err
@@ -251,7 +251,7 @@ func (s *Store) SaveTaskReview(ctx context.Context, root, reviewer, binding stri
 		missing := missingReviewChecks(snap)
 		unknown := false
 		for _, c := range snap.Calls {
-			if c.State == CallExecutionUnknow || c.State == CallExecuting || c.State == CallPending || c.State == CallApproved {
+			if c.State == CallExecutionUnknown || c.State == CallExecuting || c.State == CallPending || c.State == CallApproved {
 				unknown = true
 			}
 		}
@@ -353,14 +353,14 @@ func enforceRequiredReview(ctx context.Context, tx *sql.Tx, root string) error {
 // One-shot review has its own root budget and never rewrites the old outcome.
 func (s *Store) InitReviewRequest(ctx context.Context, root, target string) error {
 	return s.withTx(ctx, func(tx *sql.Tx) error {
-		var actor, targetActor, status string
-		if err := tx.QueryRowContext(ctx, `SELECT agent_id FROM runs WHERE id=? AND status='running' AND parent_run_id IS NULL`, root).Scan(&actor); err != nil {
+		var contextID, targetContext, status string
+		if err := tx.QueryRowContext(ctx, `SELECT (SELECT context_id FROM sessions WHERE id=runs.session_id) FROM runs WHERE id=? AND status='running' AND parent_run_id IS NULL`, root).Scan(&contextID); err != nil {
 			return err
 		}
-		if err := tx.QueryRowContext(ctx, `SELECT agent_id,status FROM runs WHERE id=? AND parent_run_id IS NULL`, target).Scan(&targetActor, &status); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT (SELECT context_id FROM sessions WHERE id=runs.session_id),status FROM runs WHERE id=? AND parent_run_id IS NULL`, target).Scan(&targetContext, &status); err != nil {
 			return err
 		}
-		if actor != targetActor || status == "running" {
+		if contextID != targetContext || status == "running" {
 			return errors.New("单次审查仅支持同一上下文内已结束的根任务")
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO review_requests(run_id,target_run_id) VALUES(?,?)`, root, target)

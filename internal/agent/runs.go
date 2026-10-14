@@ -26,39 +26,39 @@ func NewRuns(store *storage.Store) *Runs {
 // Start creates the run and resolves the owning Agent's current Profile in
 // one transaction. The returned resolved profile is the snapshot the run
 // must execute with; later profile edits affect only subsequent runs.
-func (r *Runs) Start(ctx context.Context, sessionID string) (storage.Run, context.Context, storage.AgentProfile, error) {
+func (r *Runs) Start(ctx context.Context, sessionID string) (storage.Run, context.Context, storage.RunProfile, error) {
 	return r.start(ctx, sessionID, storage.CreateRunOptions{})
 }
 
-func (r *Runs) StartPrepared(ctx context.Context, sessionID string, model config.Model, snapshot storage.SkillSnapshotter, searchTools ...string) (storage.Run, context.Context, storage.AgentProfile, error) {
+func (r *Runs) StartPrepared(ctx context.Context, sessionID string, model config.Model, snapshot storage.SkillSnapshotter, searchTools ...string) (storage.Run, context.Context, storage.RunProfile, error) {
 	return r.start(ctx, sessionID, storage.CreateRunOptions{DefaultModel: model, SnapshotSkills: snapshot, SearchTools: searchTools})
 }
 
-func (r *Runs) StartWorker(ctx context.Context, sessionID, parentID string, depth int, name string) (storage.Run, context.Context, storage.AgentProfile, error) {
+func (r *Runs) StartWorker(ctx context.Context, sessionID, parentID string, depth int, name string) (storage.Run, context.Context, storage.RunProfile, error) {
 	return r.start(ctx, sessionID, storage.CreateRunOptions{ParentRunID: parentID, Depth: depth, WorkerName: name})
 }
 
-func (r *Runs) StartPlannedWorker(ctx context.Context, sessionID, parentID string, spec storage.TaskSpec) (storage.Run, context.Context, storage.AgentProfile, error) {
+func (r *Runs) StartPlannedWorker(ctx context.Context, sessionID, parentID string, spec storage.TaskSpec) (storage.Run, context.Context, storage.RunProfile, error) {
 	return r.start(ctx, sessionID, storage.CreateRunOptions{ParentRunID: parentID, Depth: 1, WorkerName: spec.Worker, TaskSpec: &spec})
 }
 
-func (r *Runs) StartPlanner(ctx context.Context, session, parent string) (storage.Run, context.Context, storage.AgentProfile, error) {
+func (r *Runs) StartPlanner(ctx context.Context, session, parent string) (storage.Run, context.Context, storage.RunProfile, error) {
 	return r.start(ctx, session, storage.CreateRunOptions{ParentRunID: parent, Depth: 1, WorkerName: "@planner", Component: "planner"})
 }
 
-func (r *Runs) StartReviewer(ctx context.Context, session, parent string) (storage.Run, context.Context, storage.AgentProfile, error) {
+func (r *Runs) StartReviewer(ctx context.Context, session, parent string) (storage.Run, context.Context, storage.RunProfile, error) {
 	return r.start(ctx, session, storage.CreateRunOptions{ParentRunID: parent, Depth: 1, WorkerName: "@reviewer", Component: "reviewer"})
 }
 
-func (r *Runs) start(ctx context.Context, sessionID string, opts storage.CreateRunOptions) (storage.Run, context.Context, storage.AgentProfile, error) {
+func (r *Runs) start(ctx context.Context, sessionID string, opts storage.CreateRunOptions) (storage.Run, context.Context, storage.RunProfile, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return storage.Run{}, nil, storage.AgentProfile{}, err
+		return storage.Run{}, nil, storage.RunProfile{}, err
 	}
 	item, resolved, err := r.store.CreateRunWithOptions(ctx, sessionID, opts)
 	if err != nil {
-		return storage.Run{}, nil, storage.AgentProfile{}, err
+		return storage.Run{}, nil, storage.RunProfile{}, err
 	}
 	timeout := RunTimeout
 	if opts.ParentRunID == "" {

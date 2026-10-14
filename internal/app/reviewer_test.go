@@ -68,16 +68,16 @@ func TestRequiredReviewSuccessAndSharedBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	final := waitForRun(t, s, c.ContextID, r.ID, "completed")
-	reviews, err := s.ListTaskReviews(c.ContextID, r.ID)
+	final := waitForRun(t, s, r.ID, "completed")
+	reviews, err := s.ListTaskReviews(r.ID)
 	if err != nil || len(reviews) != 1 || !reviews[0].Current || reviews[0].Result.Status != "passed" {
 		t.Fatalf("reviews=%+v err=%v", reviews, err)
 	}
-	children, err := s.ListChildRuns(c.ContextID, r.ID)
+	children, err := s.ListChildRuns(r.ID)
 	if err != nil || len(children) != 1 || children[0].Component != "reviewer" || children[0].Status != "completed" {
 		t.Fatalf("children %+v %v", children, err)
 	}
-	g, err := s.GetTaskGraph(c.ContextID, final.ID)
+	g, err := s.GetTaskGraph(final.ID)
 	if err != nil || g.Budget.ModelCalls != 2 {
 		t.Fatalf("shared budget %+v %v", g.Budget, err)
 	}
@@ -101,8 +101,8 @@ func TestRequiredReviewRejectsMissingChecksDefectsAndForgedEvidence(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			waitForRun(t, s, c.ContextID, r.ID, "failed")
-			reviews, err := s.ListTaskReviews(c.ContextID, r.ID)
+			waitForRun(t, s, r.ID, "failed")
+			reviews, err := s.ListTaskReviews(r.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -122,21 +122,28 @@ func TestOnDemandReviewPreservesOldOutcomeAndUsesNewRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, s, c.ContextID, r.ID, "completed")
-	before, err := s.ListTaskReviews(c.ContextID, r.ID)
+	waitForRun(t, s, r.ID, "completed")
+	before, err := s.ListTaskReviews(r.ID)
 	if err != nil || len(before) != 0 {
 		t.Fatal(before, err)
+	}
+	other, err := s.CreateConversation(c.ProfileID, "", "isolated review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.StartConversationReview(other.ID, r.ID); err == nil {
+		t.Fatal("review crossed context boundary")
 	}
 	one, err := s.StartConversationReview(c.ID, r.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, s, c.ContextID, one.ID, "completed")
-	old, err := s.GetRun(c.ContextID, r.ID)
+	waitForRun(t, s, one.ID, "completed")
+	old, err := s.GetRun(r.ID)
 	if err != nil || old.Status != "completed" {
 		t.Fatal(old, err)
 	}
-	reviews, err := s.ListTaskReviews(c.ContextID, one.ID)
+	reviews, err := s.ListTaskReviews(one.ID)
 	if err != nil || len(reviews) != 1 || reviews[0].RootRunID != r.ID || reviews[0].Result.Status != "changes_requested" {
 		t.Fatal(reviews, err)
 	}
@@ -170,7 +177,7 @@ func TestDynamicRequiredReviewRunsAfterActualDelivery(t *testing.T) {
 	if final.Status != "completed" {
 		t.Fatal(final)
 	}
-	reviews, err := s.ListTaskReviews(c.ContextID, r.ID)
+	reviews, err := s.ListTaskReviews(r.ID)
 	if err != nil || len(reviews) != 1 || !reviews[0].Current {
 		t.Fatal(reviews, err)
 	}
@@ -189,12 +196,12 @@ func TestRequiredReviewBudgetExhaustionCannotComplete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, s, c.ContextID, r.ID, "failed")
-	g, err := s.GetTaskGraph(c.ContextID, r.ID)
+	waitForRun(t, s, r.ID, "failed")
+	g, err := s.GetTaskGraph(r.ID)
 	if err != nil || g.Budget.ModelCalls != 1 {
 		t.Fatal(g, err)
 	}
-	reviews, err := s.ListTaskReviews(c.ContextID, r.ID)
+	reviews, err := s.ListTaskReviews(r.ID)
 	if err != nil || len(reviews) != 0 {
 		t.Fatal(reviews, err)
 	}
@@ -215,11 +222,11 @@ func TestRequiredReviewRemoteModelNeedsFrozenGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	final := waitForRun(t, s, c.ContextID, r.ID, "failed")
+	final := waitForRun(t, s, r.ID, "failed")
 	if !strings.Contains(final.Error, "授权") {
 		t.Fatal(final)
 	}
-	g, err := s.GetTaskGraph(c.ContextID, r.ID)
+	g, err := s.GetTaskGraph(r.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,18 +260,18 @@ func TestCancelDuringRequiredReviewStopsChildren(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("review did not start")
 	}
-	if err := s.CancelTask(c.ContextID, r.ID); err != nil {
+	if err := s.CancelTask(r.ID); err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, s, c.ContextID, r.ID, "cancelled")
+	waitForRun(t, s, r.ID, "cancelled")
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		children, err := s.ListChildRuns(c.ContextID, r.ID)
+		children, err := s.ListChildRuns(r.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if len(children) == 1 && children[0].Status != "running" {
-			reviews, err := s.ListTaskReviews(c.ContextID, r.ID)
+			reviews, err := s.ListTaskReviews(r.ID)
 			if err != nil || len(reviews) != 0 {
 				t.Fatal(reviews, err)
 			}

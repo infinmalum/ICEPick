@@ -91,15 +91,15 @@ func summaryRequest(previous string, hasPrevious bool, older []model.Message) st
 }
 
 // The two bookkeeping tools are host-backed: memory save writes to the
-// owning agent's memory store, plan updates replace the session's plan.
+// owning context's memory store, plan updates replace the session's plan.
 // They live in the app layer (not the MCP hub) because availability follows
-// the profile preference and the agent's own authorization, and dispatching
-// them needs the run's agent/session scope.
+// the profile preference and the context's own authorization, and dispatching
+// them needs the run's context/session scope.
 var (
 	memorySaveDefinition = func() model.Tool {
 		t := model.Tool{Type: "function"}
 		t.Function.Name = "local__memory_save"
-		t.Function.Description = "把值得跨会话记住的事实或偏好保存到本 Agent 的长期记忆；只保存稳定的事实，不保存临时状态"
+		t.Function.Description = "把值得跨会话记住的事实或偏好保存到本机上下文的长期记忆；只保存稳定的事实，不保存临时状态"
 		t.Function.Parameters = json.RawMessage(`{"type":"object","properties":{"content":{"type":"string","description":"要记住的内容，一句话到几句话"}},"required":["content"]}`)
 		return t
 	}()
@@ -120,7 +120,7 @@ var (
 type bookkeepingTools struct {
 	inner     agent.ToolExecutor
 	svc       *Service
-	profile   storage.AgentProfile
+	profile   storage.RunProfile
 	sessionID string
 	runID     string
 	delegated bool
@@ -228,7 +228,7 @@ func (t bookkeepingTools) Call(ctx context.Context, name, arguments string) (str
 			return "", errors.New("委派子任务不提供长期记忆写入")
 		}
 		if !memoryAllowed(t.profile) {
-			return "", errors.New("该 Agent 未启用长期记忆写入")
+			return "", errors.New("该上下文未启用长期记忆写入")
 		}
 		var args struct {
 			Content string `json:"content"`
@@ -247,7 +247,7 @@ func (t bookkeepingTools) Call(ctx context.Context, name, arguments string) (str
 		if err != nil {
 			return "", err
 		}
-		if _, err := t.svc.store.AddAgentMemory(ctx, t.profile.AgentID, content, storage.MemorySourceModel, t.sessionID, scope); err != nil {
+		if _, err := t.svc.store.AddContextMemory(ctx, t.profile.ContextID, content, storage.MemorySourceModel, t.sessionID, scope); err != nil {
 			return "", err
 		}
 		return "已保存到长期记忆。", nil
@@ -291,7 +291,7 @@ func (t bookkeepingTools) Call(ctx context.Context, name, arguments string) (str
 // sessionScopeMax folds the session's accumulated data scopes into the
 // single most restrictive token; a session always carries user input, so it
 // never returns empty.
-func (s *Service) sessionScopeMax(ctx context.Context, sessionID string, profile storage.AgentProfile) (string, error) {
+func (s *Service) sessionScopeMax(ctx context.Context, sessionID string, profile storage.RunProfile) (string, error) {
 	scopes, err := s.sessionScopes(ctx, sessionID, profile)
 	if err != nil {
 		return "", err

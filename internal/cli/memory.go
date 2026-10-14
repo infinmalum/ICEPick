@@ -9,7 +9,7 @@ import (
 	"icepick/internal/storage"
 )
 
-// The memory command group manages one agent's long-term memory: the same
+// The memory command group manages one context's long-term memory: the same
 // view/edit/export/delete surface the desktop UI offers, over IPC.
 func cmdMemory(client *ipc.Client, args []string) int {
 	if len(args) == 0 {
@@ -19,10 +19,10 @@ func cmdMemory(client *ipc.Client, args []string) int {
 	case "list":
 		parsed, err := parseCLI(args[1:])
 		if err != nil || parsed.arg(0) == "" {
-			return usage("用法: memory list <agentID>")
+			return usage("用法: memory list <contextID>")
 		}
 		var memories []storage.Memory
-		if err := client.Call("memory.list", map[string]any{"agentId": parsed.arg(0)}, &memories); err != nil {
+		if err := client.Call("memory.list", map[string]any{"contextId": parsed.arg(0)}, &memories); err != nil {
 			return fail("memory.list", err)
 		}
 		rows := [][]string{{"ID", "来源", "范围", "内容", "记录时间"}}
@@ -31,17 +31,17 @@ func cmdMemory(client *ipc.Client, args []string) int {
 		}
 		printTable(rows)
 		if len(memories) == 0 {
-			fmt.Println("该 Agent 还没有长期记忆。")
+			fmt.Println("该上下文还没有长期记忆。")
 		}
 		return 0
 	case "add":
 		parsed, err := parseCLI(args[1:])
 		if err != nil || parsed.arg(0) == "" || parsed.arg(1) == "" {
-			return usage("用法: memory add <agentID> <内容…>")
+			return usage("用法: memory add <contextID> <内容…>")
 		}
 		content := strings.Join(parsed.positional[1:], " ")
 		var memory storage.Memory
-		if err := client.Call("memory.add", map[string]any{"agentId": parsed.arg(0), "content": content}, &memory); err != nil {
+		if err := client.Call("memory.add", map[string]any{"contextId": parsed.arg(0), "content": content}, &memory); err != nil {
 			return fail("memory.add", err)
 		}
 		fmt.Printf("已添加记忆 %s\n", memory.ID)
@@ -49,11 +49,11 @@ func cmdMemory(client *ipc.Client, args []string) int {
 	case "edit":
 		parsed, err := parseCLI(args[1:])
 		if err != nil || parsed.arg(0) == "" || parsed.arg(1) == "" || parsed.arg(2) == "" {
-			return usage("用法: memory edit <agentID> <记忆ID> <新内容…>")
+			return usage("用法: memory edit <contextID> <记忆ID> <新内容…>")
 		}
 		content := strings.Join(parsed.positional[2:], " ")
 		var memory storage.Memory
-		if err := client.Call("memory.update", map[string]any{"agentId": parsed.arg(0), "id": parsed.arg(1), "content": content}, &memory); err != nil {
+		if err := client.Call("memory.update", map[string]any{"contextId": parsed.arg(0), "id": parsed.arg(1), "content": content}, &memory); err != nil {
 			return fail("memory.update", err)
 		}
 		fmt.Printf("已更新记忆 %s\n", memory.ID)
@@ -61,9 +61,9 @@ func cmdMemory(client *ipc.Client, args []string) int {
 	case "delete":
 		parsed, err := parseCLI(args[1:])
 		if err != nil || parsed.arg(0) == "" || parsed.arg(1) == "" {
-			return usage("用法: memory delete <agentID> <记忆ID>")
+			return usage("用法: memory delete <contextID> <记忆ID>")
 		}
-		if err := client.Call("memory.delete", map[string]any{"agentId": parsed.arg(0), "id": parsed.arg(1)}, nil); err != nil {
+		if err := client.Call("memory.delete", map[string]any{"contextId": parsed.arg(0), "id": parsed.arg(1)}, nil); err != nil {
 			return fail("memory.delete", err)
 		}
 		fmt.Println("已删除。")
@@ -71,10 +71,10 @@ func cmdMemory(client *ipc.Client, args []string) int {
 	case "export":
 		parsed, err := parseCLI(args[1:])
 		if err != nil || parsed.arg(0) == "" {
-			return usage("用法: memory export <agentID> [--out <文件>]")
+			return usage("用法: memory export <contextID> [--out <文件>]")
 		}
 		var document string
-		if err := client.Call("memory.export", map[string]any{"agentId": parsed.arg(0)}, &document); err != nil {
+		if err := client.Call("memory.export", map[string]any{"contextId": parsed.arg(0)}, &document); err != nil {
 			return fail("memory.export", err)
 		}
 		if out := parsed.value("out"); out != "" {

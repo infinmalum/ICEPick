@@ -56,7 +56,7 @@ func decodeRequiredOperation(raw string, out any, keys ...string) error {
 	return nil
 }
 func (t bookkeepingTools) basicCall(ctx context.Context, name, raw string) (string, error) {
-	gate := toolGate{svc: t.svc, agentID: t.profile.AgentID, snapshot: &t.profile, runID: t.runID}
+	gate := toolGate{svc: t.svc, contextID: t.profile.ContextID, snapshot: &t.profile, runID: t.runID}
 	p, err := gate.effectiveProfile(ctx)
 	if err != nil {
 		return "", err

@@ -14,11 +14,11 @@ import (
 // approval binds to the exact persisted call row and, via the store's
 // argument hash, to its exact arguments — it can never be reused for a
 // different call or changed parameters.
-func (s *Service) ApproveToolCall(agentID, callRowID string) (storage.ToolCall, error) {
+func (s *Service) ApproveToolCall(callRowID string) (storage.ToolCall, error) {
 	if err := s.checkReady(); err != nil {
 		return storage.ToolCall{}, err
 	}
-	call, run, err := s.callWithAgent(agentID, callRowID)
+	call, run, err := s.callWithRun(callRowID)
 	if err != nil {
 		return storage.ToolCall{}, err
 	}
@@ -37,11 +37,11 @@ func (s *Service) ApproveToolCall(agentID, callRowID string) (storage.ToolCall, 
 
 // DenyToolCall records the user's refusal of one pending call. The denial is
 // terminal; the model sees it as a tool error and can adapt.
-func (s *Service) DenyToolCall(agentID, callRowID, note string) (storage.ToolCall, error) {
+func (s *Service) DenyToolCall(callRowID, note string) (storage.ToolCall, error) {
 	if err := s.checkReady(); err != nil {
 		return storage.ToolCall{}, err
 	}
-	call, _, err := s.callWithAgent(agentID, callRowID)
+	call, _, err := s.callWithRun(callRowID)
 	if err != nil {
 		return storage.ToolCall{}, err
 	}
@@ -55,9 +55,8 @@ func (s *Service) DenyToolCall(agentID, callRowID, note string) (storage.ToolCal
 	return s.store.GetToolCall(context.Background(), callRowID)
 }
 
-// callWithAgent loads a call row and verifies the session belongs to the
-// requesting agent, mirroring ResolveToolCall's ownership check.
-func (s *Service) callWithAgent(agentID, callRowID string) (storage.ToolCall, storage.Run, error) {
+// callWithRun resolves the persisted call, run and session relationship.
+func (s *Service) callWithRun(callRowID string) (storage.ToolCall, storage.Run, error) {
 	call, err := s.store.GetToolCall(context.Background(), callRowID)
 	if err != nil {
 		return storage.ToolCall{}, storage.Run{}, err
@@ -66,7 +65,7 @@ func (s *Service) callWithAgent(agentID, callRowID string) (storage.ToolCall, st
 	if err != nil {
 		return storage.ToolCall{}, storage.Run{}, err
 	}
-	if err := s.checkSessionAgent(agentID, run.SessionID); err != nil {
+	if err := s.checkSessionExists(run.SessionID); err != nil {
 		return storage.ToolCall{}, storage.Run{}, err
 	}
 	return call, run, nil

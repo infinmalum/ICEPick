@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"icepick/internal/testfixture"
 	"os"
 	"path/filepath"
 	"strings"
@@ -98,11 +99,11 @@ func TestWorkerPinsProfileAndSkill(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	private, err := svc.CreateAgent("source private", source.ID)
+	private, err := testfixture.Context(svc.store, context.Background(), "source private", source.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.AddAgentMemory(context.Background(), private.ID, "private memory", "user", "", storage.ScopePersonal); err != nil {
+	if _, err := store.AddContextMemory(context.Background(), private.ID, "private memory", "user", "", storage.ScopePersonal); err != nil {
 		t.Fatal(err)
 	}
 	parent.Data.Delegation = storage.DelegationPolicy{Enabled: true, MaxDepth: 1}
@@ -120,7 +121,7 @@ func TestWorkerPinsProfileAndSkill(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := waitForCallState(t, svc, conversation.ContextID, conversation.ID, storage.CallPending)
+	call := waitForCallState(t, svc, conversation.ID, storage.CallPending)
 	source.Data.SystemPrompt = "new prompt"
 	source.Data.Model.Name = "new-worker"
 	if _, err := svc.UpdateProfile(source); err != nil {
@@ -132,16 +133,16 @@ func TestWorkerPinsProfileAndSkill(t *testing.T) {
 	svc.mu.Lock()
 	svc.config.Model.Name = "new-global"
 	svc.mu.Unlock()
-	if _, err := svc.ApproveToolCall(conversation.ContextID, call.ID); err != nil {
+	if _, err := svc.ApproveToolCall(call.ID); err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, svc, conversation.ContextID, run.ID, "completed")
+	waitForRun(t, svc, run.ID, "completed")
 	children, err := store.ListChildRuns(context.Background(), run.ID)
 	if err != nil || len(children) != 1 {
 		t.Fatalf("children: %+v %v", children, err)
 	}
 	child := children[0]
-	if child.AgentID != conversation.ContextID || child.AgentID == private.ID || child.WorkerName != "writer" || child.ProfileRevision != source.Revision {
+	if child.ContextID != conversation.ContextID || child.ContextID == private.ID || child.WorkerName != "writer" || child.ProfileRevision != source.Revision {
 		t.Fatalf("worker identity/snapshot: %+v", child)
 	}
 	resources, err := store.RunResources(context.Background(), child.ID)

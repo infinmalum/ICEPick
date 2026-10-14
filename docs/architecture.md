@@ -347,3 +347,12 @@ CLI 的目标行为是选择 Profile 创建会话、提交任务、查看计划/
 
 
 2026-10-14 Anthropic/Gemini 适配：Anthropic 使用 web_search_20260318/direct 和 max_uses，避免云端代码过滤；Gemini 3/4 文本模型使用新版官方 SDK 的 Interactions，搜索与函数工具共存，关闭搜索后继续回放完整步骤/签名。统一 provider_state 保存服务商协议状态，数据库直接初始化 v20，无旧字段/格式读取。Gemini 内部搜索无法硬限次数，以宿主搜索请求为根工具预算单位，内部次数和费用未知；OpenAI/Anthropic 使用实际搜索调用数退款。Google 建议在隔离禁脚本 iframe 中显示；全部路径保留原外发/取消/组件上限，SDK 不重试失败请求。模拟协议与宿主验证已覆盖，真实验收仍待完成。
+
+## 当前实现：v21 概念清理
+
+- `Profile` 是场景配置，`LocalContext` 是本机状态和权限所有者，`ContextPolicy` 是实时授权，`RunProfile` 是一次运行的解析配置，main/planner/worker/reviewer 是执行组件。
+- Context 不引用 Profile，也没有默认 Context。普通 Session 必须明确引用 Profile；组件 Session 记录来源 Profile，实际执行始终采用根任务冻结的组件配置。
+- `sessions.context_id` 是会话归属的唯一来源；messages/runs/session_plans/session_summaries 的 Context 通过 Session 查询。运行与消息的所有者关系不可改写，有历史的 Session 不允许更换 Context，子运行必须属于父运行的 Context。
+- API 从 sessionID/runID/callID 推导归属，调用者不再重复传身份参数。IPC 仍验证本机连接身份，并拒绝未知参数；工具执行继续检查该 Context 的授权和审批状态。记忆与外发授权等按 Context 管理的资源保留显式 contextId。
+- 根任务冻结 `RootContextID`、`RootPolicy` 和 `Grants[destination]`。各组件只改变执行配置，不改变权限身份。执行权限取冻结上限与实时权限的交集，撤销立即约束后续执行，新增授权只用于新任务。
+- 当前只接受数据库 v21；旧格式拒绝且保留原文件，不提供迁移或旧契约适配层。

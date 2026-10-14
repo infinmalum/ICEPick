@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"icepick/internal/testfixture"
 	"io"
 	"net"
 	"path/filepath"
@@ -68,7 +69,7 @@ func externalCall() model.ToolCall {
 
 func newTestHost(t *testing.T, chat agent.ChatModel, tools agent.ToolExecutor) (*app.Service, *storage.Store) {
 	t.Helper()
-	store, err := storage.Open(filepath.Join(t.TempDir(), "ipc.db"))
+	store, err := testfixture.Open(filepath.Join(t.TempDir(), "ipc.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +211,7 @@ func TestCrossClientApprovalAndCancel(t *testing.T) {
 	var calls []storage.ToolCall
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		if err := cliClient.Call("calls.list", map[string]any{"agentId": storage.DefaultAgentID, "sessionId": session.ID}, &calls); err != nil {
+		if err := cliClient.Call("calls.list", map[string]any{"sessionId": session.ID}, &calls); err != nil {
 			t.Fatalf("calls.list: %v", err)
 		}
 		if len(calls) == 2 && calls[1].State == storage.CallPending {
@@ -221,7 +222,7 @@ func TestCrossClientApprovalAndCancel(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if err := cliClient.Call("calls.approve", map[string]any{"agentId": storage.DefaultAgentID, "callId": calls[1].ID}, nil); err != nil {
+	if err := cliClient.Call("calls.approve", map[string]any{"callId": calls[1].ID}, nil); err != nil {
 		t.Fatalf("calls.approve: %v", err)
 	}
 
@@ -234,7 +235,7 @@ func TestCrossClientApprovalAndCancel(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("tool never started")
 	}
-	if err := cliClient.Call("tasks.cancel", map[string]any{"agentId": storage.DefaultAgentID, "runId": run.ID}, nil); err != nil {
+	if err := cliClient.Call("tasks.cancel", map[string]any{"runId": run.ID}, nil); err != nil {
 		t.Fatalf("tasks.cancel: %v", err)
 	}
 	close(block)
@@ -245,7 +246,7 @@ func TestCrossClientApprovalAndCancel(t *testing.T) {
 		seen := false
 		readDeadline := time.Now().Add(3 * time.Second)
 		for !seen && time.Now().Before(readDeadline) {
-			if err := client.Call("runs.get", map[string]any{"agentId": storage.DefaultAgentID, "runId": run.ID}, &final); err != nil {
+			if err := client.Call("runs.get", map[string]any{"runId": run.ID}, &final); err != nil {
 				t.Fatalf("runs.get: %v", err)
 			}
 			if final.Status != "running" {
@@ -258,17 +259,17 @@ func TestCrossClientApprovalAndCancel(t *testing.T) {
 			t.Fatalf("run still running")
 		}
 		var messages []storage.Message
-		if err := client.Call("sessions.messages", map[string]any{"agentId": storage.DefaultAgentID, "sessionId": session.ID}, &messages); err != nil {
+		if err := client.Call("sessions.messages", map[string]any{"sessionId": session.ID}, &messages); err != nil {
 			t.Fatalf("sessions.messages: %v", err)
 		}
 		if len(messages) == 0 || messages[0].Role != storage.RoleUser {
 			t.Fatalf("messages: %+v", messages)
 		}
 		var unknown []storage.ToolCall
-		if err := client.Call("calls.list", map[string]any{"agentId": storage.DefaultAgentID, "sessionId": session.ID}, &unknown); err != nil {
+		if err := client.Call("calls.list", map[string]any{"sessionId": session.ID}, &unknown); err != nil {
 			t.Fatalf("calls.list after cancel: %v", err)
 		}
-		if len(unknown) != 2 || unknown[1].State != storage.CallExecutionUnknow {
+		if len(unknown) != 2 || unknown[1].State != storage.CallExecutionUnknown {
 			t.Fatalf("call state after cancel: %+v", unknown)
 		}
 	}
@@ -338,7 +339,7 @@ func TestUnknownMethodRejected(t *testing.T) {
 	}
 }
 
-// The P4 knowledge surface is reachable over IPC with the same ownership
+// The knowledge surface is reachable over IPC with the same ownership
 // checks the desktop UI goes through: memory CRUD stays inside one agent,
 // and summary/plan reads report their absence as errors.
 func TestMemoryAndPlanOverIPC(t *testing.T) {
@@ -346,50 +347,50 @@ func TestMemoryAndPlanOverIPC(t *testing.T) {
 	dataDir := startServer(t, svc)
 	client := mustConnect(t, dataDir)
 
-	other, err := svc.CreateAgent("other", storage.DefaultProfileID)
+	other, err := svc.CreateConversation(storage.DefaultProfileID, "", "other")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var mine storage.Memory
-	if err := client.Call("memory.add", map[string]any{"agentId": storage.DefaultAgentID, "content": "用户偏好简短回答"}, &mine); err != nil {
+	if err := client.Call("memory.add", map[string]any{"contextId": testfixture.ContextID, "content": "用户偏好简短回答"}, &mine); err != nil {
 		t.Fatalf("memory.add: %v", err)
 	}
 	if mine.Source != storage.MemorySourceUser || mine.Scope != storage.ScopePersonal {
 		t.Fatalf("memory: %+v", mine)
 	}
 	var list []storage.Memory
-	if err := client.Call("memory.list", map[string]any{"agentId": other.ID}, &list); err != nil || len(list) != 0 {
+	if err := client.Call("memory.list", map[string]any{"contextId": other.ContextID}, &list); err != nil || len(list) != 0 {
 		t.Fatalf("cross-agent leak: %+v %v", list, err)
 	}
 	var updated storage.Memory
-	if err := client.Call("memory.update", map[string]any{"agentId": storage.DefaultAgentID, "id": mine.ID, "content": "偏好一句话回答"}, &updated); err != nil {
+	if err := client.Call("memory.update", map[string]any{"contextId": testfixture.ContextID, "id": mine.ID, "content": "偏好一句话回答"}, &updated); err != nil {
 		t.Fatalf("memory.update: %v", err)
 	}
 	if updated.Content != "偏好一句话回答" {
 		t.Fatalf("update: %+v", updated)
 	}
-	if err := client.Call("memory.delete", map[string]any{"agentId": other.ID, "id": mine.ID}, nil); err == nil {
+	if err := client.Call("memory.delete", map[string]any{"contextId": other.ContextID, "id": mine.ID}, nil); err == nil {
 		t.Fatal("cross-agent delete allowed")
 	}
-	if err := client.Call("memory.delete", map[string]any{"agentId": storage.DefaultAgentID, "id": mine.ID}, nil); err != nil {
+	if err := client.Call("memory.delete", map[string]any{"contextId": testfixture.ContextID, "id": mine.ID}, nil); err != nil {
 		t.Fatalf("memory.delete: %v", err)
 	}
 
-	session, err := svc.CreateSession()
+	session, err := svc.CreateConversation(storage.DefaultProfileID, "", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Call("summaries.get", map[string]any{"agentId": storage.DefaultAgentID, "sessionId": session.ID}, nil); err == nil {
+	if err := client.Call("summaries.get", map[string]any{"sessionId": session.ID}, nil); err == nil {
 		t.Fatal("absent summary accepted")
 	}
-	if err := client.Call("plans.get", map[string]any{"agentId": storage.DefaultAgentID, "sessionId": session.ID}, nil); err == nil {
+	if err := client.Call("plans.get", map[string]any{"sessionId": session.ID}, nil); err == nil {
 		t.Fatal("absent plan accepted")
 	}
 	var plan app.SessionPlanView
-	if err := client.Call("plans.get", map[string]any{"agentId": storage.DefaultAgentID, "sessionId": "no-such"}, &plan); err == nil {
+	if err := client.Call("plans.get", map[string]any{"sessionId": "no-such"}, &plan); err == nil {
 		t.Fatal("foreign session plan accepted")
 	}
-	if err := client.Call("plans.clear", map[string]any{"agentId": storage.DefaultAgentID, "sessionId": session.ID}, nil); err != nil {
+	if err := client.Call("plans.clear", map[string]any{"sessionId": session.ID}, nil); err != nil {
 		t.Fatalf("plans.clear: %v", err)
 	}
 }
@@ -432,20 +433,64 @@ func TestProfileShareAndChildRunsOverIPC(t *testing.T) {
 	}
 
 	// runs.children on a run-less id is refused; the tree surface exists.
-	if err := client.Call("runs.children", map[string]any{"agentId": storage.DefaultAgentID, "runId": "missing"}, nil); err == nil {
+	if err := client.Call("runs.children", map[string]any{"runId": "missing"}, nil); err == nil {
 		t.Fatal("runs.children accepted an unknown run")
 	}
 	var pending []storage.ToolCall
-	if err := client.Call("approvals.pending", map[string]any{"agentId": storage.DefaultAgentID}, &pending); err != nil {
+	if err := client.Call("approvals.pending", map[string]any{"contextId": testfixture.ContextID}, &pending); err != nil {
 		t.Fatalf("approvals.pending: %v", err)
 	}
 }
 
 func reuseDefaultConversation(t *testing.T, svc *app.Service) string {
 	t.Helper()
-	session, err := svc.CreateSession()
+	session, err := svc.CreateConversation(storage.DefaultProfileID, "", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	return session.ID
+}
+
+func TestResourceIPC(t *testing.T) {
+	svc, store := newTestHost(t, &chatScript{}, &blockingTools{})
+	client := mustConnect(t, startServer(t, svc))
+	ctx := context.Background()
+	var contexts []string
+	var calls []storage.ToolCall
+	for _, title := range []string{"first", "second"} {
+		c, err := svc.CreateConversation(storage.DefaultProfileID, "", title)
+		if err != nil {
+			t.Fatal(err)
+		}
+		contexts = append(contexts, c.ContextID)
+		run, _, err := store.CreateRun(ctx, c.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, created, err := store.AddAssistantMessage(ctx, c.ID, run.ID, "", []storage.MessageToolCall{{ID: title, Name: "local__read_file", Arguments: `{"path":"example"}`}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		calls = append(calls, created[0])
+		var found storage.Run
+		if err := client.Call("runs.get", map[string]any{"runId": run.ID}, &found); err != nil || found.ContextID != c.ContextID {
+			t.Fatalf("resource identity: %+v %v", found, err)
+		}
+		if err := client.Call("runs.get", map[string]any{"runId": run.ID, "contextId": c.ContextID}, nil); err == nil {
+			t.Fatal("redundant identity accepted")
+		}
+	}
+	var pending []storage.ToolCall
+	if err := client.Call("approvals.pending", nil, &pending); err != nil || len(pending) != 2 {
+		t.Fatal(pending, err)
+	}
+	if err := client.Call("approvals.pending", map[string]any{"contextId": contexts[0]}, &pending); err != nil || len(pending) != 1 || pending[0].ID != calls[0].ID {
+		t.Fatal(pending, err)
+	}
+	if err := client.Call("calls.approve", map[string]any{"callId": calls[0].ID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Call("approvals.pending", nil, &pending); err != nil || len(pending) != 1 || pending[0].ID != calls[1].ID {
+		t.Fatal(pending, err)
+	}
 }

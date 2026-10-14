@@ -49,7 +49,7 @@ func (s *Service) ConversationSearchAvailability(id string) (SearchAvailability,
 	if err := s.checkReady(); err != nil {
 		return SearchAvailability{}, err
 	}
-	p, err := s.store.AgentForSession(context.Background(), id)
+	p, err := s.store.ResolveRunProfile(context.Background(), id)
 	if err != nil {
 		return SearchAvailability{}, err
 	}
@@ -349,7 +349,7 @@ func (s *Service) checkNativeSearchGrant(ctx context.Context, source config.Mode
 	if err != nil {
 		return err
 	}
-	p := storage.AgentProfile{AgentID: resources.RootContextID}
+	p := storage.RunProfile{ContextID: resources.RootContextID}
 	scopes, err := s.sessionScopes(ctx, run.SessionID, p)
 	if err != nil {
 		return err
@@ -357,7 +357,7 @@ func (s *Service) checkNativeSearchGrant(ctx context.Context, source config.Mode
 	if err := requireGrantCoverage(ctx, s.store, resources.RootContextID, origin, scopes); err != nil {
 		return err
 	}
-	frozen := resources.Grants[resources.RootContextID][origin]
+	frozen := resources.Grants[origin]
 	for _, scope := range scopes {
 		if !containsTool(frozen.Scopes, scope) {
 			return errors.New("原生搜索数据超出任务起始外发授权；新增授权需在新任务中使用")

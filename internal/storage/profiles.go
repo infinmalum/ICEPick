@@ -12,13 +12,10 @@ import (
 	"icepick/internal/skills"
 )
 
-const DefaultAgentID = "default"
-
-// DefaultProfileID is the id of the built-in default Profile; the built-in
-// default Agent references it.
+// DefaultProfileID identifies the built-in configurable Profile.
 const DefaultProfileID = "default"
 
-// PermissionScope is the machine-local resource authorization of one Agent.
+// PermissionScope is the machine-local resource authorization of one Context.
 type PermissionScope struct {
 	Unrestricted   bool     `json:"unrestricted"`
 	WorkspacePaths []string `json:"workspacePaths"`
@@ -26,8 +23,8 @@ type PermissionScope struct {
 	NetworkHosts   []string `json:"networkHosts"`
 }
 
-// DelegationPolicy is the Profile-level switch for sub-Agent delegation; the
-// actual target list is bounded by each delegating Agent's own authorization.
+// DelegationPolicy is the Profile-level switch for worker delegation; the
+// worker candidates and execution limits are captured when a root run starts.
 // Workers are selected from Profile slots. Zero concurrency/time use host defaults.
 type DelegationPolicy struct {
 	Enabled        bool `json:"enabled"`
@@ -67,30 +64,26 @@ type ProfileData struct {
 	EnabledSkills     []string         `json:"enabledSkills"`
 	Delegation        DelegationPolicy `json:"delegation"`
 	ContextBudget     int              `json:"contextBudget"`
-	// MemoryEnabled is the Profile's preference for per-Agent long-term
+	// MemoryEnabled is the Profile's preference for per-Context long-term
 	// memory: retrieval at run start and the memory_save tool. It only takes
-	// effect together with the Agent's own authorization.
+	// effect together with the Context's own authorization.
 	MemoryEnabled bool `json:"memoryEnabled"`
 	// PlanEnabled is the Profile's preference for the optional plan
 	// capability: the update_plan tool and the plan prompt fragment.
 	PlanEnabled bool `json:"planEnabled"`
 }
 
-// AgentPolicy is the machine-local policy that belongs to an Agent instance,
-// not to any Profile: the approval mode, the resource authorization, the
-// long-term memory authorization and the delegation allowlist. A new Agent
-// initializes its own copy; referencing a Profile never copies another
-// instance's authorization.
-type AgentPolicy struct {
+// ContextPolicy is local authorization, independent of Profile configuration.
+type ContextPolicy struct {
 	ApprovalMode string          `json:"approvalMode"`
 	Permissions  PermissionScope `json:"permissions"`
-	// Memory authorizes this Agent to use long-term memory at all. It
-	// defaults to false: existing and new Agents opt in explicitly.
+	// Memory authorizes this Context to use long-term memory at all. It
+	// defaults to false: existing and new Contexts opt in explicitly.
 	Memory bool `json:"memory"`
 }
 
 // Profile is one named, versioned combination. Editing bumps the revision and
-// affects every referencing Agent's subsequent runs.
+// affects every referencing Context's subsequent runs.
 type Profile struct {
 	ID        string      `json:"id"`
 	Name      string      `json:"name"`
@@ -101,30 +94,19 @@ type Profile struct {
 	UpdatedAt string      `json:"updatedAt"`
 }
 
-// Agent is a stable instance identity: sessions, memory, runs and policy
-// belong to it, while the Profile it points at can change over time.
-type Agent struct {
-	ID        string      `json:"id"`
-	Name      string      `json:"name"`
-	ProfileID string      `json:"profileId"`
-	Policy    AgentPolicy `json:"policy"`
-	CreatedAt string      `json:"createdAt"`
-	UpdatedAt string      `json:"updatedAt"`
-}
-
-// AgentProfile is the resolved combination one Run executes with: the
-// Agent's identity and machine policy plus the Profile content snapshot.
-type AgentProfile struct {
+// RunProfile is the resolved combination one Run executes with: the
+// Context's identity and machine policy plus the Profile content snapshot.
+type RunProfile struct {
 	Resources       *RunResources     `json:"-"`
 	ResourcesFrozen bool              `json:"-"`
 	FrozenSkills    []skills.Snapshot `json:"-"`
-	AgentID         string            `json:"agentId"`
-	AgentName       string            `json:"agentName"`
+	ContextID       string            `json:"contextId"`
+	ContextName     string            `json:"contextName"`
 	ProfileID       string            `json:"profileId"`
 	ProfileName     string            `json:"profileName"`
 	ProfileData
-	Policy          AgentPolicy `json:"policy"`
-	ProfileRevision int         `json:"profileRevision"`
+	Policy          ContextPolicy `json:"policy"`
+	ProfileRevision int           `json:"profileRevision"`
 }
 
 // BlankProfile is the built-in blank template: nothing enabled, everything
@@ -193,7 +175,7 @@ func validateProfileData(d ProfileData) error {
 	return nil
 }
 
-func validatePolicy(p AgentPolicy) error {
+func validatePolicy(p ContextPolicy) error {
 	if p.ApprovalMode != "manual" && p.ApprovalMode != "semi" && p.ApprovalMode != "automatic" {
 		return errors.New("无效的审批模式")
 	}
@@ -380,197 +362,22 @@ func (s *Store) DeleteProfile(ctx context.Context, id string) error {
 	return s.ArchiveProfile(ctx, id)
 }
 
-func scanAgent(scanner interface{ Scan(...any) error }) (Agent, error) {
-	var a Agent
-	var policyJSON string
-	if err := scanner.Scan(&a.ID, &a.Name, &a.ProfileID, &policyJSON, &a.CreatedAt, &a.UpdatedAt); err != nil {
-		return Agent{}, err
-	}
-	if err := json.Unmarshal([]byte(policyJSON), &a.Policy); err != nil {
-		return Agent{}, fmt.Errorf("解析 Agent 策略: %w", err)
-	}
-	return a, nil
-}
-
-func (s *Store) ListAgents(ctx context.Context) ([]Agent, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, profile_id, policy, created_at, updated_at FROM contexts ORDER BY CASE id WHEN 'default' THEN 0 ELSE 1 END, created_at, id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Agent{}
-	for rows.Next() {
-		a, err := scanAgent(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, a)
-	}
-	return items, rows.Err()
-}
-
-func (s *Store) GetAgent(ctx context.Context, id string) (Agent, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, name, profile_id, policy, created_at, updated_at FROM contexts WHERE id = ?`, id)
-	a, err := scanAgent(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Agent{}, errors.New("Agent 不存在")
-	}
-	return a, err
-}
-
-// AgentsReferencingProfile lists the Agents whose current profile_id points
-// at the given Profile; the UI shows this reference relation.
-func (s *Store) AgentsReferencingProfile(ctx context.Context, profileID string) ([]Agent, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, profile_id, policy, created_at, updated_at FROM contexts WHERE profile_id = ? ORDER BY created_at, id`, profileID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Agent{}
-	for rows.Next() {
-		a, err := scanAgent(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, a)
-	}
-	return items, rows.Err()
-}
-
-// CreateAgent registers a new instance referencing an existing Profile. The
-// new Agent initializes its own restrictive machine policy; authorization is
-// never copied from another instance.
-func (s *Store) CreateAgent(ctx context.Context, name, profileID string) (Agent, error) {
-	name = strings.TrimSpace(name)
-	if name == "" || len(name) > 100 {
-		return Agent{}, errors.New("Agent 名称无效")
-	}
-	if _, err := s.GetProfile(ctx, profileID); err != nil {
-		return Agent{}, err
-	}
-	id, err := newID()
-	if err != nil {
-		return Agent{}, err
-	}
-	policy := AgentPolicy{ApprovalMode: "manual"}
-	policyJSON, err := json.Marshal(policy)
-	if err != nil {
-		return Agent{}, err
-	}
-	created := now()
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO contexts (id, name, profile_id, policy, created_at, updated_at) SELECT ?, ?, id, ?, ?, ? FROM profiles WHERE id = ?`,
-		id, name, string(policyJSON), created, created, profileID); err != nil {
-		return Agent{}, err
-	}
-	return s.GetAgent(ctx, id)
-}
-
-// UpdateAgentLocal saves the Agent-owned fields: name and machine policy.
-func (s *Store) UpdateAgentLocal(ctx context.Context, id, name string, policy AgentPolicy) (Agent, error) {
-	old, err := s.GetAgent(ctx, id)
-	if err != nil {
-		return Agent{}, err
-	}
-	name = strings.TrimSpace(name)
-	if name == "" || len(name) > 100 {
-		return Agent{}, errors.New("Agent 名称无效")
-	}
-	if err := validatePolicy(policy); err != nil {
-		return Agent{}, err
-	}
-	policyJSON, err := json.Marshal(policy)
-	if err != nil {
-		return Agent{}, err
-	}
-	if err := s.withTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE contexts SET name=?,policy=?,updated_at=? WHERE id=?`, name, string(policyJSON), now(), old.ID); err != nil {
-			return err
-		}
-		return signalActorChange(ctx, tx, old.ID, "policy.changed")
-	}); err != nil {
-		return Agent{}, err
-	}
-	return s.GetAgent(ctx, id)
-}
-
-// SwitchAgentProfile points the Agent at another existing Profile. Sessions,
-// history and policy stay with the Agent; the next run picks up the newly
-// selected Profile's latest committed content.
-func (s *Store) SwitchAgentProfile(ctx context.Context, agentID, profileID string) (Agent, error) {
-	old, err := s.GetAgent(ctx, agentID)
-	if err != nil {
-		return Agent{}, err
-	}
-	if _, err := s.GetProfile(ctx, profileID); err != nil {
-		return Agent{}, err
-	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE contexts SET profile_id=?, updated_at=? WHERE id=?`, profileID, now(), old.ID); err != nil {
-		return Agent{}, err
-	}
-	return s.GetAgent(ctx, agentID)
-}
-
-// DeleteAgent removes an instance. Agents with session history are refused so
-// no reference dangles, as are Agents that still appear in another Agent's
-// delegation allowlist; a shared Profile is never deleted with the agent.
-func (s *Store) DeleteAgent(ctx context.Context, id string) error {
-	var sessions int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE agent_id = ?`, id).Scan(&sessions); err != nil {
-		return err
-	}
-	if sessions > 0 {
-		return errors.New("Agent 仍有会话历史，请先删除其会话")
-	}
-	result, err := s.db.ExecContext(ctx, `DELETE FROM contexts WHERE id = ?`, id)
-	if err != nil {
-		return err
-	}
-	if n, err := result.RowsAffected(); err != nil {
-		return err
-	} else if n == 0 {
-		return errors.New("Agent 不存在")
-	}
-	return nil
-}
-
-// ResolvedAgentProfile joins the Agent with its current Profile: the view a
-// new Run snapshots. Running gates read only the live Agent policy.
-func (s *Store) ResolvedAgentProfile(ctx context.Context, agentID string) (AgentProfile, error) {
-	agent, err := s.GetAgent(ctx, agentID)
-	if err != nil {
-		return AgentProfile{}, err
-	}
-	profile, err := s.GetProfile(ctx, agent.ProfileID)
-	if err != nil {
-		return AgentProfile{}, err
-	}
-	return AgentProfile{
-		AgentID: agent.ID, AgentName: agent.Name,
-		ProfileID: profile.ID, ProfileName: profile.Name,
-		ProfileData:     profile.Data,
-		Policy:          agent.Policy,
-		ProfileRevision: profile.Revision,
-	}, nil
-}
-
-// AgentForSession resolves the owning Agent's current profile combination for
-// a session.
-func (s *Store) AgentForSession(ctx context.Context, sessionID string) (AgentProfile, error) {
+func (s *Store) ResolveRunProfile(ctx context.Context, sessionID string) (RunProfile, error) {
 	session, err := s.GetSession(ctx, sessionID)
 	if err != nil {
-		return AgentProfile{}, err
+		return RunProfile{}, err
 	}
 	conversation, err := s.GetConversation(ctx, sessionID)
 	if err != nil {
-		return AgentProfile{}, err
+		return RunProfile{}, err
 	}
 	profile, err := s.GetProfile(ctx, conversation.ProfileID)
 	if err != nil {
-		return AgentProfile{}, err
+		return RunProfile{}, err
 	}
-	a, err := s.GetAgent(ctx, session.AgentID)
+	a, err := s.GetLocalContext(ctx, session.ContextID)
 	if err != nil {
-		return AgentProfile{}, err
+		return RunProfile{}, err
 	}
-	return AgentProfile{AgentID: a.ID, AgentName: a.Name, ProfileID: profile.ID, ProfileName: profile.Name, ProfileData: profile.Data, Policy: a.Policy, ProfileRevision: profile.Revision}, nil
+	return RunProfile{ContextID: a.ID, ContextName: a.Name, ProfileID: profile.ID, ProfileName: profile.Name, ProfileData: profile.Data, Policy: a.Policy, ProfileRevision: profile.Revision}, nil
 }

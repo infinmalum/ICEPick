@@ -17,7 +17,7 @@ func (s *Server) dispatchConversation(request Request) (any, error) {
 		Input        string                      `json:"input"`
 		Revision     int                         `json:"revision"`
 		Groups       []string                    `json:"groups"`
-		Policy       storage.AgentPolicy         `json:"policy"`
+		Policy       storage.ContextPolicy       `json:"policy"`
 		Replacement  string                      `json:"replacement"`
 		Own          bool                        `json:"own"`
 		Expected     []storage.ProfileReference  `json:"expected"`

@@ -20,14 +20,14 @@ import (
 	"icepick/internal/storage"
 )
 
-// P5 profile share packages: a Profile exports as a zip (or a directory with
+// profile share packages: a Profile exports as a zip (or a directory with
 // the same layout) that carries only the shareable combination — manifest,
 // profile references, the persona and prompt as standalone text files, and
 // the standard Skills directories. Local identity, machine policy, sessions,
 // memories, credentials and approvals never enter the package.
 //
 // Import creates a new Profile with a fresh ID; it never auto-installs
-// skills, never creates server configs, never creates or switches an Agent
+// skills, never creates server configs, never creates or switches an Context
 // and never activates authorization. The preview lists missing dependencies
 // and the recommendations the receiver must act on explicitly.
 
@@ -575,7 +575,7 @@ func (s *Service) buildImportPreview(pkg *sharePackage) ImportPreview {
 		}
 	}
 	if data.MemoryEnabled {
-		preview.Warnings = append(preview.Warnings, "包内的记忆偏好不会自动生效：仍需接收方 Agent 的记忆授权，且记忆数据从不随包传输")
+		preview.Warnings = append(preview.Warnings, "包内的记忆偏好不会自动生效：仍需接收方本机上下文的记忆授权，且记忆数据从不随包传输")
 	}
 	if data.Delegation.Enabled {
 		preview.Warnings = append(preview.Warnings, "worker 配置随 Profile 导入；本机资源权限需在对话中授权")

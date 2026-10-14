@@ -9,7 +9,7 @@ import (
 
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := Open(filepath.Join(t.TempDir(), "calls.db"))
+	store, err := testOpen(filepath.Join(t.TempDir(), "calls.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestToolCallLifecycle(t *testing.T) {
 	if err := store.BeginToolCall(ctx, calls[1].ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.FinishToolCall(ctx, calls[1].ID, CallExecutionUnknow, "", "执行中丢失", ""); err != nil {
+	if err := store.FinishToolCall(ctx, calls[1].ID, CallExecutionUnknown, "", "执行中丢失", ""); err != nil {
 		t.Fatal(err)
 	}
 	unresolved, err := store.HasUnresolvedToolCalls(ctx, session.ID)
@@ -137,7 +137,7 @@ func TestFinishRunSweepsNonTerminalCalls(t *testing.T) {
 		t.Fatalf("pending call not cancelled: %+v %v", first, err)
 	}
 	second, err := store.GetToolCall(ctx, calls[1].ID)
-	if err != nil || second.State != CallExecutionUnknow {
+	if err != nil || second.State != CallExecutionUnknown {
 		t.Fatalf("executing call not marked unknown: %+v %v", second, err)
 	}
 	unresolved, err := store.HasUnresolvedToolCalls(ctx, session.ID)
@@ -153,7 +153,7 @@ func TestFinishRunSweepsNonTerminalCalls(t *testing.T) {
 func TestRecoverInterruptedConvergesArtifacts(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "crash.db")
-	store, err := Open(path)
+	store, err := testOpen(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestRecoverInterruptedConvergesArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	store, err = Open(path)
+	store, err = testOpen(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +206,7 @@ func TestRecoverInterruptedConvergesArtifacts(t *testing.T) {
 		t.Fatalf("succeeded result not kept: %+v %v", kept, err)
 	}
 	unknown, err := store.GetToolCall(ctx, calls[1].ID)
-	if err != nil || unknown.State != CallExecutionUnknow {
+	if err != nil || unknown.State != CallExecutionUnknown {
 		t.Fatalf("executing call not marked unknown: %+v %v", unknown, err)
 	}
 	unresolved, err := store.HasUnresolvedToolCalls(ctx, session.ID)

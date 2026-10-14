@@ -32,14 +32,14 @@ func ValidScope(scope string) bool { return validScopes[scope] }
 // may do; it only records that the user accepted this data leaving the
 // machine for that endpoint.
 type ExfilGrant struct {
-	AgentID     string   `json:"agentId"`
+	ContextID   string   `json:"contextId"`
 	Destination string   `json:"destination"`
 	Scopes      []string `json:"scopes"`
 	CreatedAt   string   `json:"createdAt"`
 }
 
-func (s *Store) ListExfilGrants(ctx context.Context, agentID string) ([]ExfilGrant, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT agent_id, destination, scopes, created_at FROM exfil_grants WHERE agent_id=? ORDER BY destination`, agentID)
+func (s *Store) ListExfilGrants(ctx context.Context, contextID string) ([]ExfilGrant, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT context_id, destination, scopes, created_at FROM exfil_grants WHERE context_id=? ORDER BY destination`, contextID)
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +58,7 @@ func (s *Store) ListExfilGrants(ctx context.Context, agentID string) ([]ExfilGra
 func scanGrant(scanner interface{ Scan(...any) error }) (ExfilGrant, error) {
 	var item ExfilGrant
 	var payload string
-	if err := scanner.Scan(&item.AgentID, &item.Destination, &payload, &item.CreatedAt); err != nil {
+	if err := scanner.Scan(&item.ContextID, &item.Destination, &payload, &item.CreatedAt); err != nil {
 		return ExfilGrant{}, err
 	}
 	if err := json.Unmarshal([]byte(payload), &item.Scopes); err != nil {
@@ -67,8 +67,8 @@ func scanGrant(scanner interface{ Scan(...any) error }) (ExfilGrant, error) {
 	return item, nil
 }
 
-func (s *Store) GetExfilGrant(ctx context.Context, agentID, destination string) (ExfilGrant, bool, error) {
-	item, err := scanGrant(s.db.QueryRowContext(ctx, `SELECT agent_id, destination, scopes, created_at FROM exfil_grants WHERE agent_id=? AND destination = ?`, agentID, destination))
+func (s *Store) GetExfilGrant(ctx context.Context, contextID, destination string) (ExfilGrant, bool, error) {
+	item, err := scanGrant(s.db.QueryRowContext(ctx, `SELECT context_id, destination, scopes, created_at FROM exfil_grants WHERE context_id=? AND destination = ?`, contextID, destination))
 	if errors.Is(err, sql.ErrNoRows) {
 		return ExfilGrant{}, false, nil
 	}
@@ -80,7 +80,7 @@ func (s *Store) GetExfilGrant(ctx context.Context, agentID, destination string) 
 
 // SetExfilGrant upserts the authorization for one destination.
 func (s *Store) SetExfilGrant(ctx context.Context, grant ExfilGrant) error {
-	if grant.AgentID == "" || grant.Destination == "" || len(grant.Scopes) == 0 {
+	if grant.ContextID == "" || grant.Destination == "" || len(grant.Scopes) == 0 {
 		return errors.New("外发授权需要目的地和至少一个数据范围")
 	}
 	for _, scope := range grant.Scopes {
@@ -93,16 +93,16 @@ func (s *Store) SetExfilGrant(ctx context.Context, grant ExfilGrant) error {
 		return err
 	}
 	return s.withTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO exfil_grants(agent_id,destination,scopes,created_at) VALUES(?,?,?,?) ON CONFLICT(agent_id,destination) DO UPDATE SET scopes=excluded.scopes`, grant.AgentID, grant.Destination, string(payload), now()); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO exfil_grants(context_id,destination,scopes,created_at) VALUES(?,?,?,?) ON CONFLICT(context_id,destination) DO UPDATE SET scopes=excluded.scopes`, grant.ContextID, grant.Destination, string(payload), now()); err != nil {
 			return err
 		}
-		return signalActorChange(ctx, tx, grant.AgentID, "grant.changed")
+		return signalContextChange(ctx, tx, grant.ContextID, "grant.changed")
 	})
 }
 
-func (s *Store) DeleteExfilGrant(ctx context.Context, agentID, destination string) error {
+func (s *Store) DeleteExfilGrant(ctx context.Context, contextID, destination string) error {
 	return s.withTx(ctx, func(tx *sql.Tx) error {
-		result, err := tx.ExecContext(ctx, `DELETE FROM exfil_grants WHERE agent_id=? AND destination=?`, agentID, destination)
+		result, err := tx.ExecContext(ctx, `DELETE FROM exfil_grants WHERE context_id=? AND destination=?`, contextID, destination)
 		if err != nil {
 			return err
 		}
@@ -111,7 +111,7 @@ func (s *Store) DeleteExfilGrant(ctx context.Context, agentID, destination strin
 		} else if n == 0 {
 			return errors.New("该目的地没有已登记的外发授权")
 		}
-		return signalActorChange(ctx, tx, agentID, "grant.revoked")
+		return signalContextChange(ctx, tx, contextID, "grant.revoked")
 	})
 }
 

@@ -20,15 +20,15 @@ type FrozenProfile struct {
 }
 
 type RunResources struct {
-	Options       ConversationOptions              `json:"options"`
-	SearchTools   []string                         `json:"searchTools"`
-	Grants        map[string]map[string]ExfilGrant `json:"grants"`
-	RootContextID string                           `json:"rootContextId"`
-	Reviewer      FrozenProfile                    `json:"reviewer"`
-	Planner       FrozenProfile                    `json:"planner"`
-	Root          FrozenProfile                    `json:"root"`
-	RootPolicy    AgentPolicy                      `json:"rootPolicy"`
-	Workers       map[string]FrozenProfile         `json:"workers"`
+	Options       ConversationOptions      `json:"options"`
+	SearchTools   []string                 `json:"searchTools"`
+	Grants        map[string]ExfilGrant    `json:"grants"`
+	RootContextID string                   `json:"rootContextId"`
+	Reviewer      FrozenProfile            `json:"reviewer"`
+	Planner       FrozenProfile            `json:"planner"`
+	Root          FrozenProfile            `json:"root"`
+	RootPolicy    ContextPolicy            `json:"rootPolicy"`
+	Workers       map[string]FrozenProfile `json:"workers"`
 }
 
 type SkillSnapshotter func(bool, []string) ([]skills.Snapshot, error)
@@ -125,7 +125,7 @@ func intersectStrings(a, b []string) []string {
 	return out
 }
 
-func captureRunResources(ctx context.Context, tx *sql.Tx, root FrozenProfile, contextID string, policy AgentPolicy, defaultModel config.Model, snapshot SkillSnapshotter) (RunResources, error) {
+func captureRunResources(ctx context.Context, tx *sql.Tx, root FrozenProfile, contextID string, policy ContextPolicy, defaultModel config.Model, snapshot SkillSnapshotter) (RunResources, error) {
 	resources := RunResources{RootContextID: contextID, RootPolicy: policy, Workers: map[string]FrozenProfile{}}
 	rawRoot := root.Data
 	// Bound retained content while capturing, before allocating the final JSON.
@@ -198,27 +198,23 @@ func captureRunResources(ctx context.Context, tx *sql.Tx, root FrozenProfile, co
 		}
 		resources.Workers[slot.Name] = item
 	}
-	resources.Grants = map[string]map[string]ExfilGrant{}
-	actors := []string{contextID}
-	for _, id := range actors {
-		resources.Grants[id] = map[string]ExfilGrant{}
-		rows, err := tx.QueryContext(ctx, `SELECT agent_id,destination,scopes,created_at FROM exfil_grants WHERE agent_id=?`, id)
+	resources.Grants = map[string]ExfilGrant{}
+	rows, err := tx.QueryContext(ctx, `SELECT context_id,destination,scopes,created_at FROM exfil_grants WHERE context_id=?`, contextID)
+	if err != nil {
+		return resources, err
+	}
+	for rows.Next() {
+		grant, err := scanGrant(rows)
 		if err != nil {
+			rows.Close()
 			return resources, err
 		}
-		for rows.Next() {
-			grant, err := scanGrant(rows)
-			if err != nil {
-				rows.Close()
-				return resources, err
-			}
-			resources.Grants[id][grant.Destination] = grant
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return resources, err
-		}
+		resources.Grants[grant.Destination] = grant
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return resources, err
 	}
 	encoded, err := json.Marshal(resources)
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"icepick/internal/config"
 	"icepick/internal/model"
 	"icepick/internal/storage"
+	"icepick/internal/testfixture"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,7 +54,7 @@ func TestBasicToolsThroughApprovalAndDurableRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy := storage.AgentPolicy{ApprovalMode: "semi", Permissions: storage.PermissionScope{WorkspacePaths: []string{dir}, Commands: []string{"/bin/sh"}}}
+	policy := storage.ContextPolicy{ApprovalMode: "semi", Permissions: storage.PermissionScope{WorkspacePaths: []string{dir}, Commands: []string{"/bin/sh"}}}
 	if _, err := s.UpdateContextPolicy(c.ContextID, policy); err != nil {
 		t.Fatal(err)
 	}
@@ -62,16 +63,16 @@ func TestBasicToolsThroughApprovalAndDurableRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 400; i++ {
-		calls, err := s.ListToolCalls(c.ContextID, c.ID)
+		calls, err := s.ListToolCalls(c.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, call := range calls {
 			if call.State == storage.CallPending {
-				_, _ = s.ApproveToolCall(c.ContextID, call.ID)
+				_, _ = s.ApproveToolCall(call.ID)
 			}
 		}
-		run, err := s.GetRun(c.ContextID, r.ID)
+		run, err := s.GetRun(r.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -100,16 +101,16 @@ func TestBasicToolsThroughApprovalAndDurableRecords(t *testing.T) {
 func TestBasicGateRejectsOutOfScopeAndRevokedCommands(t *testing.T) {
 	s, store := newTestService(t, &scriptModel{}, &scriptTools{})
 	ctx := context.Background()
-	p, err := store.ResolvedAgentProfile(ctx, storage.DefaultAgentID)
+	p, err := testfixture.Profile(store, ctx, testfixture.ContextID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	p.Policy = storage.AgentPolicy{ApprovalMode: "semi", Permissions: storage.PermissionScope{WorkspacePaths: []string{dir}, Commands: []string{"/bin/sh"}}}
-	if _, err = s.UpdateAgent(p.AgentID, "权限测试", p.Policy); err != nil {
+	p.Policy = storage.ContextPolicy{ApprovalMode: "semi", Permissions: storage.PermissionScope{WorkspacePaths: []string{dir}, Commands: []string{"/bin/sh"}}}
+	if _, err = s.UpdateContextPolicy(p.ContextID, p.Policy); err != nil {
 		t.Fatal(err)
 	}
-	gate := toolGate{svc: s, agentID: p.AgentID, snapshot: &p}
+	gate := toolGate{svc: s, contextID: p.ContextID, snapshot: &p}
 	for _, name := range []string{"local__write_file", "local__edit_file"} {
 		args := map[string]string{"path": filepath.Join(t.TempDir(), "denied.txt")}
 		if name == "local__write_file" {
@@ -130,7 +131,7 @@ func TestBasicGateRejectsOutOfScopeAndRevokedCommands(t *testing.T) {
 	}
 	revoked := p.Policy
 	revoked.Permissions.Commands = nil
-	if _, err = s.UpdateAgent(p.AgentID, "权限测试", revoked); err != nil {
+	if _, err = s.UpdateContextPolicy(p.ContextID, revoked); err != nil {
 		t.Fatal(err)
 	}
 	if gate.Recheck(ctx, req).Deny == "" {

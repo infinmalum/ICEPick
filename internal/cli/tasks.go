@@ -19,6 +19,9 @@ func cmdTasks(client *ipc.Client, args []string) int {
 	switch args[0] {
 	case "review":
 		parsed, err := parseCLI(args[1:])
+		if err == nil {
+			err = parsed.allowValues()
+		}
 		if err != nil || parsed.arg(0) == "" || parsed.arg(1) == "" {
 			return usage("用法: tasks review <sessionID> <runID>")
 		}
@@ -30,21 +33,20 @@ func cmdTasks(client *ipc.Client, args []string) int {
 		return 0
 	case "status":
 		parsed, err := parseCLI(args[1:])
-		if err != nil || parsed.arg(0) == "" {
-			return usage("用法: tasks status <runID> [--agent <agentID>]")
+		if err == nil {
+			err = parsed.allowValues()
 		}
-		agentID := parsed.value("agent")
-		if agentID == "" {
-			agentID = storage.DefaultAgentID
+		if err != nil || parsed.arg(0) == "" {
+			return usage("用法: tasks status <runID>")
 		}
 		var run storage.Run
-		if err := client.Call("runs.get", map[string]any{"agentId": agentID, "runId": parsed.arg(0)}, &run); err != nil {
+		if err := client.Call("runs.get", map[string]any{"runId": parsed.arg(0)}, &run); err != nil {
 			return fail("runs.get", err)
 		}
 		printRun(run)
 		printChildRuns(client, run, "")
 		var graph storage.TaskGraph
-		if err := client.Call("tasks.graph", map[string]any{"agentId": agentID, "runId": parsed.arg(0)}, &graph); err == nil {
+		if err := client.Call("tasks.graph", map[string]any{"runId": parsed.arg(0)}, &graph); err == nil {
 			fmt.Printf("执行计划修订 %d · 调度 %s · 规划 %d 轮 · 事件 %d/%d\n", graph.Revision, graph.Coordination.State, graph.Coordination.Rounds, graph.Coordination.PlannedSeq, graph.Coordination.EventSeq)
 			fmt.Printf("根预算：模型 %d/%d 次 · 工具 %d/%d 次 · token %d · 用量未知 %d 次\n", graph.Budget.ModelCalls, graph.Budget.Limits.MaxModelCalls, graph.Budget.ToolCalls, graph.Budget.Limits.MaxToolCalls, graph.Budget.Tokens, graph.Budget.UnknownUsage)
 			for _, item := range graph.Tasks {
@@ -55,7 +57,7 @@ func cmdTasks(client *ipc.Client, args []string) int {
 			}
 		}
 		var reviews []storage.TaskReview
-		if err := client.Call("tasks.reviews", map[string]any{"agentId": agentID, "runId": parsed.arg(0)}, &reviews); err == nil {
+		if err := client.Call("tasks.reviews", map[string]any{"runId": parsed.arg(0)}, &reviews); err == nil {
 			for _, r := range reviews {
 				fmt.Printf("审查 %s · 当前 %t · %s\n%s\n", r.Result.Status, r.Current, r.Binding, r.Result.Summary)
 				for _, d := range r.Result.Defects {
@@ -66,14 +68,13 @@ func cmdTasks(client *ipc.Client, args []string) int {
 		return 0
 	case "cancel":
 		parsed, err := parseCLI(args[1:])
+		if err == nil {
+			err = parsed.allowValues()
+		}
 		if err != nil || parsed.arg(0) == "" {
-			return usage("用法: tasks cancel <runID> [--agent <agentID>]")
+			return usage("用法: tasks cancel <runID>")
 		}
-		agentID := parsed.value("agent")
-		if agentID == "" {
-			agentID = storage.DefaultAgentID
-		}
-		if err := client.Call("tasks.cancel", map[string]any{"agentId": agentID, "runId": parsed.arg(0)}, nil); err != nil {
+		if err := client.Call("tasks.cancel", map[string]any{"runId": parsed.arg(0)}, nil); err != nil {
 			return fail("tasks.cancel", err)
 		}
 		fmt.Println("已请求取消，宿主将在安全点落盘结果。")
@@ -94,41 +95,38 @@ func cmdApprovals(client *ipc.Client, args []string) int {
 	switch args[0] {
 	case "list":
 		parsed, err := parseCLI(args[1:])
+		if err == nil {
+			err = parsed.allowValues("context")
+		}
 		if err != nil {
-			return 2
+			return usage(err.Error())
 		}
-		agentID := parsed.value("agent")
-		if agentID == "" {
-			agentID = storage.DefaultAgentID
-		}
-		return listApprovals(client, agentID)
+		return listApprovals(client, parsed.value("context"))
 	case "approve":
 		parsed, err := parseCLI(args[1:])
-		if err != nil || parsed.arg(0) == "" {
-			return usage("用法: approvals approve <callID> [--agent <agentID>]")
+		if err == nil {
+			err = parsed.allowValues()
 		}
-		agentID := parsed.value("agent")
-		if agentID == "" {
-			agentID = storage.DefaultAgentID
+		if err != nil || parsed.arg(0) == "" {
+			return usage("用法: approvals approve <callID>")
 		}
 		var call storage.ToolCall
-		if err := client.Call("calls.approve", map[string]any{"agentId": agentID, "callId": parsed.arg(0)}, &call); err != nil {
+		if err := client.Call("calls.approve", map[string]any{"callId": parsed.arg(0)}, &call); err != nil {
 			return fail("calls.approve", err)
 		}
 		fmt.Printf("已批准 %s（%s）\n", call.ToolName, call.ID)
 		return 0
 	case "deny":
 		parsed, err := parseCLI(args[1:])
-		if err != nil || parsed.arg(0) == "" {
-			return usage("用法: approvals deny <callID> [原因] [--agent <agentID>]")
+		if err == nil {
+			err = parsed.allowValues()
 		}
-		agentID := parsed.value("agent")
-		if agentID == "" {
-			agentID = storage.DefaultAgentID
+		if err != nil || parsed.arg(0) == "" {
+			return usage("用法: approvals deny <callID> [原因]")
 		}
 		note := joinArgs(parsed.positional[1:])
 		var call storage.ToolCall
-		if err := client.Call("calls.deny", map[string]any{"agentId": agentID, "callId": parsed.arg(0), "note": note}, &call); err != nil {
+		if err := client.Call("calls.deny", map[string]any{"callId": parsed.arg(0), "note": note}, &call); err != nil {
 			return fail("calls.deny", err)
 		}
 		fmt.Printf("已拒绝 %s（%s）\n", call.ToolName, call.ID)
@@ -138,18 +136,18 @@ func cmdApprovals(client *ipc.Client, args []string) int {
 	}
 }
 
-// listApprovals prints every call needing user action for the agent — normal
+// listApprovals prints every call needing user action for the context — normal
 // sessions and hidden delegation sessions alike — via the host-side sweep.
-func listApprovals(client *ipc.Client, agentID string) int {
+func listApprovals(client *ipc.Client, contextID string) int {
 	var pending []storage.ToolCall
-	if err := client.Call("approvals.pending", map[string]any{"agentId": agentID}, &pending); err != nil {
+	if err := client.Call("approvals.pending", map[string]any{"contextId": contextID}, &pending); err != nil {
 		return fail("approvals.pending", err)
 	}
 	for _, call := range pending {
 		if call.State == storage.CallPending {
 			fmt.Printf("[待审批] %s (run %s)\n  工具: %s\n  参数: %s\n", call.ID, call.RunID, call.ToolName, call.Arguments)
 		}
-		if call.State == storage.CallExecutionUnknow {
+		if call.State == storage.CallExecutionUnknown {
 			fmt.Printf("[结果未知] %s (run %s)\n  工具: %s\n  说明: %s\n", call.ID, call.RunID, call.ToolName, call.Error)
 		}
 	}
@@ -171,17 +169,17 @@ const skipNote = "__skip__"
 // In non-interactive mode (prompter == nil) pending calls are printed and
 // left untouched — they will time out or be handled on the desktop; nothing
 // is auto-approved.
-func waitTask(client *ipc.Client, agentID, sessionID, runID string, prompt approvalPrompter, out io.Writer) int {
+func waitTask(client *ipc.Client, sessionID, runID string, prompt approvalPrompter, out io.Writer) int {
 	asked := map[string]bool{}
 	for {
 		var run storage.Run
-		err := client.Call("runs.get", map[string]any{"agentId": agentID, "runId": runID}, &run)
+		err := client.Call("runs.get", map[string]any{"runId": runID}, &run)
 		if err != nil {
 			fmt.Fprintf(out, "查询任务失败: %v\n", err)
 			return 1
 		}
 		var calls []storage.ToolCall
-		if err := client.Call("calls.list", map[string]any{"agentId": agentID, "sessionId": sessionID}, &calls); err == nil {
+		if err := client.Call("calls.list", map[string]any{"sessionId": sessionID}, &calls); err == nil {
 			for _, call := range calls {
 				if call.State != storage.CallPending || asked[call.ID] {
 					continue
@@ -198,13 +196,13 @@ func waitTask(client *ipc.Client, agentID, sessionID, runID string, prompt appro
 				case note == skipNote:
 					fmt.Fprintln(out, "  保留待审批，稍后再处理。")
 				case approved:
-					if err := client.Call("calls.approve", map[string]any{"agentId": agentID, "callId": call.ID}, nil); err != nil {
+					if err := client.Call("calls.approve", map[string]any{"callId": call.ID}, nil); err != nil {
 						fmt.Fprintf(out, "  批准失败: %v\n", err)
 					} else {
 						fmt.Fprintln(out, "  已批准。")
 					}
 				default:
-					if err := client.Call("calls.deny", map[string]any{"agentId": agentID, "callId": call.ID, "note": note}, nil); err != nil {
+					if err := client.Call("calls.deny", map[string]any{"callId": call.ID, "note": note}, nil); err != nil {
 						fmt.Fprintf(out, "  拒绝失败: %v\n", err)
 					} else {
 						fmt.Fprintln(out, "  已拒绝。")
@@ -212,7 +210,7 @@ func waitTask(client *ipc.Client, agentID, sessionID, runID string, prompt appro
 				}
 			}
 			for _, call := range calls {
-				if call.State == storage.CallExecutionUnknow && !asked[call.ID] {
+				if call.State == storage.CallExecutionUnknown && !asked[call.ID] {
 					asked[call.ID] = true
 					fmt.Fprintf(out, "结果未知：%s %s\n  说明: %s\n  请在桌面端说明依据后处置；任务在处置前无法继续。\n", call.ToolName, call.ID, call.Error)
 				}
@@ -237,17 +235,15 @@ func printRun(run storage.Run) {
 		run.ID, run.Status, run.Error, run.ProfileID, run.ProfileRevision, run.Depth, run.CreatedAt, run.UpdatedAt)
 }
 
-// printChildRuns renders the delegated subtask tree under a run. Children
-// belong to the target Agent, so each level queries with the owning agent's
-// ID; cycles are impossible because delegation refuses them before creation.
+// printChildRuns queries the component tree by each parent run ID.
 func printChildRuns(client *ipc.Client, run storage.Run, indent string) {
 	var children []storage.Run
-	if err := client.Call("runs.children", map[string]any{"agentId": run.AgentID, "runId": run.ID}, &children); err != nil || len(children) == 0 {
+	if err := client.Call("runs.children", map[string]any{"runId": run.ID}, &children); err != nil || len(children) == 0 {
 		return
 	}
 	fmt.Println(indent + "子任务:")
 	for _, child := range children {
-		line := fmt.Sprintf("%s  %s → Agent %s [%s] 会话 %s", indent, child.ID, child.AgentID, child.Status, child.SessionID)
+		line := fmt.Sprintf("%s  %s → %s [%s] 会话 %s", indent, child.ID, child.Component, child.Status, child.SessionID)
 		if child.Error != "" {
 			line += " · " + child.Error
 		}

@@ -8,7 +8,7 @@ import (
 // cliArgs is a tiny argument parser: value flags (`--name v` or `--name=v`)
 // and boolean flags are recognized anywhere, everything else is positional.
 // The standard flag package stops at the first positional argument, which
-// makes natural CLI forms like `tasks start <agent> <session> input --wait`
+// makes natural CLI forms like `conversations start <session> input --wait`
 // impossible to express.
 type cliArgs struct {
 	positional []string
@@ -57,4 +57,17 @@ func (a *cliArgs) arg(index int) string {
 
 func (a *cliArgs) value(name string) string {
 	return strings.TrimSpace(a.values[name])
+}
+
+func (a *cliArgs) allowValues(names ...string) error {
+	allowed := map[string]bool{}
+	for _, name := range names {
+		allowed[name] = true
+	}
+	for name := range a.values {
+		if !allowed[name] {
+			return fmt.Errorf("未知选项 --%s", name)
+		}
+	}
+	return nil
 }

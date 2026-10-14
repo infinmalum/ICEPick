@@ -35,13 +35,13 @@ func TestConversationIsolationSelectionAndArchive(t *testing.T) {
 	if local.Policy.ApprovalMode != "semi" || local.Policy.Permissions.Unrestricted || local.Policy.Memory {
 		t.Fatalf("new context has unexpected grants: %+v", local)
 	}
-	if _, err := s.AddAgentMemory(ctx, a.ContextID, "private", "user", a.ID, ScopePersonal); err != nil {
+	if _, err := s.AddContextMemory(ctx, a.ContextID, "private", "user", a.ID, ScopePersonal); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetExfilGrant(ctx, ExfilGrant{AgentID: a.ContextID, Destination: "https://example.com", Scopes: []string{ScopePersonal}}); err != nil {
+	if err := s.SetExfilGrant(ctx, ExfilGrant{ContextID: a.ContextID, Destination: "https://example.com", Scopes: []string{ScopePersonal}}); err != nil {
 		t.Fatal(err)
 	}
-	memories, err := s.ListAgentMemories(ctx, b.ContextID, 50)
+	memories, err := s.ListContextMemories(ctx, b.ContextID, 50)
 	if err != nil || len(memories) != 0 {
 		t.Fatalf("memory leaked: %+v %v", memories, err)
 	}
@@ -89,7 +89,7 @@ func TestConversationIsolationSelectionAndArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next.ProfileID != q.ID || resolved.AgentID != a.ContextID {
+	if next.ProfileID != q.ID || resolved.ContextID != a.ContextID {
 		t.Fatal("selection changed identity or used old Profile")
 	}
 	// Shared-context conversations retain their individual Profile choice.

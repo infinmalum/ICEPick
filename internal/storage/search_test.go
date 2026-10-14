@@ -49,7 +49,7 @@ func TestSearchOptionsFreezeAndWorkerInheritance(t *testing.T) {
 	if err != nil || !resources.Options.WebSearch || len(resources.SearchTools) != 1 {
 		t.Fatal(resources, err)
 	}
-	session, err := s.CreateDelegationSession(ctx, c.ContextID, "worker")
+	session, err := s.CreateDelegationSession(ctx, c.ContextID, DefaultProfileID, "worker")
 	if err != nil {
 		t.Fatal(err)
 	}

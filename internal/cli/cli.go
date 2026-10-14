@@ -63,9 +63,9 @@ func usage(errDetail string) int {
   icepick profiles edit <id> [--name N] [--description D] [--prompt P] [--model 提供方/模型ID] [--budget N]
   icepick profiles restore | delete <id> [--replace <ProfileID> | --restore-workers]
   icepick profiles export <id> [--out <文件.zip>] [--include-workers] | import <包.zip|目录> [--yes]
-  icepick tasks status <runID> --agent <agentID> | review <sessionID> <runID> | cancel <runID> --agent <agentID>
-  icepick approvals list [agentID] | approve <callID> --agent <agentID> | deny <callID> [原因] --agent <agentID>
-  icepick memory list <agentID> | add <agentID> <内容…> | edit <agentID> <id> <内容…> | delete <agentID> <id> | export <agentID> [--out <文件>]
+  icepick tasks status <runID> | review <sessionID> <runID> | cancel <runID>
+  icepick approvals list [--context <contextID>] | approve <callID> | deny <callID> [原因]
+  icepick memory list <contextID> | add <contextID> <内容…> | edit <contextID> <id> <内容…> | delete <contextID> <id> | export <contextID> [--out <文件>]
   icepick logs [行数]`)
 	return code
 }

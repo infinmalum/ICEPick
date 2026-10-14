@@ -12,7 +12,7 @@ import (
 	"icepick/internal/storage"
 )
 
-func (s *Service) resourcesFor(ctx context.Context, p storage.AgentProfile, runID string) (storage.RunResources, error) {
+func (s *Service) resourcesFor(ctx context.Context, p storage.RunProfile, runID string) (storage.RunResources, error) {
 	if p.Resources != nil {
 		return *p.Resources, nil
 	}
@@ -22,7 +22,7 @@ func (s *Service) resourcesFor(ctx context.Context, p storage.AgentProfile, runI
 	return s.store.RunResources(ctx, runID)
 }
 
-func (s *Service) delegationDefinition(ctx context.Context, p storage.AgentProfile, runID string) model.Tool {
+func (s *Service) delegationDefinition(ctx context.Context, p storage.RunProfile, runID string) model.Tool {
 	d := delegateDefinition
 	resources, err := s.resourcesFor(ctx, p, runID)
 	if err != nil || len(resources.Workers) == 0 {
@@ -43,7 +43,7 @@ func (s *Service) delegationDefinition(ctx context.Context, p storage.AgentProfi
 	return d
 }
 
-func (s *Service) selectedWorker(ctx context.Context, p storage.AgentProfile, runID string, args delegateArgs) (string, storage.FrozenProfile, bool, error) {
+func (s *Service) selectedWorker(ctx context.Context, p storage.RunProfile, runID string, args delegateArgs) (string, storage.FrozenProfile, bool, error) {
 	resources, err := s.resourcesFor(ctx, p, runID)
 	if err != nil {
 		return "", storage.FrozenProfile{}, false, err
@@ -67,7 +67,7 @@ func (s *Service) selectedWorker(ctx context.Context, p storage.AgentProfile, ru
 	return name, worker, true, nil
 }
 
-func (s *Service) workerLimit(ctx context.Context, p storage.AgentProfile, runID string, name string) string {
+func (s *Service) workerLimit(ctx context.Context, p storage.RunProfile, runID string, name string) string {
 	if !p.Delegation.Enabled || !p.AllowsTool("local__delegate_task") {
 		return "该 Profile 未允许委派"
 	}
@@ -88,7 +88,7 @@ func (s *Service) workerLimit(ctx context.Context, p storage.AgentProfile, runID
 	return ""
 }
 
-func (s *Service) executeWorker(ctx context.Context, parent storage.AgentProfile, sessionID, runID string, name string, worker storage.FrozenProfile, task string, planned *storage.TaskSpec) (string, error) {
+func (s *Service) executeWorker(ctx context.Context, parent storage.RunProfile, sessionID, runID string, name string, worker storage.FrozenProfile, task string, planned *storage.TaskSpec) (string, error) {
 	if deny := s.workerLimit(ctx, parent, runID, name); deny != "" {
 		return "", errors.New(deny)
 	}
@@ -122,13 +122,13 @@ func (s *Service) executeWorker(ctx context.Context, parent storage.AgentProfile
 	if err != nil {
 		return "", err
 	}
-	childSession, err := s.store.CreateDelegationSession(ctx, parent.AgentID, "子任务 → "+name+"（"+worker.Name+"）")
+	childSession, err := s.store.CreateDelegationSession(ctx, parent.ContextID, parent.ProfileID, "子任务 → "+name+"（"+worker.Name+"）")
 	if err != nil {
 		return "", err
 	}
 	var childRun storage.Run
 	var childCtx context.Context
-	var childProfile storage.AgentProfile
+	var childProfile storage.RunProfile
 	if planned != nil {
 		childRun, childCtx, childProfile, err = s.runs.StartPlannedWorker(ctx, childSession.ID, runID, *planned)
 	} else {

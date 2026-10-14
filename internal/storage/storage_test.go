@@ -11,7 +11,7 @@ import (
 func TestPersistenceAndRecovery(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "icepick.db")
-	store, err := Open(path)
+	store, err := testOpen(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestPersistenceAndRecovery(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatalf("database permissions: %v, %v", info, err)
 	}
-	store, err = Open(path)
+	store, err = testOpen(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestPersistenceAndRecovery(t *testing.T) {
 
 func TestDoubleRunRejected(t *testing.T) {
 	ctx := context.Background()
-	store, err := Open(filepath.Join(t.TempDir(), "double.db"))
+	store, err := testOpen(filepath.Join(t.TempDir(), "double.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

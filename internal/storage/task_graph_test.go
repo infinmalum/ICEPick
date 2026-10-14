@@ -40,7 +40,7 @@ func taskGraphFixture(t *testing.T) (*Store, Conversation, Run, []TaskSpec) {
 }
 func createPlannedRun(t *testing.T, s *Store, c Conversation, root Run, spec TaskSpec) (Run, error) {
 	t.Helper()
-	session, err := s.CreateDelegationSession(context.Background(), c.ContextID, "planned")
+	session, err := s.CreateDelegationSession(context.Background(), c.ContextID, DefaultProfileID, "planned")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestTaskClaimIsAtomicAndDependenciesAreActual(t *testing.T) {
 	sessions := make([]Session, 2)
 	for i := range sessions {
 		var err error
-		sessions[i], err = s.CreateDelegationSession(ctx, c.ContextID, "competing")
+		sessions[i], err = s.CreateDelegationSession(ctx, c.ContextID, DefaultProfileID, "competing")
 		if err != nil {
 			t.Fatal(err)
 		}

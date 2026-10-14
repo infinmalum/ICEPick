@@ -56,7 +56,7 @@ func TestRunGrantCeilingAndRevocation(t *testing.T) {
 	if err = svc.exfilCheckRun(ctx, run.ID, c.ID, remote, profile); err == nil || !strings.Contains(err.Error(), "上限") {
 		t.Fatal("live expansion widened starting ceiling", err)
 	}
-	g, _ := svc.GetTaskGraph(c.ContextID, run.ID)
+	g, _ := svc.GetTaskGraph(run.ID)
 	if g.Coordination.EventSeq <= 1 {
 		t.Fatal("authority mutation did not persist event")
 	}
@@ -118,21 +118,21 @@ func TestDynamicCancelPropagatesAndKeepsUnknownDispatch(t *testing.T) {
 		case <-deadline:
 			t.Fatal("workers did not start")
 		default:
-			calls, _ := svc.ListToolCalls(c.ContextID, c.ID)
+			calls, _ := svc.ListToolCalls(c.ID)
 			for _, call := range calls {
 				if call.State == storage.CallPending {
-					_, _ = svc.ApproveToolCall(c.ContextID, call.ID)
+					_, _ = svc.ApproveToolCall(call.ID)
 				}
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
-	if err = svc.CancelTask(c.ContextID, r.ID); err != nil {
+	if err = svc.CancelTask(r.ID); err != nil {
 		t.Fatal(err)
 	}
 	until := time.Now().Add(3 * time.Second)
 	for time.Now().Before(until) {
-		children, _ := svc.ListChildRuns(c.ContextID, r.ID)
+		children, _ := svc.ListChildRuns(r.ID)
 		running := false
 		for _, child := range children {
 			if child.Status == "running" {
@@ -144,16 +144,16 @@ func TestDynamicCancelPropagatesAndKeepsUnknownDispatch(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	children, _ := svc.ListChildRuns(c.ContextID, r.ID)
+	children, _ := svc.ListChildRuns(r.ID)
 	for _, child := range children {
 		if child.Status == "running" {
 			t.Fatal("cancel did not reach child")
 		}
 	}
-	calls, _ := svc.ListToolCalls(c.ContextID, c.ID)
+	calls, _ := svc.ListToolCalls(c.ID)
 	unknown := 0
 	for _, call := range calls {
-		if call.State == storage.CallExecutionUnknow {
+		if call.State == storage.CallExecutionUnknown {
 			unknown++
 		}
 	}

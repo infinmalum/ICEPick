@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"icepick/internal/testfixture"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -58,11 +59,11 @@ func discoverToolStep(name string) func([]model.Message) (model.ChatResponse, er
 	}
 }
 
-func waitForCallState(t *testing.T, svc *Service, agentID, sessionID, state string) storage.ToolCall {
+func waitForCallState(t *testing.T, svc *Service, sessionID, state string) storage.ToolCall {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		calls, err := svc.ListToolCalls(agentID, sessionID)
+		calls, err := svc.ListToolCalls(sessionID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -76,17 +77,17 @@ func waitForCallState(t *testing.T, svc *Service, agentID, sessionID, state stri
 	}
 }
 
-// setAgentPolicy rewrites one agent's machine policy (approval mode and
+// setContextPolicy rewrites one context's machine policy (approval mode and
 // resource authorization) through the service surface.
-func setAgentPolicy(t *testing.T, svc *Service, agentID string, mutate func(*storage.AgentPolicy)) {
+func setContextPolicy(t *testing.T, svc *Service, contextID string, mutate func(*storage.ContextPolicy)) {
 	t.Helper()
-	resolved, err := svc.store.ResolvedAgentProfile(context.Background(), agentID)
+	resolved, err := testfixture.Profile(svc.store, context.Background(), contextID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	policy := resolved.Policy
 	mutate(&policy)
-	if _, err := svc.UpdateAgent(agentID, resolved.AgentName, policy); err != nil {
+	if _, err := svc.UpdateContextPolicy(contextID, policy); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -104,23 +105,23 @@ func TestApprovalFlowSemiMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := svc.StartTask(session.ID, "ping 一下")
+	run, err := svc.StartConversationTask(session.ID, "ping 一下")
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := waitForCallState(t, svc, storage.DefaultAgentID, session.ID, storage.CallPending)
-	if _, err := svc.StartTask(session.ID, "再发一次"); err == nil {
+	call := waitForCallState(t, svc, session.ID, storage.CallPending)
+	if _, err := svc.StartConversationTask(session.ID, "再发一次"); err == nil {
 		t.Fatal("new run accepted while approval pending")
 	}
-	approved, err := svc.ApproveToolCall(storage.DefaultAgentID, call.ID)
+	approved, err := svc.ApproveToolCall(call.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if approved.State != storage.CallApproved || approved.ApprovalSource != storage.ApprovalUser || approved.ArgsHash == "" {
 		t.Fatalf("approval not bound: %+v", approved)
 	}
-	waitForRun(t, svc, storage.DefaultAgentID, run.ID, "completed")
-	calls, _ := svc.ListToolCalls(storage.DefaultAgentID, session.ID)
+	waitForRun(t, svc, run.ID, "completed")
+	calls, _ := svc.ListToolCalls(session.ID)
 	if len(calls) != 2 || calls[1].State != storage.CallSucceeded || calls[1].Result != "pong" {
 		t.Fatalf("approved call outcome: %+v", calls)
 	}
@@ -140,16 +141,16 @@ func TestApprovalDenialReturnsToModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := svc.StartTask(session.ID, "ping 一下")
+	run, err := svc.StartConversationTask(session.ID, "ping 一下")
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := waitForCallState(t, svc, storage.DefaultAgentID, session.ID, storage.CallPending)
-	if _, err := svc.DenyToolCall(storage.DefaultAgentID, call.ID, "不想调用外部服务"); err != nil {
+	call := waitForCallState(t, svc, session.ID, storage.CallPending)
+	if _, err := svc.DenyToolCall(call.ID, "不想调用外部服务"); err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, svc, storage.DefaultAgentID, run.ID, "completed")
-	calls, _ := svc.ListToolCalls(storage.DefaultAgentID, session.ID)
+	waitForRun(t, svc, run.ID, "completed")
+	calls, _ := svc.ListToolCalls(session.ID)
 	if len(calls) != 2 || calls[1].State != storage.CallFailed || !strings.Contains(calls[1].Error, "用户拒绝") {
 		t.Fatalf("denial outcome: %+v", calls)
 	}
@@ -171,19 +172,19 @@ func TestApprovalTimeoutExpiresCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := svc.StartTask(session.ID, "ping 一下")
+	run, err := svc.StartConversationTask(session.ID, "ping 一下")
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, svc, storage.DefaultAgentID, run.ID, "completed")
-	calls, _ := svc.ListToolCalls(storage.DefaultAgentID, session.ID)
+	waitForRun(t, svc, run.ID, "completed")
+	calls, _ := svc.ListToolCalls(session.ID)
 	if len(calls) != 2 || calls[1].State != storage.CallCancelled {
 		t.Fatalf("expired call: %+v", calls)
 	}
 	if len(tools.calls) != 0 {
 		t.Fatalf("expired tool executed: %v", tools.calls)
 	}
-	if _, err := svc.StartTask(session.ID, "继续"); err != nil {
+	if _, err := svc.StartConversationTask(session.ID, "继续"); err != nil {
 		t.Fatalf("session unusable after expiry: %v", err)
 	}
 	svc.WaitIdle()
@@ -197,20 +198,20 @@ func TestAutomaticModeStillConfirmsUnknown(t *testing.T) {
 		return "pong", nil
 	}}
 	svc, _ := newTestService(t, chat, tools)
-	setAgentPolicy(t, svc, storage.DefaultAgentID, func(p *storage.AgentPolicy) { p.ApprovalMode = "automatic" })
+	setContextPolicy(t, svc, testfixture.ContextID, func(p *storage.ContextPolicy) { p.ApprovalMode = "automatic" })
 	session, err := svc.CreateSession()
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := svc.StartTask(session.ID, "ping 一下")
+	run, err := svc.StartConversationTask(session.ID, "ping 一下")
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := waitForCallState(t, svc, storage.DefaultAgentID, session.ID, storage.CallPending)
-	if _, err := svc.ApproveToolCall(storage.DefaultAgentID, call.ID); err != nil {
+	call := waitForCallState(t, svc, session.ID, storage.CallPending)
+	if _, err := svc.ApproveToolCall(call.ID); err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, svc, storage.DefaultAgentID, run.ID, "completed")
+	waitForRun(t, svc, run.ID, "completed")
 }
 
 // A pure built-in tool auto-executes in semi mode without any approval wait.
@@ -224,12 +225,12 @@ func TestSemiModeAutoExecutesPureTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := svc.StartTask(session.ID, "几点了")
+	run, err := svc.StartConversationTask(session.ID, "几点了")
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, svc, storage.DefaultAgentID, run.ID, "completed")
-	calls, _ := svc.ListToolCalls(storage.DefaultAgentID, session.ID)
+	waitForRun(t, svc, run.ID, "completed")
+	calls, _ := svc.ListToolCalls(session.ID)
 	if len(calls) != 1 || calls[0].ApprovalSource != storage.ApprovalAuto {
 		t.Fatalf("auto approval not recorded: %+v", calls)
 	}
@@ -258,7 +259,7 @@ func TestGateWorkspaceBoundaryHardDeny(t *testing.T) {
 		return "should not happen", nil
 	}}
 	svc, _ := newTestService(t, chat, tools)
-	setAgentPolicy(t, svc, storage.DefaultAgentID, func(p *storage.AgentPolicy) {
+	setContextPolicy(t, svc, testfixture.ContextID, func(p *storage.ContextPolicy) {
 		p.Permissions.Unrestricted = false
 		p.Permissions.WorkspacePaths = []string{workspace}
 	})
@@ -266,12 +267,12 @@ func TestGateWorkspaceBoundaryHardDeny(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := svc.StartTask(session.ID, "读配置")
+	run, err := svc.StartConversationTask(session.ID, "读配置")
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, svc, storage.DefaultAgentID, run.ID, "completed")
-	calls, _ := svc.ListToolCalls(storage.DefaultAgentID, session.ID)
+	waitForRun(t, svc, run.ID, "completed")
+	calls, _ := svc.ListToolCalls(session.ID)
 	if len(calls) != 1 || calls[0].State != storage.CallFailed || !strings.Contains(calls[0].Error, "工作区") {
 		t.Fatalf("boundary deny outcome: %+v", calls)
 	}
@@ -279,12 +280,12 @@ func TestGateWorkspaceBoundaryHardDeny(t *testing.T) {
 	// executes in semi mode.
 	chat2 := toolCallScript(t, extToolCall("call-2", "local__read_file", `{"path":"`+inside+`"}`), "inside content", "读完")
 	svc.chat = chat2
-	run2, err := svc.StartTask(session.ID, "读笔记")
+	run2, err := svc.StartConversationTask(session.ID, "读笔记")
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, svc, storage.DefaultAgentID, run2.ID, "completed")
-	calls, _ = svc.ListToolCalls(storage.DefaultAgentID, session.ID)
+	waitForRun(t, svc, run2.ID, "completed")
+	calls, _ = svc.ListToolCalls(session.ID)
 	if len(calls) != 2 || calls[1].State != storage.CallSucceeded || calls[1].ApprovalSource != storage.ApprovalAuto {
 		t.Fatalf("workspace read outcome: %+v", calls)
 	}
@@ -304,7 +305,7 @@ func TestExfilCheckAndGrants(t *testing.T) {
 	}
 	remote := config.Model{BaseURL: "http://api.example.com:8080/v1"}
 	local := config.Model{BaseURL: "http://127.0.0.1:11434/v1"}
-	profile, err := store.ResolvedAgentProfile(ctx, storage.DefaultAgentID)
+	profile, err := testfixture.Profile(store, ctx, testfixture.ContextID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +315,7 @@ func TestExfilCheckAndGrants(t *testing.T) {
 	if err := svc.exfilCheck(ctx, session.ID, remote, profile); err == nil || !strings.Contains(err.Error(), "数据外发被拒绝") {
 		t.Fatalf("remote send without grant accepted: %v", err)
 	}
-	if _, err := svc.GrantExfil(storage.DefaultAgentID, "http://api.example.com:8080/v1", []string{storage.ScopePersonal}); err != nil {
+	if _, err := svc.GrantExfil(testfixture.ContextID, "http://api.example.com:8080/v1", []string{storage.ScopePersonal}); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.exfilCheck(ctx, session.ID, remote, profile); err != nil {
@@ -343,7 +344,7 @@ func TestExfilCheckAndGrants(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "credential") {
 		t.Fatalf("send after credential-scoped result accepted: %v", err)
 	}
-	if err := svc.RevokeExfil(storage.DefaultAgentID, "http://api.example.com:8080"); err != nil {
+	if err := svc.RevokeExfil(testfixture.ContextID, "http://api.example.com:8080"); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.exfilCheck(ctx, session.ID, remote, profile); err == nil {
@@ -390,8 +391,12 @@ func TestSyncMCPEndpointsAndGateSuspension(t *testing.T) {
 	if err != nil || len(items) != 1 || items[0].Changed {
 		t.Fatalf("first sync: %+v %v", items, err)
 	}
-	setAgentPolicy(t, svc, storage.DefaultAgentID, func(p *storage.AgentPolicy) { p.ApprovalMode = "automatic" })
-	gate := toolGate{svc: svc, agentID: storage.DefaultAgentID}
+	setContextPolicy(t, svc, testfixture.ContextID, func(p *storage.ContextPolicy) { p.ApprovalMode = "automatic" })
+	snapshot, err := testfixture.Profile(svc.store, context.Background(), testfixture.ContextID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := toolGate{svc: svc, contextID: testfixture.ContextID, snapshot: &snapshot}
 	// A pure built-in tool auto-approves in automatic mode.
 	if decision := gate.Gate(context.Background(), agent.ToolRequest{Tool: "local__current_time", Arguments: "{}"}); decision.Confirm != "" || decision.Deny != "" {
 		t.Fatalf("automatic mode should auto-approve pure tools: %+v", decision)

@@ -37,8 +37,8 @@ h1 { margin: 17px 0 12px; font-size: clamp(42px, 5vw, 66px); line-height: 1.1; }
 .model-form .checkbox-label { display: flex; align-items: center; gap: 9px; }
 .model-form .checkbox-label input { width: auto; }
 .revision { font-size: 12px; color: #718995; font-weight: 500; }
-.agent-config summary { cursor: pointer; margin-bottom: 0; }
-.agent-config[open] summary { margin-bottom: 18px; }
+.context-config summary { cursor: pointer; margin-bottom: 0; }
+.context-config[open] summary { margin-bottom: 18px; }
 .model-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
 .model-actions button { border: 1px solid #007d8b; border-radius: 8px; padding: 9px 14px; background: #007d8b; color: #fff; cursor: pointer; font: inherit; font-size: 13px; font-weight: 650; }
 .model-actions button.secondary { background: #fff; color: #007d8b; }
@@ -70,7 +70,7 @@ h1 { margin: 17px 0 12px; font-size: clamp(42px, 5vw, 66px); line-height: 1.1; }
 .approval-actions button.secondary { background: #fff; color: #007d8b; }
 .approval-actions button:disabled { opacity: .55; cursor: default; }
 @media (max-width: 760px) { .sidebar { width: 185px; flex-basis: 185px; } .content { padding: 52px 30px; } }
-.agent-profile-hint { display: block; font-size: 11px; color: #8a8672; font-weight: 500; }
+.context-profile-hint { display: block; font-size: 11px; color: #8a8672; font-weight: 500; }
 .profile-run-hint { border-left: 3px solid #007d8b; padding-left: 10px; }
 
 .credential-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }

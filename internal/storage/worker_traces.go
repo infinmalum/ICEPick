@@ -48,7 +48,7 @@ UNION ALL SELECT o.id,o.run_id,COALESCE(a.task_id,''),'','observation','',o.cont
 				item.Scope = ScopeUnknown
 			}
 			item.Verification = "unreviewed"
-			if item.State == CallExecutionUnknow {
+			if item.State == CallExecutionUnknown {
 				item.Verification = "unknown_outcome"
 			}
 			items = append(items, item)

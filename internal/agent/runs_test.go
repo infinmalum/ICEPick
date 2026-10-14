@@ -2,20 +2,19 @@ package agent
 
 import (
 	"context"
+	"icepick/internal/testfixture"
 	"path/filepath"
 	"testing"
-
-	"icepick/internal/storage"
 )
 
 func TestCancelPersistsAndSignals(t *testing.T) {
 	ctx := context.Background()
-	store, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	store, err := testfixture.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	session, err := store.CreateSession(ctx, "test")
+	session, err := testfixture.Session(store, ctx, "test")
 	if err != nil {
 		t.Fatal(err)
 	}

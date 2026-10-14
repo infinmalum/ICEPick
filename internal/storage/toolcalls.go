@@ -12,13 +12,13 @@ import (
 
 // Tool call lifecycle states.
 const (
-	CallPending         = "pending"
-	CallApproved        = "approved"
-	CallExecuting       = "executing"
-	CallSucceeded       = "succeeded"
-	CallFailed          = "failed"
-	CallCancelled       = "cancelled"
-	CallExecutionUnknow = "execution_unknown"
+	CallPending          = "pending"
+	CallApproved         = "approved"
+	CallExecuting        = "executing"
+	CallSucceeded        = "succeeded"
+	CallFailed           = "failed"
+	CallCancelled        = "cancelled"
+	CallExecutionUnknown = "execution_unknown"
 )
 
 // toolTransitions guards the tool call lifecycle. execution_unknown is
@@ -27,10 +27,10 @@ const (
 // approved can still fail (the final guard may reject a call whose policy or
 // parameters no longer match) but never silently back to pending.
 var toolTransitions = map[string][]string{
-	CallPending:         {CallApproved, CallExecuting, CallFailed, CallCancelled},
-	CallApproved:        {CallExecuting, CallFailed, CallCancelled},
-	CallExecuting:       {CallSucceeded, CallFailed, CallCancelled, CallExecutionUnknow},
-	CallExecutionUnknow: {CallSucceeded, CallFailed, CallCancelled},
+	CallPending:          {CallApproved, CallExecuting, CallFailed, CallCancelled},
+	CallApproved:         {CallExecuting, CallFailed, CallCancelled},
+	CallExecuting:        {CallSucceeded, CallFailed, CallCancelled, CallExecutionUnknown},
+	CallExecutionUnknown: {CallSucceeded, CallFailed, CallCancelled},
 }
 
 // Approval sources recorded on tool_calls.approval_source.
@@ -304,7 +304,7 @@ func (s *Store) CancelPendingCall(ctx context.Context, id, errText string) error
 // still converges to a defined state.
 func (s *Store) FinishToolCall(ctx context.Context, id, state, result, errText, sourceScope string) error {
 	switch state {
-	case CallSucceeded, CallFailed, CallCancelled, CallExecutionUnknow:
+	case CallSucceeded, CallFailed, CallCancelled, CallExecutionUnknown:
 	default:
 		return fmt.Errorf("无效的工具调用结果状态 %q", state)
 	}
@@ -316,7 +316,7 @@ func (s *Store) FinishToolCall(ctx context.Context, id, state, result, errText, 
 		if err := tx.QueryRowContext(ctx, `SELECT state FROM tool_calls WHERE id = ?`, id).Scan(&current); err != nil {
 			return err
 		}
-		if current == CallExecutionUnknow {
+		if current == CallExecutionUnknown {
 			return errors.New("未知结果只能由显式用户处置，迟到响应不能改写")
 		}
 		allowed, ok := toolTransitions[current]
@@ -336,7 +336,7 @@ func (s *Store) FinishToolCall(ctx context.Context, id, state, result, errText, 
 		if _, err := tx.ExecContext(ctx, `UPDATE tool_calls SET state = ?, result = ?, error = ?, source_scope = ?, updated_at = ? WHERE id = ?`, state, result, errText, sourceScope, now(), id); err != nil {
 			return err
 		}
-		stepStatus := map[string]string{CallSucceeded: "succeeded", CallFailed: "failed", CallCancelled: "cancelled", CallExecutionUnknow: "paused"}[state]
+		stepStatus := map[string]string{CallSucceeded: "succeeded", CallFailed: "failed", CallCancelled: "cancelled", CallExecutionUnknown: "paused"}[state]
 		if _, err := tx.ExecContext(ctx, `UPDATE steps SET status = ?, error = ?, updated_at = ? WHERE id = (SELECT step_id FROM tool_calls WHERE id = ?)`, stepStatus, errText, now(), id); err != nil {
 			return err
 		}
@@ -365,7 +365,7 @@ func (s *Store) ResolveToolCall(ctx context.Context, id, state, result, note str
 		if err := tx.QueryRowContext(ctx, `SELECT state FROM tool_calls WHERE id = ?`, id).Scan(&current); err != nil {
 			return err
 		}
-		if current != CallExecutionUnknow && current != CallPending {
+		if current != CallExecutionUnknown && current != CallPending {
 			return fmt.Errorf("工具调用状态 %q 无需处置", current)
 		}
 		errText := "用户处置：" + note

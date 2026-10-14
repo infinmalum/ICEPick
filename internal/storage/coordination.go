@@ -521,8 +521,8 @@ func recoverCoordination(ctx context.Context, tx *sql.Tx) error {
 	}
 	return nil
 }
-func signalActorChange(ctx context.Context, tx *sql.Tx, actor, kind string) error {
-	rows, err := tx.QueryContext(ctx, `WITH RECURSIVE tree(root,id) AS(SELECT t.run_id,t.run_id FROM task_roots t JOIN runs r ON r.id=t.run_id WHERE r.status='running' UNION ALL SELECT tree.root,r.id FROM runs r JOIN tree ON r.parent_run_id=tree.id) SELECT DISTINCT tree.root FROM tree JOIN runs r ON r.id=tree.id WHERE r.agent_id=?`, actor)
+func signalContextChange(ctx context.Context, tx *sql.Tx, localContext, kind string) error {
+	rows, err := tx.QueryContext(ctx, `WITH RECURSIVE tree(root,id) AS(SELECT t.run_id,t.run_id FROM task_roots t JOIN runs r ON r.id=t.run_id WHERE r.status='running' UNION ALL SELECT tree.root,r.id FROM runs r JOIN tree ON r.parent_run_id=tree.id) SELECT DISTINCT tree.root FROM tree JOIN runs r ON r.id=tree.id WHERE (SELECT context_id FROM sessions WHERE id=r.session_id)=?`, localContext)
 	if err != nil {
 		return err
 	}

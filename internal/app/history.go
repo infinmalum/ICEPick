@@ -30,9 +30,9 @@ const (
 
 // buildRunContext assembles what a run sends to the model: the persisted
 // history minus the compacted prefix, plus — when the profile and the
-// agent's own authorization allow it — the agent's long-term memories, and
+// context's own authorization allow it — the context's long-term memories, and
 // the session's resumable plan. Nothing here modifies persisted records.
-func (s *Service) buildRunContext(sessionID string, profile storage.AgentProfile) (sessionWindow, error) {
+func (s *Service) buildRunContext(sessionID string, profile storage.RunProfile) (sessionWindow, error) {
 	ctx := context.Background()
 	entries, err := s.store.HistoryEntries(ctx, sessionID)
 	if err != nil {
@@ -86,15 +86,15 @@ func (s *Service) buildRunContext(sessionID string, profile storage.AgentProfile
 	return window, nil
 }
 
-// injectMemories appends the agent's long-term memories to the system
+// injectMemories appends the context's long-term memories to the system
 // prompt. Memory content counts as session input from the moment it is
 // injected: its data scopes accumulate into the session, so later sends —
 // including to a remote model — must clear exactly what the memories carry.
-func (s *Service) injectMemories(ctx context.Context, sessionID string, profile storage.AgentProfile, window *sessionWindow) error {
+func (s *Service) injectMemories(ctx context.Context, sessionID string, profile storage.RunProfile, window *sessionWindow) error {
 	if !memoryAllowed(profile) {
 		return nil
 	}
-	newest, err := s.store.ListAgentMemories(ctx, profile.AgentID, memoryRecallLimit)
+	newest, err := s.store.ListContextMemories(ctx, profile.ContextID, memoryRecallLimit)
 	if err != nil {
 		return err
 	}
@@ -121,7 +121,7 @@ func (s *Service) injectMemories(ctx context.Context, sessionID string, profile 
 		selected[i], selected[j] = selected[j], selected[i]
 	}
 	var b strings.Builder
-	b.WriteString("长期记忆（此 Agent 此前沉淀的跨会话记忆，来源与数据范围已标注）：")
+	b.WriteString("长期记忆（此上下文此前沉淀的跨会话记忆，来源与数据范围已标注）：")
 	for _, memory := range selected {
 		fmt.Fprintf(&b, "\n- [%s · %s] %s", memory.Source, memory.Scope, memory.Content)
 	}
@@ -132,7 +132,7 @@ func (s *Service) injectMemories(ctx context.Context, sessionID string, profile 
 // injectPlan appends the session's resumable plan to the system prompt when
 // the profile enables the plan capability. The plan is bookkeeping the
 // model maintains through local__update_plan; it grants no permission.
-func (s *Service) injectPlan(ctx context.Context, sessionID string, profile storage.AgentProfile, window *sessionWindow) {
+func (s *Service) injectPlan(ctx context.Context, sessionID string, profile storage.RunProfile, window *sessionWindow) {
 	if !profile.PlanEnabled {
 		return
 	}
@@ -163,14 +163,14 @@ func (s *Service) injectPlan(ctx context.Context, sessionID string, profile stor
 }
 
 // memoryAllowed is the effective memory authorization: the profile's
-// preference and the agent's own policy must both permit it.
-func memoryAllowed(profile storage.AgentProfile) bool {
+// preference and the context's own policy must both permit it.
+func memoryAllowed(profile storage.RunProfile) bool {
 	return profile.MemoryEnabled && profile.Policy.Memory
 }
 
 // systemPrompt composes the profile prompt with the enabled Agent Skills
 // metadata, mirroring the pre-P1 behavior.
-func (s *Service) systemPrompt(profile storage.AgentProfile) string {
+func (s *Service) systemPrompt(profile storage.RunProfile) string {
 	prompt := profile.Persona
 	if profile.SystemPrompt != "" {
 		if prompt != "" {
@@ -194,7 +194,7 @@ func (s *Service) systemPrompt(profile storage.AgentProfile) string {
 	return prompt
 }
 
-func (s *Service) profileSkillSummary(profile storage.AgentProfile) string {
+func (s *Service) profileSkillSummary(profile storage.RunProfile) string {
 	if profile.ResourcesFrozen {
 		return skills.SnapshotSummary(profile.FrozenSkills)
 	}

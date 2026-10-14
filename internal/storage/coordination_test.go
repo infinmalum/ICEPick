@@ -197,7 +197,7 @@ func TestWorkerTraceScopeAndRootBoundary(t *testing.T) {
 	if err != nil || len(traces) != 1 || traces[0].RunID != a.ID || traces[0].Scope != ScopeCredential || traces[0].Verification != "unreviewed" {
 		t.Fatalf("trace scope: %+v %v", traces, err)
 	}
-	session, err := s.CreateAgentSession(ctx, DefaultAgentID, "other root")
+	session, err := s.CreateContextSession(ctx, testContextID, DefaultProfileID, "other root")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestLateResponseCannotResolveUnknownEffect(t *testing.T) {
 		t.Fatal("late response silently resolved unknown effect")
 	}
 	call, err := s.GetToolCall(ctx, calls[0].ID)
-	if err != nil || call.State != CallExecutionUnknow {
+	if err != nil || call.State != CallExecutionUnknown {
 		t.Fatal("unknown record lost", call, err)
 	}
 }

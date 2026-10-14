@@ -1,5 +1,5 @@
 // Package app hosts the UI-agnostic application service: run orchestration,
-// session and agent management, startup recovery and the single-host
+// session and context management, startup recovery and the single-host
 // guarantee. The Wails binding layer and the future CLI/IPC client both talk
 // to this service instead of owning any run state themselves.
 package app
@@ -156,7 +156,7 @@ func (s *Service) GetStatus() AppStatus {
 	s.mu.RLock()
 	source := s.config.Model
 	s.mu.RUnlock()
-	status := AppStatus{Name: "ICEPick", StorageReady: s.initErr == nil && s.store != nil, AgentReady: s.initErr == nil && s.store != nil && source.Name != "" && s.tools != nil, Model: source, AvailableModels: []string{}}
+	status := AppStatus{Name: "ICEPick", StorageReady: s.initErr == nil && s.store != nil, RuntimeReady: s.initErr == nil && s.store != nil && source.Name != "" && s.tools != nil, Model: source, AvailableModels: []string{}}
 	if s.initErr != nil {
 		status.Message = "本地数据初始化失败：" + s.initErr.Error()
 		return status
@@ -183,7 +183,7 @@ func (s *Service) GetStatus() AppStatus {
 type AppStatus struct {
 	Name            string       `json:"name"`
 	StorageReady    bool         `json:"storageReady"`
-	AgentReady      bool         `json:"agentReady"`
+	RuntimeReady    bool         `json:"runtimeReady"`
 	ModelConnected  bool         `json:"modelConnected"`
 	Model           config.Model `json:"model"`
 	AvailableModels []string     `json:"availableModels"`
@@ -207,37 +207,15 @@ func (s *Service) SaveModelConfig(next config.Model) (AppStatus, error) {
 	return s.GetStatus(), nil
 }
 
-func (s *Service) ListSessions() ([]storage.Session, error) {
-	return s.ListAgentSessions(storage.DefaultAgentID)
-}
-
-func (s *Service) ListAgentSessions(agentID string) ([]storage.Session, error) {
-	if err := s.checkReady(); err != nil {
-		return nil, err
-	}
-	return s.store.ListAgentSessions(context.Background(), agentID)
-}
-
-func (s *Service) CreateSession() (storage.Session, error) {
-	return s.CreateAgentSession(storage.DefaultAgentID)
-}
-
-func (s *Service) CreateAgentSession(agentID string) (storage.Session, error) {
-	if err := s.checkReady(); err != nil {
-		return storage.Session{}, err
-	}
-	return s.store.CreateAgentSession(context.Background(), agentID, "新会话")
-}
-
 // ListMessages returns the display projection of a session: the persisted
 // messages plus one synthetic entry per tool call. The synthetic entries keep
 // the transcript readable without reintroducing free-form tool rows; the
 // authoritative records stay in messages and tool_calls.
-func (s *Service) ListMessages(agentID, sessionID string) ([]storage.Message, error) {
+func (s *Service) ListMessages(sessionID string) ([]storage.Message, error) {
 	if err := s.checkReady(); err != nil {
 		return nil, err
 	}
-	if err := s.checkSessionAgent(agentID, sessionID); err != nil {
+	if err := s.checkSessionExists(sessionID); err != nil {
 		return nil, err
 	}
 	ctx := context.Background()
@@ -258,7 +236,7 @@ func (s *Service) ListMessages(agentID, sessionID string) ([]storage.Message, er
 		display = append(display, item)
 		for _, call := range byMessage[item.ID] {
 			display = append(display, storage.Message{
-				ID: call.ID, SessionID: sessionID, AgentID: item.AgentID, RunID: call.RunID,
+				ID: call.ID, SessionID: sessionID, ContextID: item.ContextID, RunID: call.RunID,
 				Role: storage.RoleTool, Content: displayToolCall(call), CreatedAt: call.CreatedAt,
 			})
 		}
@@ -280,24 +258,24 @@ func displayToolCall(call storage.ToolCall) string {
 		return call.ToolName + ": 已批准，待执行"
 	case storage.CallPending:
 		return call.ToolName + ": 待审批"
-	case storage.CallExecutionUnknow:
+	case storage.CallExecutionUnknown:
 		return call.ToolName + ": 结果未知：" + call.Error
 	default:
 		return call.ToolName + ": 未知状态 " + call.State
 	}
 }
 
-func (s *Service) ListRuns(agentID, sessionID string) ([]storage.Run, error) {
+func (s *Service) ListRuns(sessionID string) ([]storage.Run, error) {
 	if err := s.checkReady(); err != nil {
 		return nil, err
 	}
-	if err := s.checkSessionAgent(agentID, sessionID); err != nil {
+	if err := s.checkSessionExists(sessionID); err != nil {
 		return nil, err
 	}
 	return s.store.ListRuns(context.Background(), sessionID)
 }
 
-func (s *Service) GetRun(agentID, id string) (storage.Run, error) {
+func (s *Service) GetRun(id string) (storage.Run, error) {
 	if err := s.checkReady(); err != nil {
 		return storage.Run{}, err
 	}
@@ -305,16 +283,16 @@ func (s *Service) GetRun(agentID, id string) (storage.Run, error) {
 	if err != nil {
 		return storage.Run{}, err
 	}
-	if err := s.checkSessionAgent(agentID, run.SessionID); err != nil {
+	if err := s.checkSessionExists(run.SessionID); err != nil {
 		return storage.Run{}, err
 	}
 	return run, nil
 }
 
 // ListChildRuns returns the delegated subtask runs of one run, oldest first.
-// The task tree renders them under their parent with target Agent, status
+// The task tree renders them under their parent with component, status
 // and error.
-func (s *Service) ListChildRuns(agentID, runID string) ([]storage.Run, error) {
+func (s *Service) ListChildRuns(runID string) ([]storage.Run, error) {
 	if err := s.checkReady(); err != nil {
 		return nil, err
 	}
@@ -322,7 +300,7 @@ func (s *Service) ListChildRuns(agentID, runID string) ([]storage.Run, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := s.checkSessionAgent(agentID, run.SessionID); err != nil {
+	if err := s.checkSessionExists(run.SessionID); err != nil {
 		return nil, err
 	}
 	return s.store.ListChildRuns(context.Background(), runID)
@@ -331,28 +309,30 @@ func (s *Service) ListChildRuns(agentID, runID string) ([]storage.Run, error) {
 // ListToolCalls returns the persisted tool call records of a session, oldest
 // first. These are the authoritative records the model history is rebuilt
 // from.
-func (s *Service) ListToolCalls(agentID, sessionID string) ([]storage.ToolCall, error) {
+func (s *Service) ListToolCalls(sessionID string) ([]storage.ToolCall, error) {
 	if err := s.checkReady(); err != nil {
 		return nil, err
 	}
-	if err := s.checkSessionAgent(agentID, sessionID); err != nil {
+	if err := s.checkSessionExists(sessionID); err != nil {
 		return nil, err
 	}
 	return s.store.ListSessionToolCalls(context.Background(), sessionID)
 }
 
-// PendingApprovals walks every session owned by the agent — including the
+// PendingApprovals walks every session owned by the context — including the
 // hidden delegation sessions — and returns the calls needing user action:
 // pending approvals and unresolved unknown-result calls.
-func (s *Service) PendingApprovals(agentID string) ([]storage.ToolCall, error) {
+func (s *Service) PendingApprovals(contextID string) ([]storage.ToolCall, error) {
 	if err := s.checkReady(); err != nil {
 		return nil, err
 	}
 	ctx := context.Background()
-	if _, err := s.store.GetAgent(ctx, agentID); err != nil {
-		return nil, err
+	if contextID != "" {
+		if _, err := s.store.GetLocalContext(ctx, contextID); err != nil {
+			return nil, err
+		}
 	}
-	sessions, err := s.store.ListAgentSessionsAll(ctx, agentID)
+	sessions, err := s.store.ListContextSessionsAll(ctx, contextID)
 	if err != nil {
 		return nil, err
 	}
@@ -363,7 +343,7 @@ func (s *Service) PendingApprovals(agentID string) ([]storage.ToolCall, error) {
 			return nil, err
 		}
 		for _, call := range calls {
-			if call.State == storage.CallPending || call.State == storage.CallExecutionUnknow {
+			if call.State == storage.CallPending || call.State == storage.CallExecutionUnknown {
 				pending = append(pending, call)
 			}
 		}
@@ -372,8 +352,8 @@ func (s *Service) PendingApprovals(agentID string) ([]storage.ToolCall, error) {
 }
 
 // ResolveToolCall records an explicit user disposition for a call whose
-// result is unknown. Only the owning Agent may resolve it.
-func (s *Service) ResolveToolCall(agentID, callID, state, result, note string) (storage.ToolCall, error) {
+// result is unknown. The host records the disposition against that exact call.
+func (s *Service) ResolveToolCall(callID, state, result, note string) (storage.ToolCall, error) {
 	if err := s.checkReady(); err != nil {
 		return storage.ToolCall{}, err
 	}
@@ -385,7 +365,7 @@ func (s *Service) ResolveToolCall(agentID, callID, state, result, note string) (
 	if err != nil {
 		return storage.ToolCall{}, err
 	}
-	if err := s.checkSessionAgent(agentID, run.SessionID); err != nil {
+	if err := s.checkSessionExists(run.SessionID); err != nil {
 		return storage.ToolCall{}, err
 	}
 	if err := s.store.ResolveToolCall(context.Background(), callID, state, result, note); err != nil {
@@ -394,38 +374,18 @@ func (s *Service) ResolveToolCall(agentID, callID, state, result, note string) (
 	return s.store.GetToolCall(context.Background(), callID)
 }
 
-func (s *Service) checkSessionAgent(agentID, sessionID string) error {
-	if agentID == "" {
-		return errors.New("请选择 Agent")
-	}
-	session, err := s.store.GetSession(context.Background(), sessionID)
-	if err != nil {
-		return err
-	}
-	if session.AgentID != agentID {
-		return errors.New("会话不属于所选 Agent")
-	}
-	return nil
+func (s *Service) checkSessionExists(sessionID string) error {
+	_, err := s.store.GetSession(context.Background(), sessionID)
+	return err
 }
 
-func (s *Service) StartTask(sessionID, input string) (storage.Run, error) {
-	return s.StartAgentTask(storage.DefaultAgentID, sessionID, input)
-}
-
-func (s *Service) StartAgentTask(agentID, sessionID, input string) (storage.Run, error) {
+func (s *Service) StartConversationTask(sessionID, input string) (storage.Run, error) {
 	if err := s.checkReady(); err != nil {
 		return storage.Run{}, err
 	}
 	input = strings.TrimSpace(input)
 	if input == "" || len(input) > 10000 {
 		return storage.Run{}, errors.New("任务内容长度必须在 1 到 10000 字节之间")
-	}
-	profile, err := s.store.AgentForSession(context.Background(), sessionID)
-	if err != nil {
-		return storage.Run{}, err
-	}
-	if agentID == "" || agentID != profile.AgentID {
-		return storage.Run{}, errors.New("会话不属于所选 Agent")
 	}
 	session, err := s.store.GetSession(context.Background(), sessionID)
 	if err != nil {
@@ -496,7 +456,7 @@ func (s *Service) StartAgentTask(agentID, sessionID, input string) (storage.Run,
 		return storage.Run{}, err
 	} else if !local {
 		var grantErr error
-		initialGrant, _, grantErr = s.store.GetExfilGrant(context.Background(), agentID, origin)
+		initialGrant, _, grantErr = s.store.GetExfilGrant(context.Background(), resolved.ContextID, origin)
 		if grantErr != nil {
 			_ = s.runs.Finish(item.ID, "failed", grantErr.Error())
 			return storage.Run{}, grantErr
@@ -508,7 +468,7 @@ func (s *Service) StartAgentTask(agentID, sessionID, input string) (storage.Run,
 	return item, nil
 }
 
-func (s *Service) executeTask(ctx context.Context, runID, sessionID string, source config.Model, profile storage.AgentProfile, initialGrant storage.ExfilGrant) {
+func (s *Service) executeTask(ctx context.Context, runID, sessionID string, source config.Model, profile storage.RunProfile, initialGrant storage.ExfilGrant) {
 	defer func() {
 		s.taskMu.Lock()
 		if s.running[sessionID] == runID {
@@ -578,7 +538,7 @@ func (s *Service) executeTask(ctx context.Context, runID, sessionID string, sour
 	}
 
 	guarded := guardedChat{svc: s, runID: runID, inner: s.chat, payloadCheck: func(c context.Context, m []model.Message, t []model.Tool) error {
-		return s.checkPayload(c, source, profile.AgentID, sessionID, m, t)
+		return s.checkPayload(c, source, profile.ContextID, sessionID, m, t)
 	}, check: func(checkCtx context.Context) error {
 		// Every model request re-checks the exfiltration scope: tool
 		// results and policy changes since the previous turn apply.
@@ -591,7 +551,7 @@ func (s *Service) executeTask(ctx context.Context, runID, sessionID string, sour
 		Model:    guarded,
 		Tools:    runner,
 		Recorder: runRecorder{svc: s, runID: runID, sessionID: sessionID, classifier: s.classifierFor(profile)},
-		Gate:     toolGate{svc: s, agentID: profile.AgentID, snapshot: &profile, runID: runID},
+		Gate:     toolGate{svc: s, contextID: profile.ContextID, snapshot: &profile, runID: runID},
 		Approver: s,
 		OnDelta: func(text string) error {
 			// Streamed fragments are broadcast live and merged in host
@@ -655,7 +615,7 @@ func (s *Service) clearStream(runID string) {
 // not been committed yet. Reconnecting clients render it together with the
 // persisted messages; an empty result means everything is durable or the run
 // is not streaming.
-func (s *Service) PendingStreamText(agentID, runID string) (string, error) {
+func (s *Service) PendingStreamText(runID string) (string, error) {
 	if err := s.checkReady(); err != nil {
 		return "", err
 	}
@@ -663,7 +623,7 @@ func (s *Service) PendingStreamText(agentID, runID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := s.checkSessionAgent(agentID, run.SessionID); err != nil {
+	if err := s.checkSessionExists(run.SessionID); err != nil {
 		return "", err
 	}
 	s.muStreams.Lock()
@@ -675,17 +635,17 @@ func (s *Service) PendingStreamText(agentID, runID string) (string, error) {
 }
 
 // classifierFor builds the effect/sensitivity classifier for one run from
-// the agent's permission scope; the run keeps using this snapshot even if
+// the context's permission scope; the run keeps using this snapshot even if
 // the policy changes mid-run.
-func (s *Service) classifierFor(profile storage.AgentProfile) mcptools.Classifier {
+func (s *Service) classifierFor(profile storage.RunProfile) mcptools.Classifier {
 	return mcptools.Classifier{Workspace: profile.Policy.Permissions.WorkspacePaths, Protected: s.protectedPaths}
 }
 
-func (s *Service) CancelTask(agentID, id string) error {
+func (s *Service) CancelTask(id string) error {
 	if err := s.checkReady(); err != nil {
 		return err
 	}
-	run, err := s.GetRun(agentID, id)
+	run, err := s.GetRun(id)
 	if err != nil {
 		return err
 	}

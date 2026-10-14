@@ -52,22 +52,22 @@ func TestProfileCLI(t *testing.T) {
 	if code := dispatch(client, []string{"conversations", "start", c.ID, "hello", "--wait"}); code != 0 {
 		t.Fatal("simulated task", code)
 	}
-	history, err := svc.ListMessages(c.ContextID, c.ID)
+	history, err := svc.ListMessages(c.ID)
 	if err != nil || len(history) != 2 || history[1].Content != "模拟服务结果" {
 		t.Fatalf("missing model response: %+v %v", history, err)
 	}
-	runs, err := svc.ListRuns(c.ContextID, c.ID)
+	runs, err := svc.ListRuns(c.ID)
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("runs: %+v %v", runs, err)
 	}
 	var graph storage.TaskGraph
-	if err := client.Call("tasks.graph", map[string]any{"agentId": c.ContextID, "runId": runs[0].ID}, &graph); err != nil || graph.Goal != "hello" || graph.RunStatus != "completed" {
+	if err := client.Call("tasks.graph", map[string]any{"runId": runs[0].ID}, &graph); err != nil || graph.Goal != "hello" || graph.RunStatus != "completed" {
 		t.Fatalf("IPC root graph: %+v %v", graph, err)
 	}
-	if err := client.Call("tasks.graph", map[string]any{"agentId": storage.DefaultAgentID, "runId": runs[0].ID}, &graph); err == nil {
-		t.Fatal("IPC graph ownership not enforced")
+	if err := client.Call("tasks.graph", map[string]any{"runId": "missing"}, &graph); err == nil {
+		t.Fatal("missing graph accepted")
 	}
-	if code := dispatch(client, []string{"tasks", "status", runs[0].ID, "--agent", c.ContextID}); code != 0 {
+	if code := dispatch(client, []string{"tasks", "status", runs[0].ID}); code != 0 {
 		t.Fatal("CLI task graph status", code)
 	}
 	if code := dispatch(client, []string{"profiles", "create", "copy", "--from", profile.ID}); code != 0 {

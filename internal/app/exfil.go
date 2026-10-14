@@ -58,7 +58,7 @@ func endpointOrigin(baseURL string) (string, bool, error) {
 // leaves the machine. Remote endpoints need a grant whose scopes cover every
 // scope accumulated in the session; an unknown scope can only be covered by
 // a grant that explicitly includes it.
-func (s *Service) exfilCheck(ctx context.Context, sessionID string, source config.Model, profile storage.AgentProfile) error {
+func (s *Service) exfilCheck(ctx context.Context, sessionID string, source config.Model, profile storage.RunProfile) error {
 	// Remote providers may leave BaseURL empty to mean the official
 	// endpoint; the check compares against the effective origin, never the
 	// provider name.
@@ -76,39 +76,13 @@ func (s *Service) exfilCheck(ctx context.Context, sessionID string, source confi
 	if len(scopes) == 0 {
 		return nil
 	}
-	return requireGrantCoverage(ctx, s.store, profile.AgentID, origin, scopes)
+	return requireGrantCoverage(ctx, s.store, profile.ContextID, origin, scopes)
 }
 
-// exfilCheckBoth is the delegated subtask's send check: the destination must
-// be authorized by BOTH the target Agent and the parent task's Agent — the
-// stricter of the two exfiltration authorizations governs the child.
-func (s *Service) exfilCheckBoth(ctx context.Context, sessionID string, source config.Model, childProfile storage.AgentProfile, parentAgentID string) error {
-	origin, loopback, err := endpointOrigin(source.EffectiveBaseURL())
-	if err != nil {
-		return err
-	}
-	if loopback {
-		return nil
-	}
-	scopes, err := s.sessionScopes(ctx, sessionID, childProfile)
-	if err != nil {
-		return err
-	}
-	if len(scopes) == 0 {
-		return nil
-	}
-	for _, agentID := range []string{childProfile.AgentID, parentAgentID} {
-		if err := requireGrantCoverage(ctx, s.store, agentID, origin, scopes); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// requireGrantCoverage verifies one Agent's grant for origin covers every
+// requireGrantCoverage verifies one Context's grant for origin covers every
 // scope; the grant is keyed to the actual endpoint, never a provider name.
-func requireGrantCoverage(ctx context.Context, store *storage.Store, agentID, origin string, scopes []string) error {
-	grant, found, err := store.GetExfilGrant(ctx, agentID, origin)
+func requireGrantCoverage(ctx context.Context, store *storage.Store, contextID, origin string, scopes []string) error {
+	grant, found, err := store.GetExfilGrant(ctx, contextID, origin)
 	if err != nil {
 		return err
 	}
@@ -135,7 +109,7 @@ func requireGrantCoverage(ctx context.Context, store *storage.Store, agentID, or
 // user input is personal, successful tool results carry the sensitivity
 // their tool access touched (tagged at persistence time), and the system
 // prompt's skills summary is workspace-scoped.
-func (s *Service) sessionScopes(ctx context.Context, sessionID string, profile storage.AgentProfile) ([]string, error) {
+func (s *Service) sessionScopes(ctx context.Context, sessionID string, profile storage.RunProfile) ([]string, error) {
 	hasUser, toolScopes, err := s.store.SessionDataScopes(ctx, sessionID)
 	if err != nil {
 		return nil, err
@@ -165,7 +139,7 @@ func (s *Service) sessionScopes(ctx context.Context, sessionID string, profile s
 // one destination. The destination is normalized to its endpoint origin; a
 // provider name is never sufficient — the actual endpoint is what the send
 // check compares against.
-func (s *Service) GrantExfil(agentID, destination string, scopes []string) (storage.ExfilGrant, error) {
+func (s *Service) GrantExfil(contextID, destination string, scopes []string) (storage.ExfilGrant, error) {
 	if err := s.checkReady(); err != nil {
 		return storage.ExfilGrant{}, err
 	}
@@ -184,25 +158,25 @@ func (s *Service) GrantExfil(agentID, destination string, scopes []string) (stor
 		}
 		cleaned = append(cleaned, scope)
 	}
-	grant := storage.ExfilGrant{AgentID: agentID, Destination: origin, Scopes: cleaned, CreatedAt: ""}
+	grant := storage.ExfilGrant{ContextID: contextID, Destination: origin, Scopes: cleaned, CreatedAt: ""}
 	if err := s.store.SetExfilGrant(context.Background(), grant); err != nil {
 		return storage.ExfilGrant{}, err
 	}
-	saved, _, err := s.store.GetExfilGrant(context.Background(), agentID, origin)
+	saved, _, err := s.store.GetExfilGrant(context.Background(), contextID, origin)
 	return saved, err
 }
 
-func (s *Service) ListExfilGrants(agentID string) ([]storage.ExfilGrant, error) {
+func (s *Service) ListExfilGrants(contextID string) ([]storage.ExfilGrant, error) {
 	if err := s.checkReady(); err != nil {
 		return nil, err
 	}
-	if _, err := s.store.GetAgent(context.Background(), agentID); err != nil {
+	if _, err := s.store.GetLocalContext(context.Background(), contextID); err != nil {
 		return nil, err
 	}
-	return s.store.ListExfilGrants(context.Background(), agentID)
+	return s.store.ListExfilGrants(context.Background(), contextID)
 }
 
-func (s *Service) RevokeExfil(agentID, destination string) error {
+func (s *Service) RevokeExfil(contextID, destination string) error {
 	if err := s.checkReady(); err != nil {
 		return err
 	}
@@ -210,19 +184,13 @@ func (s *Service) RevokeExfil(agentID, destination string) error {
 	if err != nil {
 		return fmt.Errorf("目的地必须是 http(s) 端点地址: %w", err)
 	}
-	return s.store.DeleteExfilGrant(context.Background(), agentID, origin)
+	return s.store.DeleteExfilGrant(context.Background(), contextID, origin)
 }
 
 // External tool descriptions/schemas are untrusted input, including before any
-// tool call. They require explicit unknown-source authorization for this Agent.
-func (s *Service) checkPayload(ctx context.Context, source config.Model, agentID, sessionID string, messages []model.Message, tools []model.Tool) error {
-	return s.checkPayloadFor(ctx, source, []string{agentID}, sessionID, messages, tools)
-}
-
-// checkPayloadFor extends the payload check to several agents: a delegated
-// subtask sends to the target Agent's endpoint, so both the target's and the
-// parent's grants must cover the untrusted payload scopes.
-func (s *Service) checkPayloadFor(ctx context.Context, source config.Model, agentIDs []string, sessionID string, messages []model.Message, tools []model.Tool) error {
+// tool call. They require explicit unknown-source authorization for this Context.
+// checkPayload accounts for untrusted payload scopes under the run context.
+func (s *Service) checkPayload(ctx context.Context, source config.Model, contextID string, sessionID string, messages []model.Message, tools []model.Tool) error {
 	origin, local, err := endpointOrigin(source.EffectiveBaseURL())
 	if err != nil {
 		return err
@@ -253,28 +221,26 @@ func (s *Service) checkPayloadFor(ctx context.Context, source config.Model, agen
 	if local {
 		return nil
 	}
-	for _, agentID := range agentIDs {
-		grant, found, err := s.store.GetExfilGrant(ctx, agentID, origin)
-		if err != nil {
-			return err
+	grant, found, err := s.store.GetExfilGrant(ctx, contextID, origin)
+	if err != nil {
+		return err
+	}
+	covered := map[string]bool{}
+	for _, v := range grant.Scopes {
+		covered[v] = true
+	}
+	for scope := range required {
+		if !covered[scope] {
+			return fmt.Errorf("数据外发被拒绝：实际请求包含未授权的提示词、工具参数或外部工具定义（Context %s 缺少 %s 授权）", contextID, scope)
 		}
-		covered := map[string]bool{}
-		for _, v := range grant.Scopes {
-			covered[v] = true
-		}
-		for scope := range required {
-			if !covered[scope] {
-				return fmt.Errorf("数据外发被拒绝：实际请求包含未授权的提示词、工具参数或外部工具定义（Agent %s 缺少 %s 授权）", agentID, scope)
-			}
-		}
-		if !found {
-			return fmt.Errorf("数据外发被拒绝：Agent %s 未授权向 %s 发送外部工具定义", agentID, origin)
-		}
+	}
+	if !found {
+		return fmt.Errorf("数据外发被拒绝：Context %s 未授权向 %s 发送外部工具定义", contextID, origin)
 	}
 	return nil
 }
 
-func (s *Service) checkInitialGrant(ctx context.Context, sessionID string, source config.Model, profile storage.AgentProfile, initial storage.ExfilGrant) error {
+func (s *Service) checkInitialGrant(ctx context.Context, sessionID string, source config.Model, profile storage.RunProfile, initial storage.ExfilGrant) error {
 	_, local, err := endpointOrigin(source.EffectiveBaseURL())
 	if err != nil {
 		return err

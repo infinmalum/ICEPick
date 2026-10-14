@@ -2,6 +2,7 @@ package ipc
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -339,47 +340,43 @@ func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 
 	case "sessions.messages":
 		var params struct {
-			AgentID   string `json:"agentId"`
 			SessionID string `json:"sessionId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return s.svc.ListMessages(params.AgentID, params.SessionID)
+		return s.svc.ListMessages(params.SessionID)
 
 	case "runs.list":
 		var params struct {
-			AgentID   string `json:"agentId"`
 			SessionID string `json:"sessionId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return s.svc.ListRuns(params.AgentID, params.SessionID)
+		return s.svc.ListRuns(params.SessionID)
 	case "tasks.graph", "tasks.reviews", "runs.get":
 		var params struct {
-			AgentID string `json:"agentId"`
-			RunID   string `json:"runId"`
+			RunID string `json:"runId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
 		if request.Method == "tasks.reviews" {
-			return s.svc.ListTaskReviews(params.AgentID, params.RunID)
+			return s.svc.ListTaskReviews(params.RunID)
 		}
 		if request.Method == "tasks.graph" {
-			return s.svc.GetTaskGraph(params.AgentID, params.RunID)
+			return s.svc.GetTaskGraph(params.RunID)
 		}
-		return s.svc.GetRun(params.AgentID, params.RunID)
+		return s.svc.GetRun(params.RunID)
 	case "runs.children":
 		var params struct {
-			AgentID string `json:"agentId"`
-			RunID   string `json:"runId"`
+			RunID string `json:"runId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return s.svc.ListChildRuns(params.AgentID, params.RunID)
+		return s.svc.ListChildRuns(params.RunID)
 
 	case "tasks.review":
 		var params struct {
@@ -392,176 +389,167 @@ func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 		return s.svc.StartConversationReview(params.SessionID, params.RunID)
 	case "tasks.cancel":
 		var params struct {
-			AgentID string `json:"agentId"`
-			RunID   string `json:"runId"`
+			RunID string `json:"runId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return nil, s.svc.CancelTask(params.AgentID, params.RunID)
+		return nil, s.svc.CancelTask(params.RunID)
 	case "stream.pending":
 		var params struct {
-			AgentID string `json:"agentId"`
-			RunID   string `json:"runId"`
+			RunID string `json:"runId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return s.svc.PendingStreamText(params.AgentID, params.RunID)
+		return s.svc.PendingStreamText(params.RunID)
 
 	case "calls.list":
 		var params struct {
-			AgentID   string `json:"agentId"`
 			SessionID string `json:"sessionId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return s.svc.ListToolCalls(params.AgentID, params.SessionID)
+		return s.svc.ListToolCalls(params.SessionID)
 	case "calls.approve":
 		var params struct {
-			AgentID string `json:"agentId"`
-			CallID  string `json:"callId"`
+			CallID string `json:"callId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return s.svc.ApproveToolCall(params.AgentID, params.CallID)
+		return s.svc.ApproveToolCall(params.CallID)
 	case "calls.deny":
 		var params struct {
-			AgentID string `json:"agentId"`
-			CallID  string `json:"callId"`
-			Note    string `json:"note"`
+			CallID string `json:"callId"`
+			Note   string `json:"note"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return s.svc.DenyToolCall(params.AgentID, params.CallID, params.Note)
+		return s.svc.DenyToolCall(params.CallID, params.Note)
 	case "approvals.pending":
 		var params struct {
-			AgentID string `json:"agentId"`
+			ContextID string `json:"contextId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return s.svc.PendingApprovals(params.AgentID)
+		return s.svc.PendingApprovals(params.ContextID)
 	case "calls.resolve":
 		var params struct {
-			AgentID string `json:"agentId"`
-			CallID  string `json:"callId"`
-			State   string `json:"state"`
-			Result  string `json:"result"`
-			Note    string `json:"note"`
+			CallID string `json:"callId"`
+			State  string `json:"state"`
+			Result string `json:"result"`
+			Note   string `json:"note"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return s.svc.ResolveToolCall(params.AgentID, params.CallID, params.State, params.Result, params.Note)
+		return s.svc.ResolveToolCall(params.CallID, params.State, params.Result, params.Note)
 
 	case "exfil.list":
 		var params struct {
-			AgentID string `json:"agentId"`
+			ContextID string `json:"contextId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return s.svc.ListExfilGrants(params.AgentID)
+		return s.svc.ListExfilGrants(params.ContextID)
 	case "exfil.grant":
 		var params struct {
-			AgentID     string   `json:"agentId"`
+			ContextID   string   `json:"contextId"`
 			Destination string   `json:"destination"`
 			Scopes      []string `json:"scopes"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return s.svc.GrantExfil(params.AgentID, params.Destination, params.Scopes)
+		return s.svc.GrantExfil(params.ContextID, params.Destination, params.Scopes)
 	case "exfil.revoke":
 		var params struct {
-			AgentID     string `json:"agentId"`
+			ContextID   string `json:"contextId"`
 			Destination string `json:"destination"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return nil, s.svc.RevokeExfil(params.AgentID, params.Destination)
+		return nil, s.svc.RevokeExfil(params.ContextID, params.Destination)
 
 	case "credentials.status":
 		return s.svc.ListCredentialStatus()
 
 	case "memory.list":
 		var params struct {
-			AgentID string `json:"agentId"`
+			ContextID string `json:"contextId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return s.svc.ListMemories(params.AgentID)
+		return s.svc.ListMemories(params.ContextID)
 	case "memory.add":
 		var params struct {
-			AgentID string `json:"agentId"`
-			Content string `json:"content"`
+			ContextID string `json:"contextId"`
+			Content   string `json:"content"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return s.svc.AddMemory(params.AgentID, params.Content)
+		return s.svc.AddMemory(params.ContextID, params.Content)
 	case "memory.update":
 		var params struct {
-			AgentID string `json:"agentId"`
-			ID      string `json:"id"`
-			Content string `json:"content"`
+			ContextID string `json:"contextId"`
+			ID        string `json:"id"`
+			Content   string `json:"content"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return s.svc.UpdateMemory(params.AgentID, params.ID, params.Content)
+		return s.svc.UpdateMemory(params.ContextID, params.ID, params.Content)
 	case "memory.delete":
 		var params struct {
-			AgentID string `json:"agentId"`
-			ID      string `json:"id"`
+			ContextID string `json:"contextId"`
+			ID        string `json:"id"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return nil, s.svc.DeleteMemory(params.AgentID, params.ID)
+		return nil, s.svc.DeleteMemory(params.ContextID, params.ID)
 	case "memory.export":
 		var params struct {
-			AgentID string `json:"agentId"`
+			ContextID string `json:"contextId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return s.svc.ExportMemories(params.AgentID)
+		return s.svc.ExportMemories(params.ContextID)
 
 	case "summaries.get":
 		var params struct {
-			AgentID   string `json:"agentId"`
 			SessionID string `json:"sessionId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return s.svc.GetSessionSummary(params.AgentID, params.SessionID)
+		return s.svc.GetSessionSummary(params.SessionID)
 
 	case "plans.get":
 		var params struct {
-			AgentID   string `json:"agentId"`
 			SessionID string `json:"sessionId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return s.svc.GetSessionPlan(params.AgentID, params.SessionID)
+		return s.svc.GetSessionPlan(params.SessionID)
 	case "plans.clear":
 		var params struct {
-			AgentID   string `json:"agentId"`
 			SessionID string `json:"sessionId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
 		}
-		return nil, s.svc.ClearSessionPlan(params.AgentID, params.SessionID)
+		return nil, s.svc.ClearSessionPlan(params.SessionID)
 
 	default:
 		return nil, fmt.Errorf("未知 IPC 方法 %q", request.Method)
@@ -572,5 +560,14 @@ func decodeParams(raw json.RawMessage, target any) error {
 	if len(raw) == 0 {
 		return nil
 	}
-	return json.Unmarshal(raw, target)
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return fmt.Errorf("IPC 参数必须是单个 JSON 对象")
+	}
+	return nil
 }

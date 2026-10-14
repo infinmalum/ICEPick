@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"icepick/internal/testfixture"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -25,7 +26,7 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { re
 // regression: model config saving round-trips through the binding surface and
 // preserves unrelated configuration.
 func TestSaveLMStudioAndReadStatus(t *testing.T) {
-	store, err := storage.Open(filepath.Join(t.TempDir(), "data.db"))
+	store, err := testfixture.Open(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +78,7 @@ func (finishedModel) Chat(context.Context, config.Model, []model.Message, []mode
 // regression: a task runs to completion, a second is cancellable, and the
 // transcript is stored. This drives the same service the Wails UI binds to.
 func TestTaskPersistenceAndCancellation(t *testing.T) {
-	store, err := storage.Open(filepath.Join(t.TempDir(), "data.db"))
+	store, err := testfixture.Open(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +110,7 @@ func TestTaskPersistenceAndCancellation(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		got, err := svc.GetRun(session.ContextID, run.ID)
+		got, err := svc.GetRun(run.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -121,7 +122,7 @@ func TestTaskPersistenceAndCancellation(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	history, err := svc.ListMessages(session.ContextID, session.ID)
+	history, err := svc.ListMessages(session.ID)
 	if err != nil || len(history) != 2 || history[0].Role != "user" || history[1].Role != "assistant" {
 		t.Fatalf("history: %+v, %v", history, err)
 	}
@@ -133,7 +134,7 @@ func TestTaskPersistenceAndCancellation(t *testing.T) {
 	}
 	deadline = time.Now().Add(2 * time.Second)
 	for {
-		got, err := svc.GetRun(session.ContextID, run2.ID)
+		got, err := svc.GetRun(run2.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -145,44 +146,33 @@ func TestTaskPersistenceAndCancellation(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	history, err = svc.ListMessages(session.ContextID, session.ID)
+	history, err = svc.ListMessages(session.ID)
 	if err != nil || len(history) != 4 {
 		t.Fatalf("history after second task: %+v, %v", history, err)
 	}
 }
 
-func TestServiceRejectsOtherAgentSession(t *testing.T) {
-	store, err := storage.Open(filepath.Join(t.TempDir(), "data.db"))
+func TestServiceResolvesContextFromSession(t *testing.T) {
+	store, err := testfixture.Open(filepath.Join(t.TempDir(), "data.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
 	svc := &StatusService{svc: app.New(app.Options{Store: store})}
-	profile, err := svc.CreateProfile("共享 Profile", "")
+	c, err := svc.CreateConversation(storage.DefaultProfileID, "", "test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := svc.CreateConversation(profile.ID, "", "Other")
-	if err != nil {
+	if _, err := svc.ListMessages(c.ID); err != nil {
 		t.Fatal(err)
 	}
-	otherSession, err := svc.svc.GetConversation(other.ID)
-	if err != nil {
+	if _, err := svc.ListRuns(c.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ListMessages(storage.DefaultAgentID, otherSession.ID); err == nil {
-		t.Fatal("other Agent messages exposed")
-	}
-	if _, err := svc.ListRuns(storage.DefaultAgentID, otherSession.ID); err == nil {
-		t.Fatal("other Agent runs exposed")
-	}
-	if _, err := svc.svc.StartAgentTask(storage.DefaultAgentID, otherSession.ID, "hello"); err == nil {
-		t.Fatal("other Agent task accepted")
-	}
-	if _, err := svc.ListToolCalls(storage.DefaultAgentID, otherSession.ID); err == nil {
-		t.Fatal("other Agent tool calls exposed")
-	}
-	if _, err := svc.ListMessages(other.ContextID, otherSession.ID); err != nil {
+	if _, err := svc.ListToolCalls(c.ID); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := svc.ListMessages("missing"); err == nil {
+		t.Fatal("missing session accepted")
 	}
 }

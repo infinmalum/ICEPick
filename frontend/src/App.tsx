@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Events } from '@wailsio/runtime'
 import { StatusService, type AppStatus } from '../bindings/icepick'
-import type { SearchRequest, TaskReview, TaskGraph, AgentPolicy, Conversation, LocalContext, ProfileTemplate, ProfileReference, ExfilGrant, Memory, Message, Profile, Run, SessionSummary, ToolCall } from '../bindings/icepick/internal/storage'
+import type { SearchRequest, TaskReview, TaskGraph, ContextPolicy, Conversation, LocalContext, ProfileTemplate, ProfileReference, ExfilGrant, Memory, Message, Profile, Run, SessionSummary, ToolCall } from '../bindings/icepick/internal/storage'
 import type { SearchAvailability, CredentialStatus, ExportResult, ImportPreview, MCPEndpointStatus, SessionPlanView } from '../bindings/icepick/internal/app'
 
 const blankRootBudget = {autoRetry:false,maxSeconds:0,maxModelCalls:0,maxToolCalls:0,maxTokens:0,maxPlannerRounds:0,maxAttempts:0,maxRetries:0}
@@ -54,10 +54,10 @@ function App() {
   const [restoreGroup, setRestoreGroup] = useState('')
   const [deleteReplacement, setDeleteReplacement] = useState('__own__')
   const [profileRefs, setProfileRefs] = useState<ProfileReference[]>([])
-  const [agentID, setAgentID] = useState('default')
-  const [agentDraft, setAgentDraft] = useState<LocalContext | null>(null)
-  const [agentBusy, setAgentBusy] = useState(false)
-  const [agentError, setAgentError] = useState('')
+  const [contextID, setContextID] = useState('')
+  const [contextDraft, setContextDraft] = useState<LocalContext | null>(null)
+  const [contextBusy, setContextBusy] = useState(false)
+  const [contextError, setContextError] = useState('')
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [profileEditID, setProfileEditID] = useState<string | null>(null)
   const [profileDraft, setProfileDraft] = useState<Profile | null>(null)
@@ -122,29 +122,31 @@ function App() {
 
   useEffect(() => {
  let current=true; setGrants([]); setGrantError('');
- StatusService.ListExfilGrants(agentID).then(items=>{if(current)setGrants(items ?? [])}).catch(reason=>{if(current)setGrantError(String(reason))});
+ if (!contextID) return;
+ StatusService.ListExfilGrants(contextID).then(items=>{if(current)setGrants(items ?? [])}).catch(reason=>{if(current)setGrantError(String(reason))});
  return ()=>{current=false};
- }, [agentID])
+ }, [contextID])
 
-  // Long-term memory belongs to the agent; reload whenever the agent changes.
+  // Long-term memory belongs to the context; reload when the context changes.
   useEffect(() => {
     let current = true
     setMemories([]); setMemoryError(''); setMemoryEdit(null)
-    StatusService.ListMemories(agentID).then((items) => { if (current) setMemories(items ?? []) }).catch((reason) => { if (current) setMemoryError(String(reason)) })
+    if (!contextID) return
+    StatusService.ListMemories(contextID).then((items) => { if (current) setMemories(items ?? []) }).catch((reason) => { if (current) setMemoryError(String(reason)) })
     return () => { current = false }
-  }, [agentID])
+  }, [contextID])
 
   // The compaction summary and the resumable plan are session facts; they
   // can appear or change while a run compacts or updates the plan.
   function refreshSessionKnowledge(id: string) {
-    const current = () => activeAgentID.current === agentID && activeSessionID.current === id
+    const current = () => activeContextID.current === contextID && activeSessionID.current === id
     StatusService.ListConversationSearch(id).then(value=>{if(current())setSearchRecords(value??[])}).catch(()=>{})
-    StatusService.GetSessionSummary(agentID, id).then(value => { if (current()) setSessionSummary(value) }).catch(() => { if (current()) setSessionSummary(null) })
-    StatusService.GetSessionPlan(agentID, id).then(value => { if (current()) setSessionPlan(value) }).catch(() => { if (current()) setSessionPlan(null) })
+    StatusService.GetSessionSummary(id).then(value => { if (current()) setSessionSummary(value) }).catch(() => { if (current()) setSessionSummary(null) })
+    StatusService.GetSessionPlan(id).then(value => { if (current()) setSessionPlan(value) }).catch(() => { if (current()) setSessionPlan(null) })
   }
 
-  const activeAgentID = useRef(agentID)
-  activeAgentID.current = agentID
+  const activeContextID = useRef(contextID)
+  activeContextID.current = contextID
   const activeSessionID = useRef(selected)
   activeSessionID.current = selected
 
@@ -152,10 +154,10 @@ function App() {
 
   useEffect(() => {
     let current = true
-    setAgentDraft(null)
-    if (selected) StatusService.GetLocalContext(agentID).then((item) => { if (current) setAgentDraft(item) }).catch(reason => { if (current) setAgentError(String(reason)) })
+    setContextDraft(null)
+    if (selected) StatusService.GetLocalContext(contextID).then((item) => { if (current) setContextDraft(item) }).catch(reason => { if (current) setContextError(String(reason)) })
     return () => { current = false }
-  }, [agentID, selected])
+  }, [contextID, selected])
 
   useEffect(() => {
     if (activeConversation && !activeConversation.profileArchived) setProfileEditID(activeConversation.profileId)
@@ -185,7 +187,7 @@ function App() {
     let cancelled = false
     setLoadingSession(true)
     setTaskGraph(null); setReviews([])
-    Promise.all([StatusService.ListMessages(agentID, selected), StatusService.ListRuns(agentID, selected), StatusService.ListToolCalls(agentID, selected)])
+    Promise.all([StatusService.ListMessages(selected), StatusService.ListRuns(selected), StatusService.ListToolCalls(selected)])
       .then(([history, previousRuns, calls]) => {
         if (cancelled) return
         setMessages(history ?? [])
@@ -198,21 +200,21 @@ function App() {
       .catch((reason: unknown) => { if (!cancelled) { setTaskError(String(reason)); setLoadingSession(false) } })
     refreshSessionKnowledge(selected)
     return () => { cancelled = true }
-  }, [agentID, selected])
+  }, [contextID, selected])
 
   useEffect(() => {
     if (!activeRun || !selected) return
     let cancelled = false
     // Reconnect: pick up the streamed-but-uncommitted text so a page reload
     // or reconnect keeps the live transcript continuous.
-    StatusService.PendingStreamText(agentID, activeRun).then((value) => { if (!cancelled) setStreamText(value ?? '') }).catch(() => {})
+    StatusService.PendingStreamText(activeRun).then((value) => { if (!cancelled) setStreamText(value ?? '') }).catch(() => {})
     const timer = window.setInterval(async () => {
       try {
         const [run, history, calls, pending] = await Promise.all([
-          StatusService.GetRun(agentID, activeRun),
-          StatusService.ListMessages(agentID, selected),
-          StatusService.ListToolCalls(agentID, selected),
-          StatusService.PendingStreamText(agentID, activeRun),
+          StatusService.GetRun(activeRun),
+          StatusService.ListMessages(selected),
+          StatusService.ListToolCalls(selected),
+          StatusService.PendingStreamText(activeRun),
         ])
         if (cancelled) return
         setMessages(history ?? [])
@@ -227,7 +229,7 @@ function App() {
       }
     }, 800)
     return () => { cancelled = true; window.clearInterval(timer) }
-  }, [activeRun, agentID, selected])
+  }, [activeRun, contextID, selected])
 
   // Live streaming deltas arrive through the Wails event bridge; the poll
   // above stays authoritative and overwrites the local merge each tick.
@@ -280,7 +282,7 @@ function App() {
   }
 
   async function refreshContext() {
-    if (selected) { const item = await StatusService.GetLocalContext(agentID); if (activeAgentID.current === agentID) setAgentDraft(item) }
+    if (selected) { const item = await StatusService.GetLocalContext(contextID); if (activeContextID.current === contextID) setContextDraft(item) }
   }
 
   async function refreshConversations() {
@@ -288,7 +290,7 @@ function App() {
   }
 
   function openConversation(item: Conversation) {
-    setAgentID(item.contextId)
+    setContextID(item.contextId)
     setSelected(item.id)
     setMessages([])
     setRuns([])
@@ -299,7 +301,7 @@ function App() {
     setSessionSummary(null)
     setSessionPlan(null)
     setTaskError('')
-    setAgentError('')
+    setContextError('')
   }
 
   async function createTemplate(id: string) {
@@ -320,14 +322,14 @@ function App() {
   async function refreshCalls() {
     if (!selected) return
     try {
-      setToolCalls((await StatusService.ListToolCalls(agentID, selected)) ?? [])
+      setToolCalls((await StatusService.ListToolCalls(selected)) ?? [])
     } catch (reason) { setTaskError(String(reason)) }
   }
 
   async function approveCall(call: ToolCall) {
     setApprovalBusy(true)
     try {
-      await StatusService.ApproveToolCall(agentID, call.id)
+      await StatusService.ApproveToolCall(call.id)
       setTaskError('')
       await refreshCalls()
     } catch (reason) { setTaskError(String(reason)) } finally { setApprovalBusy(false) }
@@ -337,7 +339,7 @@ function App() {
     const note = window.prompt(`拒绝 ${call.toolName} 的原因（可留空）`, '') ?? ''
     setApprovalBusy(true)
     try {
-      await StatusService.DenyToolCall(agentID, call.id, note)
+      await StatusService.DenyToolCall(call.id, note)
       setTaskError('')
       await refreshCalls()
     } catch (reason) { setTaskError(String(reason)) } finally { setApprovalBusy(false) }
@@ -353,21 +355,21 @@ function App() {
     }
     setApprovalBusy(true)
     try {
-      await StatusService.ResolveToolCall(agentID, call.id, asSuccess ? 'succeeded' : 'failed', result, note)
+      await StatusService.ResolveToolCall(call.id, asSuccess ? 'succeeded' : 'failed', result, note)
       setTaskError('')
       await refreshCalls()
     } catch (reason) { setTaskError(String(reason)) } finally { setApprovalBusy(false) }
   }
 
-  async function saveAgent(event: React.FormEvent<HTMLFormElement>) {
+  async function saveContext(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!agentDraft || !selected) return
-    setAgentBusy(true)
+    if (!contextDraft || !selected) return
+    setContextBusy(true)
     try {
-      await StatusService.UpdateContextPolicy(agentID, agentDraft.policy)
+      await StatusService.UpdateContextPolicy(contextID, contextDraft.policy)
       await refreshContext()
-      setAgentError('')
-    } catch (reason) { setAgentError(String(reason)) } finally { setAgentBusy(false) }
+      setContextError('')
+    } catch (reason) { setContextError(String(reason)) } finally { setContextBusy(false) }
   }
 
   async function selectConversationProfile(profileID: string) {
@@ -492,9 +494,9 @@ function App() {
     if (!grantForm.destination.trim() || grantForm.scopes.length === 0) return
     setGrantBusy(true)
     try {
-      await StatusService.GrantExfil(agentID,grantForm.destination, grantForm.scopes)
-      const updated = (await StatusService.ListExfilGrants(agentID)) ?? []
-      if (activeAgentID.current !== agentID) return
+      await StatusService.GrantExfil(contextID,grantForm.destination, grantForm.scopes)
+      const updated = (await StatusService.ListExfilGrants(contextID)) ?? []
+      if (activeContextID.current !== contextID) return
       setGrants(updated)
       setGrantForm({ destination: '', scopes: [] })
       setGrantError('')
@@ -505,9 +507,9 @@ function App() {
     if (!window.confirm(`撤销向 ${destination} 发送会话数据的授权？后续远端发送将被拒绝。`)) return
     setGrantBusy(true)
     try {
-      await StatusService.RevokeExfil(agentID,destination)
-      const updated = (await StatusService.ListExfilGrants(agentID)) ?? []
-      if (activeAgentID.current !== agentID) return
+      await StatusService.RevokeExfil(contextID,destination)
+      const updated = (await StatusService.ListExfilGrants(contextID)) ?? []
+      if (activeContextID.current !== contextID) return
       setGrants(updated)
       setGrantError('')
     } catch (reason) { setGrantError(String(reason)) } finally { setGrantBusy(false) }
@@ -531,7 +533,7 @@ function App() {
 
   async function refreshMemories(contextID: string) {
     const items = (await StatusService.ListMemories(contextID)) ?? []
-    if (activeAgentID.current === contextID) setMemories(items)
+    if (activeContextID.current === contextID) setMemories(items)
   }
 
   async function addMemory(event: React.FormEvent<HTMLFormElement>) {
@@ -539,8 +541,8 @@ function App() {
     if (!memoryDraft.trim()) return
     setMemoryBusy(true)
     try {
-      await StatusService.AddMemory(agentID, memoryDraft)
-      await refreshMemories(agentID)
+      await StatusService.AddMemory(contextID, memoryDraft)
+      await refreshMemories(contextID)
       setMemoryDraft('')
       setMemoryError('')
     } catch (reason) { setMemoryError(String(reason)) } finally { setMemoryBusy(false) }
@@ -550,8 +552,8 @@ function App() {
     if (!memoryEdit || !memoryEdit.content.trim()) return
     setMemoryBusy(true)
     try {
-      await StatusService.UpdateMemory(agentID, memoryEdit.id, memoryEdit.content)
-      await refreshMemories(agentID)
+      await StatusService.UpdateMemory(contextID, memoryEdit.id, memoryEdit.content)
+      await refreshMemories(contextID)
       setMemoryEdit(null)
       setMemoryError('')
     } catch (reason) { setMemoryError(String(reason)) } finally { setMemoryBusy(false) }
@@ -561,20 +563,20 @@ function App() {
     if (!window.confirm('删除这条记忆？删除后不可恢复。')) return
     setMemoryBusy(true)
     try {
-      await StatusService.DeleteMemory(agentID, id)
-      await refreshMemories(agentID)
+      await StatusService.DeleteMemory(contextID, id)
+      await refreshMemories(contextID)
       setMemoryError('')
     } catch (reason) { setMemoryError(String(reason)) } finally { setMemoryBusy(false) }
   }
 
   async function exportMemory() {
     try {
-      const markdown = await StatusService.ExportMemories(agentID)
+      const markdown = await StatusService.ExportMemories(contextID)
       const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const anchor = document.createElement('a')
       anchor.href = url
-      anchor.download = `icepick-memory-${agentID}.md`
+      anchor.download = `icepick-memory-${contextID}.md`
       anchor.click()
       URL.revokeObjectURL(url)
       setMemoryError('')
@@ -584,7 +586,7 @@ function App() {
   async function clearPlan() {
     if (!selected) return
     try {
-      await StatusService.ClearSessionPlan(agentID, selected)
+      await StatusService.ClearSessionPlan(selected)
       setSessionPlan(null)
       setTaskError('')
     } catch (reason) { setTaskError(String(reason)) }
@@ -598,12 +600,12 @@ function App() {
     }
     try {
       const sessionID = activeSessionID.current
-      const [items, graph, reviewItems] = await Promise.all([StatusService.ListChildRuns(agentID, latestRunID), StatusService.GetTaskGraph(agentID, latestRunID).catch(() => null), StatusService.ListTaskReviews(agentID, latestRunID).catch(() => [])])
-      if (activeAgentID.current === agentID && activeSessionID.current === sessionID) { setChildRuns(items ?? []); setTaskGraph(graph); setReviews(reviewItems ?? []) }
+      const [items, graph, reviewItems] = await Promise.all([StatusService.ListChildRuns(latestRunID), StatusService.GetTaskGraph(latestRunID).catch(() => null), StatusService.ListTaskReviews(latestRunID).catch(() => [])])
+      if (activeContextID.current === contextID && activeSessionID.current === sessionID) { setChildRuns(items ?? []); setTaskGraph(graph); setReviews(reviewItems ?? []) }
     } catch { setChildRuns([]) }
   }
 
-  // A delegated subtask lives in a hidden session of the target Agent; the
+  // A delegated subtask lives in a hidden session of the root context; the
   // task tree jumps there so its transcript and approvals become visible.
   async function openChildSession(child: Run) {
     try {
@@ -666,7 +668,7 @@ function App() {
       setTaskError('')
       setRuns((current) => [run, ...current])
       setActiveRun(run.id)
-      const history = await StatusService.ListMessages(agentID, selected)
+      const history = await StatusService.ListMessages(selected)
       setMessages(history ?? [])
     } catch (reason) {
       setTaskError(String(reason))
@@ -678,21 +680,21 @@ function App() {
   async function cancelTask() {
     if (!activeRun) return
     try {
-      await StatusService.CancelTask(agentID, activeRun)
+      await StatusService.CancelTask(activeRun)
       setTaskError('')
     } catch (reason) {
       setTaskError(String(reason))
     }
   }
 
-  function updatePolicy(patch: Partial<AgentPolicy>) {
-    if (!agentDraft) return
-    setAgentDraft({ ...agentDraft, policy: { ...agentDraft.policy, ...patch } })
+  function updatePolicy(patch: Partial<ContextPolicy>) {
+    if (!contextDraft) return
+    setContextDraft({ ...contextDraft, policy: { ...contextDraft.policy, ...patch } })
   }
 
-  function updatePermissions(patch: Partial<AgentPolicy['permissions']>) {
-    if (!agentDraft) return
-    setAgentDraft({ ...agentDraft, policy: { ...agentDraft.policy, permissions: { ...agentDraft.policy.permissions, ...patch } } })
+  function updatePermissions(patch: Partial<ContextPolicy['permissions']>) {
+    if (!contextDraft) return
+    setContextDraft({ ...contextDraft, policy: { ...contextDraft.policy, permissions: { ...contextDraft.policy.permissions, ...patch } } })
   }
 
 
@@ -710,7 +712,7 @@ function App() {
         <button className="new-session" onClick={createSession} disabled={creating || !profileEditID || !status?.storageReady}>＋ 使用所选 Profile 开始对话</button>
         {selected && activeConversation?.kind !== 'delegation' && <label className="checkbox-label"><input type="checkbox" checked={reuseContext} onChange={event => setReuseContext(event.target.checked)} />新对话沿用当前记忆与权限</label>}
         {sessions.map((session) => (
-          <button key={session.id} className={`sidebar-item session-item ${selected === session.id ? 'selected' : ''}`} onClick={() => openConversation(session)}>{session.title}<span className="agent-profile-hint"> · {session.profileName}{session.profileArchived ? '（已删除）' : ''}</span></button>
+          <button key={session.id} className={`sidebar-item session-item ${selected === session.id ? 'selected' : ''}`} onClick={() => openConversation(session)}>{session.title}<span className="context-profile-hint"> · {session.profileName}{session.profileArchived ? '（已删除）' : ''}</span></button>
         ))}
         <div className="sidebar-label sessions-label">MCP 服务</div>
         {mcpServers.map((server) => (
@@ -719,11 +721,11 @@ function App() {
           </div>
         ))}
         <div className="sidebar-spacer" />
-        <div className="sidebar-foot">本地桌面 Agent</div>
+        <div className="sidebar-foot">本地 Agent 宿主</div>
       </aside>
 
       <main className="content">
-        <div className="eyebrow">LOCAL AGENT / DESKTOP</div>
+        <div className="eyebrow">AGENT HARNESS / DESKTOP</div>
         <h1>{activeConversation?.title ?? 'ICEPick'}</h1>
         <p className="intro">选择 Profile 开始对话，或从场景模板创建自己的配置。新对话默认隔离历史、记忆与权限。</p>
 
@@ -734,7 +736,7 @@ function App() {
           ) : status ? (
             <>
               <div className="status-row"><span>本地存储</span><strong className={status.storageReady ? 'ok' : ''}>{status.storageReady ? '已就绪' : '异常'}</strong></div>
-              <div className="status-row"><span>任务执行</span><strong className={status.agentReady ? 'ok' : ''}>{status.agentReady ? '已就绪' : '请配置模型'}</strong></div>
+              <div className="status-row"><span>任务执行</span><strong className={status.runtimeReady ? 'ok' : ''}>{status.runtimeReady ? '已就绪' : '请配置模型'}</strong></div>
               <div className="status-row"><span>模型服务</span><strong className={status.modelConnected ? 'ok' : ''}>{status.modelConnected ? '已连接' : '未连接'}</strong></div>
               <p className="hint">{status.message}</p>
             </>
@@ -894,22 +896,22 @@ function App() {
           {activeConversation.profileArchived && <p className="error">原 Profile 已删除；历史可继续查看，启动新任务前请选择可用配置。</p>}
         </section>}
 
-        {agentDraft && selected && <details className="session-card agent-config">
+        {contextDraft && selected && <details className="session-card context-config">
           <summary className="card-title">此对话的本机权限与记忆授权</summary>
-          <form className="model-form" onSubmit={saveAgent}>
-            <label>审批模式<select value={agentDraft.policy.approvalMode} onChange={event => updatePolicy({ approvalMode: event.target.value })}>
+          <form className="model-form" onSubmit={saveContext}>
+            <label>审批模式<select value={contextDraft.policy.approvalMode} onChange={event => updatePolicy({ approvalMode: event.target.value })}>
               <option value="manual">全人工</option><option value="semi">半自动</option><option value="automatic">全自动</option>
             </select></label>
-            <label className="checkbox-label"><input type="checkbox" checked={agentDraft.policy.permissions.unrestricted} onChange={event => updatePermissions({ unrestricted: event.target.checked })} />允许一般资源范围不限（敏感访问与外发仍单独检查）</label>
-            <label className="checkbox-label"><input type="checkbox" checked={agentDraft.policy.memory} onChange={event => updatePolicy({ memory: event.target.checked })} />允许长期记忆（Profile 也须开启）</label>
-            {!agentDraft.policy.permissions.unrestricted && <>
-              <label>允许的工作区路径（每行一个）<textarea rows={2} value={(agentDraft.policy.permissions.workspacePaths ?? []).join('\n')} onChange={event => updatePermissions({ workspacePaths: event.target.value.split('\n').map(path => path.trim()).filter(Boolean) })} /></label>
-              <label>允许的可执行文件（每行一个精确名称或绝对路径）<textarea rows={2} value={(agentDraft.policy.permissions.commands ?? []).join('\n')} onChange={event => updatePermissions({ commands: event.target.value.split('\n').map(cmd => cmd.trim()).filter(Boolean) })} /></label>
-              <label>允许的网络目标（每行一个）<textarea rows={2} value={(agentDraft.policy.permissions.networkHosts ?? []).join('\n')} onChange={event => updatePermissions({ networkHosts: event.target.value.split('\n').map(host => host.trim()).filter(Boolean) })} /></label>
+            <label className="checkbox-label"><input type="checkbox" checked={contextDraft.policy.permissions.unrestricted} onChange={event => updatePermissions({ unrestricted: event.target.checked })} />允许一般资源范围不限（敏感访问与外发仍单独检查）</label>
+            <label className="checkbox-label"><input type="checkbox" checked={contextDraft.policy.memory} onChange={event => updatePolicy({ memory: event.target.checked })} />允许长期记忆（Profile 也须开启）</label>
+            {!contextDraft.policy.permissions.unrestricted && <>
+              <label>允许的工作区路径（每行一个）<textarea rows={2} value={(contextDraft.policy.permissions.workspacePaths ?? []).join('\n')} onChange={event => updatePermissions({ workspacePaths: event.target.value.split('\n').map(path => path.trim()).filter(Boolean) })} /></label>
+              <label>允许的可执行文件（每行一个精确名称或绝对路径）<textarea rows={2} value={(contextDraft.policy.permissions.commands ?? []).join('\n')} onChange={event => updatePermissions({ commands: event.target.value.split('\n').map(cmd => cmd.trim()).filter(Boolean) })} /></label>
+              <label>允许的网络目标（每行一个）<textarea rows={2} value={(contextDraft.policy.permissions.networkHosts ?? []).join('\n')} onChange={event => updatePermissions({ networkHosts: event.target.value.split('\n').map(host => host.trim()).filter(Boolean) })} /></label>
             </>}
-            <button type="submit" disabled={agentBusy}>保存本机权限</button>
+            <button type="submit" disabled={contextBusy}>保存本机权限</button>
           </form>
-          {agentError && <p className="error">{agentError}</p>}
+          {contextError && <p className="error">{contextError}</p>}
           <p className="hint">这些授权保存在本机，不进入 Profile 分享包。显式沿用记忆与权限的对话共享此处设置。</p>
         </details>}
 
@@ -1009,7 +1011,7 @@ function App() {
             <div className="model-actions"><button type="submit" disabled={profileBusy}>保存 Profile</button></div>
           </form>
           {profileError && <p className="error">{profileError}</p>}
-          <p className="hint">Profile 可复制分享；保存以新修订原子发布，仅影响后续任务。分享包只承载配置与 Skills 文件，不含授权、会话、记忆、密钥或本机委派目标。</p>
+          <p className="hint">Profile 可复制分享；保存以新修订原子发布，仅影响后续任务。分享包只承载配置与 Skills 文件，不含授权、会话、记忆或密钥。</p>
         </section>}
 
         {importPreview && <section className="session-card">

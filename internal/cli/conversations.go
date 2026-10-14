@@ -154,7 +154,7 @@ func cmdConversations(client *ipc.Client, args []string) int {
 		}
 		if args[0] == "show" {
 			var messages []storage.Message
-			if err := client.Call("sessions.messages", map[string]any{"agentId": c.ContextID, "sessionId": c.ID}, &messages); err != nil {
+			if err := client.Call("sessions.messages", map[string]any{"sessionId": c.ID}, &messages); err != nil {
 				return fail("读取对话", err)
 			}
 			fmt.Printf("%s（%s）\n", c.Title, c.ProfileName)
@@ -178,7 +178,7 @@ func cmdConversations(client *ipc.Client, args []string) int {
 		if interactiveTerminal() {
 			prompt = terminalPrompter()
 		}
-		return waitTask(client, c.ContextID, c.ID, run.ID, prompt, os.Stdout)
+		return waitTask(client, c.ID, run.ID, prompt, os.Stdout)
 	default:
 		return usage("未知 conversations 子命令")
 	}

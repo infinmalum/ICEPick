@@ -8,29 +8,34 @@ import (
 	"icepick/internal/mcptools"
 	"icepick/internal/model"
 	"icepick/internal/storage"
+	"icepick/internal/testfixture"
 	"testing"
 )
 
 func TestRunGateUsesSnapshotButLivePolicy(t *testing.T) {
 	svc, store := newTestService(t, &scriptModel{}, &scriptTools{})
 	ctx := context.Background()
-	snap, err := store.ResolvedAgentProfile(ctx, storage.DefaultAgentID)
+	session, err := svc.CreateSession()
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := toolGate{svc: svc, agentID: snap.AgentID, snapshot: &snap}
+	snap, err := store.ResolveRunProfile(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := toolGate{svc: svc, contextID: snap.ContextID, snapshot: &snap}
 	blank, err := store.CreateProfile(ctx, "blank", storage.BlankProfile())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.SwitchAgentProfile(snap.AgentID, blank.ID); err != nil {
+	if _, err := svc.SelectConversationProfile(session.ID, blank.ID); err != nil {
 		t.Fatal(err)
 	}
 	req := agent.ToolRequest{Tool: "local__current_time", Arguments: "{}"}
 	if d := g.Gate(ctx, req); d.Deny != "" || d.Confirm != "" {
 		t.Fatalf("switch altered in-flight capabilities: %+v", d)
 	}
-	setAgentPolicy(t, svc, snap.AgentID, func(p *storage.AgentPolicy) { p.ApprovalMode = "manual"; p.Permissions.Unrestricted = false })
+	setContextPolicy(t, svc, snap.ContextID, func(p *storage.ContextPolicy) { p.ApprovalMode = "manual"; p.Permissions.Unrestricted = false })
 	if d := g.Gate(ctx, req); d.Confirm == "" {
 		t.Fatal("live approval tightening ignored")
 	}
@@ -39,7 +44,7 @@ func TestRunGateUsesSnapshotButLivePolicy(t *testing.T) {
 	}
 	// Existing restrictive grants must not expand when the live policy expands.
 	snap.Policy.Permissions = storage.PermissionScope{}
-	setAgentPolicy(t, svc, snap.AgentID, func(p *storage.AgentPolicy) { p.Permissions.Unrestricted = true })
+	setContextPolicy(t, svc, snap.ContextID, func(p *storage.ContextPolicy) { p.Permissions.Unrestricted = true })
 	if d := g.Recheck(ctx, agent.ToolRequest{Tool: "local__read_file", Arguments: `{"path":"/etc/passwd"}`}); d.Deny == "" {
 		t.Fatal("live relaxation expanded old Run")
 	}
@@ -53,20 +58,20 @@ func TestTransportFailureBlocksFurtherRuns(t *testing.T) {
 	}}
 	svc, _ := newTestService(t, toolCallScript(t, extToolCall("send", "remote__send", "{}"), "", "must not continue"), tools)
 	session, _ := svc.CreateSession()
-	run, err := svc.StartTask(session.ID, "send")
+	run, err := svc.StartConversationTask(session.ID, "send")
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := waitForCallState(t, svc, storage.DefaultAgentID, session.ID, storage.CallPending)
-	if _, err = svc.ApproveToolCall(storage.DefaultAgentID, call.ID); err != nil {
+	call := waitForCallState(t, svc, session.ID, storage.CallPending)
+	if _, err = svc.ApproveToolCall(call.ID); err != nil {
 		t.Fatal(err)
 	}
 	svc.WaitIdle()
-	list, err := svc.ListToolCalls(storage.DefaultAgentID, session.ID)
-	if err != nil || len(list) != 2 || list[1].State != storage.CallExecutionUnknow {
+	list, err := svc.ListToolCalls(session.ID)
+	if err != nil || len(list) != 2 || list[1].State != storage.CallExecutionUnknown {
 		t.Fatalf("outcome: %+v %v", list, err)
 	}
-	if _, err = svc.StartTask(session.ID, "retry"); err == nil {
+	if _, err = svc.StartConversationTask(session.ID, "retry"); err == nil {
 		t.Fatal("unknown outcome allowed another Run")
 	}
 	if calls != 1 {
@@ -75,31 +80,31 @@ func TestTransportFailureBlocksFurtherRuns(t *testing.T) {
 	_ = run
 }
 
-func TestExfilAgentIsolationAndPayload(t *testing.T) {
+func TestExfilContextIsolationAndPayload(t *testing.T) {
 	svc, store := newTestService(t, &scriptModel{}, &scriptTools{})
 	ctx := context.Background()
-	other, err := svc.CreateAgent("other", storage.DefaultProfileID)
+	other, err := testfixture.Context(svc.store, context.Background(), "other", storage.DefaultProfileID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	session, _ := svc.CreateSession()
-	otherSession, _ := svc.CreateAgentSession(other.ID)
+	otherSession, _ := svc.createContextSession(other.ID)
 	remote := config.Model{Provider: "openai", BaseURL: "https://example.com/v1", Name: "test"}
-	if _, err := svc.GrantExfil(storage.DefaultAgentID, remote.BaseURL, []string{storage.ScopePersonal}); err != nil {
+	if _, err := svc.GrantExfil(testfixture.ContextID, remote.BaseURL, []string{storage.ScopePersonal}); err != nil {
 		t.Fatal(err)
 	}
 	prompt := []model.Message{{Role: "system", Content: "private custom persona"}}
-	if err := svc.checkPayload(ctx, remote, storage.DefaultAgentID, session.ID, prompt, nil); err != nil {
+	if err := svc.checkPayload(ctx, remote, testfixture.ContextID, session.ID, prompt, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.checkPayload(ctx, remote, other.ID, otherSession.ID, prompt, nil); err == nil {
 		t.Fatal("another Agent inherited grant")
 	}
-	if err := svc.checkPayload(ctx, remote, storage.DefaultAgentID, session.ID, prompt, extToolDef("remote__private_schema")); err == nil {
+	if err := svc.checkPayload(ctx, remote, testfixture.ContextID, session.ID, prompt, extToolDef("remote__private_schema")); err == nil {
 		t.Fatal("untrusted schema escaped")
 	}
 	prompt = append(prompt, model.Message{Role: "assistant", ToolCalls: []model.ToolCall{extToolCall("c", "local__read_file", `{"path":"secret"}`)}})
-	if err := svc.checkPayload(ctx, remote, storage.DefaultAgentID, session.ID, prompt, nil); err == nil {
+	if err := svc.checkPayload(ctx, remote, testfixture.ContextID, session.ID, prompt, nil); err == nil {
 		t.Fatal("unclassified arguments escaped")
 	}
 	run, _, _ := store.CreateRun(ctx, session.ID)
@@ -110,14 +115,14 @@ func TestExfilAgentIsolationAndPayload(t *testing.T) {
 	if err := store.FinishToolCall(ctx, calls[0].ID, storage.CallFailed, "", "sensitive error", storage.ScopeCredential); err != nil {
 		t.Fatal(err)
 	}
-	snap, _ := store.ResolvedAgentProfile(ctx, storage.DefaultAgentID)
+	snap, _ := testfixture.Profile(store, ctx, testfixture.ContextID)
 	if err := svc.exfilCheck(ctx, session.ID, remote, snap); err == nil {
 		t.Fatal("failed tool data escaped")
 	}
-	if err := svc.RevokeExfil(storage.DefaultAgentID, remote.BaseURL); err != nil {
+	if err := svc.RevokeExfil(testfixture.ContextID, remote.BaseURL); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.checkPayload(ctx, remote, storage.DefaultAgentID, session.ID, prompt, nil); err == nil {
+	if err := svc.checkPayload(ctx, remote, testfixture.ContextID, session.ID, prompt, nil); err == nil {
 		t.Fatal("revocation ignored")
 	}
 }
@@ -128,25 +133,25 @@ func TestLocalContextRestrictionsSurviveProfileSwitch(t *testing.T) {
 	ctx := context.Background()
 	local := config.Model{Provider: "ollama", BaseURL: "http://127.0.0.1:11434/v1"}
 	remote := config.Model{Provider: "openai", BaseURL: "https://example.com/v1"}
-	if err := svc.checkPayload(ctx, local, storage.DefaultAgentID, session.ID, nil, extToolDef("external__private")); err != nil {
+	if err := svc.checkPayload(ctx, local, testfixture.ContextID, session.ID, nil, extToolDef("external__private")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.GrantExfil(storage.DefaultAgentID, remote.BaseURL, []string{storage.ScopePersonal}); err != nil {
+	if _, err := svc.GrantExfil(testfixture.ContextID, remote.BaseURL, []string{storage.ScopePersonal}); err != nil {
 		t.Fatal(err)
 	}
 	p, err := store.CreateProfile(ctx, "new", storage.BlankProfile())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.SwitchAgentProfile(storage.DefaultAgentID, p.ID); err != nil {
+	if _, err := svc.SelectConversationProfile(session.ID, p.ID); err != nil {
 		t.Fatal(err)
 	}
-	snap, _ := store.ResolvedAgentProfile(ctx, storage.DefaultAgentID)
+	snap, _ := testfixture.Profile(store, ctx, testfixture.ContextID)
 	if err := svc.exfilCheck(ctx, session.ID, remote, snap); err == nil {
 		t.Fatal("switch discarded prior unknown input")
 	}
-	initial := storage.ExfilGrant{AgentID: storage.DefaultAgentID, Scopes: []string{storage.ScopePersonal}}
-	if _, err := svc.GrantExfil(storage.DefaultAgentID, remote.BaseURL, []string{storage.ScopePersonal, storage.ScopeUnknown}); err != nil {
+	initial := storage.ExfilGrant{ContextID: testfixture.ContextID, Scopes: []string{storage.ScopePersonal}}
+	if _, err := svc.GrantExfil(testfixture.ContextID, remote.BaseURL, []string{storage.ScopePersonal, storage.ScopeUnknown}); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.exfilCheck(ctx, session.ID, remote, snap); err != nil {

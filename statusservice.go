@@ -10,7 +10,7 @@ import (
 
 // StatusService is the Wails binding surface. It owns no run state: every
 // method delegates to the UI-agnostic app service so the CLI/IPC client
-// (P3c) drives the exact same code path.
+// drives the exact same code path.
 type StatusService struct{ svc *app.Service }
 
 type AppStatus = app.AppStatus
@@ -53,45 +53,45 @@ func (s *StatusService) DeleteProfile(id string) error {
 // ListMessages returns the display projection of a session: persisted
 // messages plus one synthetic entry per tool call so the transcript shows
 // tool activity without storing free-form tool rows again.
-func (s *StatusService) ListMessages(agentID, sessionID string) ([]storage.Message, error) {
-	return s.svc.ListMessages(agentID, sessionID)
+func (s *StatusService) ListMessages(sessionID string) ([]storage.Message, error) {
+	return s.svc.ListMessages(sessionID)
 }
 
-func (s *StatusService) ListToolCalls(agentID, sessionID string) ([]storage.ToolCall, error) {
-	return s.svc.ListToolCalls(agentID, sessionID)
+func (s *StatusService) ListToolCalls(sessionID string) ([]storage.ToolCall, error) {
+	return s.svc.ListToolCalls(sessionID)
 }
 
 // ResolveToolCall records a user disposition for a result-unknown call.
-func (s *StatusService) ResolveToolCall(agentID, callID, state, result, note string) (storage.ToolCall, error) {
-	return s.svc.ResolveToolCall(agentID, callID, state, result, note)
+func (s *StatusService) ResolveToolCall(callID, state, result, note string) (storage.ToolCall, error) {
+	return s.svc.ResolveToolCall(callID, state, result, note)
 }
 
 // ApproveToolCall grants one pending tool call; the approval binds to that
 // exact call and its arguments.
-func (s *StatusService) ApproveToolCall(agentID, callID string) (storage.ToolCall, error) {
-	return s.svc.ApproveToolCall(agentID, callID)
+func (s *StatusService) ApproveToolCall(callID string) (storage.ToolCall, error) {
+	return s.svc.ApproveToolCall(callID)
 }
 
 // DenyToolCall refuses one pending tool call; the denial is returned to the
 // model as a tool error.
-func (s *StatusService) DenyToolCall(agentID, callID, note string) (storage.ToolCall, error) {
-	return s.svc.DenyToolCall(agentID, callID, note)
+func (s *StatusService) DenyToolCall(callID, note string) (storage.ToolCall, error) {
+	return s.svc.DenyToolCall(callID, note)
 }
 
 // ListExfilGrants shows the destinations data may be sent to and the scopes
 // each grant covers.
-func (s *StatusService) ListExfilGrants(agentID string) ([]storage.ExfilGrant, error) {
-	return s.svc.ListExfilGrants(agentID)
+func (s *StatusService) ListExfilGrants(contextID string) ([]storage.ExfilGrant, error) {
+	return s.svc.ListExfilGrants(contextID)
 }
 
 // GrantExfil authorizes sending the listed data scopes to one endpoint.
-func (s *StatusService) GrantExfil(agentID, destination string, scopes []string) (storage.ExfilGrant, error) {
-	return s.svc.GrantExfil(agentID, destination, scopes)
+func (s *StatusService) GrantExfil(contextID, destination string, scopes []string) (storage.ExfilGrant, error) {
+	return s.svc.GrantExfil(contextID, destination, scopes)
 }
 
 // RevokeExfil removes the authorization for one destination.
-func (s *StatusService) RevokeExfil(agentID, destination string) error {
-	return s.svc.RevokeExfil(agentID, destination)
+func (s *StatusService) RevokeExfil(contextID, destination string) error {
+	return s.svc.RevokeExfil(contextID, destination)
 }
 
 // SaveCredential stores one remote provider's API key in the protected data
@@ -112,51 +112,51 @@ func (s *StatusService) ListCredentialStatus() ([]app.CredentialStatus, error) {
 
 // PendingStreamText returns the streamed-but-uncommitted assistant text of a
 // run, so a reconnecting client can pick the live transcript back up.
-func (s *StatusService) PendingStreamText(agentID, runID string) (string, error) {
-	return s.svc.PendingStreamText(agentID, runID)
+func (s *StatusService) PendingStreamText(runID string) (string, error) {
+	return s.svc.PendingStreamText(runID)
 }
 
-// ListMemories returns one agent's long-term memories, newest first.
-func (s *StatusService) ListMemories(agentID string) ([]storage.Memory, error) {
-	return s.svc.ListMemories(agentID)
+// ListMemories returns one context's long-term memories, newest first.
+func (s *StatusService) ListMemories(contextID string) ([]storage.Memory, error) {
+	return s.svc.ListMemories(contextID)
 }
 
 // AddMemory records a user-authored memory for the agent.
-func (s *StatusService) AddMemory(agentID, content string) (storage.Memory, error) {
-	return s.svc.AddMemory(agentID, content)
+func (s *StatusService) AddMemory(contextID, content string) (storage.Memory, error) {
+	return s.svc.AddMemory(contextID, content)
 }
 
 // UpdateMemory edits the content of one memory.
-func (s *StatusService) UpdateMemory(agentID, id, content string) (storage.Memory, error) {
-	return s.svc.UpdateMemory(agentID, id, content)
+func (s *StatusService) UpdateMemory(contextID, id, content string) (storage.Memory, error) {
+	return s.svc.UpdateMemory(contextID, id, content)
 }
 
 // DeleteMemory removes one memory after the user's explicit decision.
-func (s *StatusService) DeleteMemory(agentID, id string) error {
-	return s.svc.DeleteMemory(agentID, id)
+func (s *StatusService) DeleteMemory(contextID, id string) error {
+	return s.svc.DeleteMemory(contextID, id)
 }
 
-// ExportMemories renders the agent's memory as a portable markdown document
+// ExportMemories renders the context's memory as a portable markdown document
 // that keeps the source and scope annotations.
-func (s *StatusService) ExportMemories(agentID string) (string, error) {
-	return s.svc.ExportMemories(agentID)
+func (s *StatusService) ExportMemories(contextID string) (string, error) {
+	return s.svc.ExportMemories(contextID)
 }
 
 // GetSessionSummary returns the session's compaction summary with its
 // covered range and scope; an absent summary is an error.
-func (s *StatusService) GetSessionSummary(agentID, sessionID string) (storage.SessionSummary, error) {
-	return s.svc.GetSessionSummary(agentID, sessionID)
+func (s *StatusService) GetSessionSummary(sessionID string) (storage.SessionSummary, error) {
+	return s.svc.GetSessionSummary(sessionID)
 }
 
 // GetSessionPlan returns the session's resumable plan with parsed steps.
-func (s *StatusService) GetSessionPlan(agentID, sessionID string) (app.SessionPlanView, error) {
-	return s.svc.GetSessionPlan(agentID, sessionID)
+func (s *StatusService) GetSessionPlan(sessionID string) (app.SessionPlanView, error) {
+	return s.svc.GetSessionPlan(sessionID)
 }
 
 // ClearSessionPlan removes the session's plan; it never touches approvals,
 // permissions or history.
-func (s *StatusService) ClearSessionPlan(agentID, sessionID string) error {
-	return s.svc.ClearSessionPlan(agentID, sessionID)
+func (s *StatusService) ClearSessionPlan(sessionID string) error {
+	return s.svc.ClearSessionPlan(sessionID)
 }
 
 // ListMCPEndpoints shows each attached MCP server's source, process command,
@@ -167,24 +167,24 @@ func (s *StatusService) ListMCPEndpoints() ([]app.MCPEndpointStatus, error) {
 }
 
 // ListRuns returns the runs of one session, newest first.
-func (s *StatusService) ListRuns(agentID, sessionID string) ([]storage.Run, error) {
-	return s.svc.ListRuns(agentID, sessionID)
+func (s *StatusService) ListRuns(sessionID string) ([]storage.Run, error) {
+	return s.svc.ListRuns(sessionID)
 }
 
-func (s *StatusService) GetRun(agentID, id string) (storage.Run, error) {
-	return s.svc.GetRun(agentID, id)
+func (s *StatusService) GetRun(id string) (storage.Run, error) {
+	return s.svc.GetRun(id)
 }
 
 // ListChildRuns returns the delegated subtask runs of one run for the task
-// tree; children belong to the target Agent.
-func (s *StatusService) ListChildRuns(agentID, runID string) ([]storage.Run, error) {
-	return s.svc.ListChildRuns(agentID, runID)
+// tree; all components share the root Context.
+func (s *StatusService) ListChildRuns(runID string) ([]storage.Run, error) {
+	return s.svc.ListChildRuns(runID)
 }
 
-// PendingApprovals sweeps every session of the agent — normal and hidden
+// PendingApprovals sweeps every session of the context — normal and hidden
 // delegation sessions — for calls needing user action.
-func (s *StatusService) PendingApprovals(agentID string) ([]storage.ToolCall, error) {
-	return s.svc.PendingApprovals(agentID)
+func (s *StatusService) PendingApprovals(contextID string) ([]storage.ToolCall, error) {
+	return s.svc.PendingApprovals(contextID)
 }
 
 // ExportProfile bundles one profile into a zip share package (base64).
@@ -206,7 +206,7 @@ func (s *StatusService) PreviewProfileImport(dataBase64 string) (app.ImportPrevi
 }
 
 // ImportProfile creates a new profile from a share package (base64). It
-// never creates or switches agents, never installs resources and never
+// never creates or switches contexts, never installs resources and never
 // grants authorization.
 func (s *StatusService) ImportProfile(dataBase64 string) (app.ImportResult, error) {
 	raw, err := base64.StdEncoding.DecodeString(dataBase64)
@@ -220,6 +220,6 @@ func (s *StatusService) ImportProfile(dataBase64 string) (app.ImportResult, erro
 	return app.ImportResult{Profile: profile, Preview: preview}, nil
 }
 
-func (s *StatusService) CancelTask(agentID, id string) error {
-	return s.svc.CancelTask(agentID, id)
+func (s *StatusService) CancelTask(id string) error {
+	return s.svc.CancelTask(id)
 }

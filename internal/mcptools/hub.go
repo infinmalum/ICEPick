@@ -62,7 +62,7 @@ func NewLocal(ctx context.Context, catalog *skills.Catalog) (*Hub, error) {
 	mcp.AddTool(server, &mcp.Tool{Name: "current_time", Description: "读取本机当前时间（含时区）"}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: time.Now().Format(time.RFC3339)}}}, nil, ctx.Err()
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "read_file", Description: "读取本机文本文件内容；受 Agent 权限与审批约束"}, func(ctx context.Context, _ *mcp.CallToolRequest, args struct {
+	mcp.AddTool(server, &mcp.Tool{Name: "read_file", Description: "读取本机文本文件内容；受本机上下文权限与审批约束"}, func(ctx context.Context, _ *mcp.CallToolRequest, args struct {
 		Path string `json:"path"`
 	}) (*mcp.CallToolResult, any, error) {
 		content, err := readLocalFile(ctx, args.Path)

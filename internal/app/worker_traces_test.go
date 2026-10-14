@@ -34,8 +34,8 @@ func TestWorkerTracePagingAccumulatesSensitivity(t *testing.T) {
 	if _, err = store.SetTaskGraph(ctx, root.ID, 0, specs); err != nil {
 		t.Fatal(err)
 	}
-	create := func(spec storage.TaskSpec) (storage.Run, storage.AgentProfile) {
-		session, e := store.CreateDelegationSession(ctx, c.ContextID, spec.ID)
+	create := func(spec storage.TaskSpec) (storage.Run, storage.RunProfile) {
+		session, e := store.CreateDelegationSession(ctx, c.ContextID, storage.DefaultProfileID, spec.ID)
 		if e != nil {
 			t.Fatal(e)
 		}

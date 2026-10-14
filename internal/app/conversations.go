@@ -41,18 +41,11 @@ func (s *Service) GetLocalContext(id string) (storage.LocalContext, error) {
 	return s.store.GetLocalContext(context.Background(), id)
 }
 
-func (s *Service) UpdateContextPolicy(id string, policy storage.AgentPolicy) (storage.LocalContext, error) {
+func (s *Service) UpdateContextPolicy(id string, policy storage.ContextPolicy) (storage.LocalContext, error) {
 	if err := s.checkReady(); err != nil {
 		return storage.LocalContext{}, err
 	}
-	a, err := s.store.GetAgent(context.Background(), id)
-	if err != nil {
-		return storage.LocalContext{}, err
-	}
-	if _, err = s.store.UpdateAgentLocal(context.Background(), id, a.Name, policy); err != nil {
-		return storage.LocalContext{}, err
-	}
-	return s.GetLocalContext(id)
+	return s.store.UpdateContextPolicy(context.Background(), id, policy)
 }
 
 func (s *Service) ArchiveProfile(id string) error {
@@ -88,12 +81,4 @@ func (s *Service) RestoreTemplateProfile(id string, revision int, groups []strin
 		return storage.Profile{}, err
 	}
 	return s.store.RestoreTemplateProfile(context.Background(), id, revision, groups)
-}
-
-func (s *Service) StartConversationTask(id, input string) (storage.Run, error) {
-	c, err := s.GetConversation(id)
-	if err != nil {
-		return storage.Run{}, err
-	}
-	return s.StartAgentTask(c.ContextID, id, input)
 }

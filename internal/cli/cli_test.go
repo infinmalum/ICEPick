@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"icepick/internal/testfixture"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -58,7 +59,7 @@ func (echoTools) Call(_ context.Context, _, _ string) (string, error) { return "
 
 func newCLIHost(t *testing.T, chat agent.ChatModel, approvalTimeout time.Duration) (*ipc.Client, *app.Service) {
 	t.Helper()
-	store, err := storage.Open(filepath.Join(t.TempDir(), "cli.db"))
+	store, err := testfixture.Open(filepath.Join(t.TempDir(), "cli.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,13 +111,13 @@ func TestWaitTaskNonInteractiveNeverApproves(t *testing.T) {
 	sessionID, runID := startSessionTask(t, client, svc)
 
 	var out bytes.Buffer
-	waitTask(client, storage.DefaultAgentID, sessionID, runID, nil, &out)
+	waitTask(client, sessionID, runID, nil, &out)
 	text := out.String()
 	if !strings.Contains(text, "非交互模式不会自动批准") {
 		t.Fatalf("non-interactive notice missing:\n%s", text)
 	}
 	var calls []storage.ToolCall
-	if err := client.Call("calls.list", map[string]any{"agentId": storage.DefaultAgentID, "sessionId": sessionID}, &calls); err != nil {
+	if err := client.Call("calls.list", map[string]any{"sessionId": sessionID}, &calls); err != nil {
 		t.Fatal(err)
 	}
 	if len(calls) != 2 || calls[1].State != storage.CallCancelled {
@@ -139,7 +140,7 @@ func TestWaitTaskInteractiveApproval(t *testing.T) {
 		return true, ""
 	}
 	var out bytes.Buffer
-	code := waitTask(client, storage.DefaultAgentID, sessionID, runID, prompt, &out)
+	code := waitTask(client, sessionID, runID, prompt, &out)
 	if code != 0 {
 		t.Fatalf("waitTask exit = %d, output:\n%s", code, out.String())
 	}
@@ -147,14 +148,14 @@ func TestWaitTaskInteractiveApproval(t *testing.T) {
 		t.Fatalf("approval missing from output:\n%s", out.String())
 	}
 	var run storage.Run
-	if err := client.Call("runs.get", map[string]any{"agentId": storage.DefaultAgentID, "runId": runID}, &run); err != nil {
+	if err := client.Call("runs.get", map[string]any{"runId": runID}, &run); err != nil {
 		t.Fatal(err)
 	}
 	if run.Status != "completed" {
 		t.Fatalf("run status: %+v", run)
 	}
 	var calls []storage.ToolCall
-	if err := client.Call("calls.list", map[string]any{"agentId": storage.DefaultAgentID, "sessionId": sessionID}, &calls); err != nil {
+	if err := client.Call("calls.list", map[string]any{"sessionId": sessionID}, &calls); err != nil {
 		t.Fatal(err)
 	}
 	if len(calls) != 2 || calls[1].State != storage.CallSucceeded || calls[1].Result != "pong" {
@@ -164,7 +165,7 @@ func TestWaitTaskInteractiveApproval(t *testing.T) {
 
 func reuseDefaultConversation(t *testing.T, svc *app.Service) string {
 	t.Helper()
-	session, err := svc.CreateSession()
+	session, err := svc.CreateConversation(storage.DefaultProfileID, "", "test")
 	if err != nil {
 		t.Fatal(err)
 	}

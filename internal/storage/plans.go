@@ -32,10 +32,10 @@ const (
 )
 
 // SessionPlan is the persisted plan of one session. A session never changes
-// its owning Agent, so the plan belongs to that Agent alone.
+// its owning Context, so the plan belongs to that Context alone.
 type SessionPlan struct {
 	SessionID string `json:"sessionId"`
-	AgentID   string `json:"agentId"`
+	ContextID string `json:"contextId"`
 	Plan      string `json:"plan"` // JSON array of PlanStep
 	UpdatedAt string `json:"updatedAt"`
 	Revision  int    `json:"revision"`
@@ -192,10 +192,10 @@ func (s *Store) CompareAndSetSessionPlan(ctx context.Context, sessionID string, 
 			return err
 		}
 		item = SessionPlan{SessionID: sessionID, Plan: string(payload), UpdatedAt: now(), Revision: current.Revision + 1}
-		if err := tx.QueryRowContext(ctx, `INSERT INTO session_plans(session_id,agent_id,plan,updated_at,revision)
-   SELECT ?,agent_id,?,?,? FROM sessions WHERE id=?
+		if err := tx.QueryRowContext(ctx, `INSERT INTO session_plans(session_id,plan,updated_at,revision)
+   SELECT ?,?,?,? FROM sessions WHERE id=?
    ON CONFLICT(session_id) DO UPDATE SET plan=excluded.plan,updated_at=excluded.updated_at,revision=excluded.revision
-   RETURNING agent_id`, sessionID, item.Plan, item.UpdatedAt, item.Revision, sessionID).Scan(&item.AgentID); err != nil {
+   RETURNING (SELECT context_id FROM sessions WHERE id=session_id)`, sessionID, item.Plan, item.UpdatedAt, item.Revision, sessionID).Scan(&item.ContextID); err != nil {
 			return err
 		}
 		return recordPlanRevision(ctx, tx, item)
@@ -220,7 +220,7 @@ type planReader interface {
 
 func readSessionPlan(ctx context.Context, db planReader, sessionID string) (SessionPlan, bool, error) {
 	item := SessionPlan{SessionID: sessionID, Plan: "[]"}
-	err := db.QueryRowContext(ctx, `SELECT session_id,agent_id,plan,updated_at,revision FROM session_plans WHERE session_id=?`, sessionID).Scan(&item.SessionID, &item.AgentID, &item.Plan, &item.UpdatedAt, &item.Revision)
+	err := db.QueryRowContext(ctx, `SELECT session_id,(SELECT context_id FROM sessions WHERE id=session_plans.session_id),plan,updated_at,revision FROM session_plans WHERE session_id=?`, sessionID).Scan(&item.SessionID, &item.ContextID, &item.Plan, &item.UpdatedAt, &item.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return item, false, nil
 	}

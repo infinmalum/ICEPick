@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"icepick/internal/testfixture"
 	"io"
 	"os"
 	"path/filepath"
@@ -369,7 +370,7 @@ func TestDynamicShareV4PreservesWorkflowPlannerAndBudget(t *testing.T) {
 	if imported.Data.Execution.Workflow != "dynamic" || imported.Data.Execution.Planner.Model.Name != "planner-test" || imported.Data.Execution.Planner.SystemPrompt != "规划约束" || imported.Data.Execution.Budget.MaxModelCalls != 17 || !imported.Data.Execution.Budget.AutoRetry {
 		t.Fatal("dynamic configuration was lost", imported.Data.Execution)
 	}
-	grants, err := svc.ListExfilGrants(storage.DefaultAgentID)
+	grants, err := svc.ListExfilGrants(testfixture.ContextID)
 	if err != nil || len(grants) > 0 {
 		t.Fatal("import activated authorization", grants, err)
 	}

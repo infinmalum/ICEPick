@@ -8,7 +8,7 @@ import (
 
 func reviewStorageFixture(t *testing.T, checks []string) (*Store, Conversation, Run, Run) {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "reviews.db"))
+	s, err := testOpen(filepath.Join(t.TempDir(), "reviews.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func reviewStorageFixture(t *testing.T, checks []string) (*Store, Conversation, 
 	if _, err = s.AddMessage(ctx, c.ID, root.ID, RoleAssistant, "交付"); err != nil {
 		t.Fatal(err)
 	}
-	child, err := s.CreateDelegationSession(ctx, c.ContextID, "reviewer")
+	child, err := s.CreateDelegationSession(ctx, c.ContextID, DefaultProfileID, "reviewer")
 	if err != nil {
 		t.Fatal(err)
 	}

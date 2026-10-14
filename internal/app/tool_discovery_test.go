@@ -9,6 +9,7 @@ import (
 	"icepick/internal/mcptools"
 	"icepick/internal/model"
 	"icepick/internal/storage"
+	"icepick/internal/testfixture"
 	"os"
 	"strings"
 	"testing"
@@ -26,7 +27,7 @@ func discoveryFixture(t *testing.T) (*Service, *discoveryTools, *scriptTools) {
 		tools.defs = append(tools.defs, d)
 	}
 	s, _ := newTestService(t, &scriptModel{}, tools)
-	p, err := s.store.ResolvedAgentProfile(context.Background(), storage.DefaultAgentID)
+	p, err := testfixture.Profile(s.store, context.Background(), testfixture.ContextID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,15 +131,15 @@ func (m *discoveryMock) Chat(_ context.Context, _ config.Model, messages []model
 func TestToolDiscoveryModelLoopLoadsAndExecutes(t *testing.T) {
 	s, _, tools := discoveryFixture(t)
 	s.chat = &discoveryMock{}
-	a, err := s.store.GetAgent(context.Background(), storage.DefaultAgentID)
+	a, err := s.store.GetLocalContext(context.Background(), testfixture.ContextID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	a.Policy.ApprovalMode = "semi"
-	if _, err = s.UpdateAgent(a.ID, a.Name, a.Policy); err != nil {
+	if _, err = s.UpdateContextPolicy(a.ID, a.Policy); err != nil {
 		t.Fatal(err)
 	}
-	p, err := s.GetProfile(a.ProfileID)
+	p, err := s.GetProfile(storage.DefaultProfileID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,26 +147,26 @@ func TestToolDiscoveryModelLoopLoadsAndExecutes(t *testing.T) {
 	if _, err = s.UpdateProfile(p); err != nil {
 		t.Fatal(err)
 	}
-	session, err := s.CreateAgentSession(a.ID)
+	session, err := s.createContextSession(a.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := s.StartAgentTask(a.ID, session.ID, "发现 task042 工具后执行")
+	r, err := s.StartConversationTask(session.ID, "发现 task042 工具后执行")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// External tools still require the existing approval channel.
 	for i := 0; i < 300; i++ {
-		calls, err := s.ListToolCalls(a.ID, session.ID)
+		calls, err := s.ListToolCalls(session.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, c := range calls {
 			if c.State == storage.CallPending && c.ToolName == "ext__task_042" {
-				_, _ = s.ApproveToolCall(a.ID, c.ID)
+				_, _ = s.ApproveToolCall(c.ID)
 			}
 		}
-		run, err := s.GetRun(a.ID, r.ID)
+		run, err := s.GetRun(r.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -215,7 +216,7 @@ func TestToolDiscoveryRealMCPDefersConnectionAndLoadsSchema(t *testing.T) {
 	}
 	s, _ := newTestService(t, &scriptModel{}, hub)
 	s.endpoints = hub
-	p, err := s.store.ResolvedAgentProfile(ctx, storage.DefaultAgentID)
+	p, err := testfixture.Profile(s.store, ctx, testfixture.ContextID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"icepick/internal/testfixture"
 	"strings"
 	"testing"
 
@@ -47,9 +48,9 @@ func promptScript(t *testing.T, call model.ToolCall, wantPrompt string, firstTur
 	return chat
 }
 
-// Switching an agent to another profile keeps sessions and history while the
+// Switching a conversation to another profile keeps its history while the
 // next run starts executing with the newly selected combination.
-func TestAgentProfileSwitching(t *testing.T) {
+func TestRunProfileSwitching(t *testing.T) {
 	svc, store := newTestService(t, &scriptModel{}, &scriptTools{})
 	data := storage.BlankProfile()
 	data.SystemPrompt = "专属提示词 A"
@@ -57,57 +58,57 @@ func TestAgentProfileSwitching(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := svc.CreateAgent("甲", profile.ID)
+	local, err := testfixture.Context(svc.store, context.Background(), "甲", profile.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := svc.CreateAgentSession(agent.ID)
+	session, err := svc.createContextSession(local.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	svc.chat = promptScript(t, extToolCall("c", "local__current_time", "{}"), "专属提示词 A", false)
-	run, err := svc.StartAgentTask(agent.ID, session.ID, "你好")
+	run, err := svc.StartConversationTask(session.ID, "你好")
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, svc, agent.ID, run.ID, "completed")
-	runRow, err := svc.GetRun(agent.ID, run.ID)
+	waitForRun(t, svc, run.ID, "completed")
+	runRow, err := svc.GetRun(run.ID)
 	if err != nil || runRow.ProfileID != profile.ID || runRow.ProfileRevision != 1 {
 		t.Fatalf("run profile record: %+v %v", runRow, err)
 	}
 
-	if _, err := svc.SwitchAgentProfile(agent.ID, storage.DefaultProfileID); err != nil {
+	if _, err := svc.SelectConversationProfile(session.ID, storage.DefaultProfileID); err != nil {
 		t.Fatal(err)
 	}
-	// Sessions and history stay with the agent across the switch.
-	messages, err := svc.ListMessages(agent.ID, session.ID)
+	// Sessions and history stay with the context across the switch.
+	messages, err := svc.ListMessages(session.ID)
 	if err != nil || len(messages) == 0 {
 		t.Fatalf("history must survive the switch: %+v %v", messages, err)
 	}
 	svc.chat = promptScript(t, extToolCall("c2", "local__current_time", "{}"), "你是 ICEPick 助手", false)
-	run2, err := svc.StartAgentTask(agent.ID, session.ID, "再问")
+	run2, err := svc.StartConversationTask(session.ID, "再问")
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, svc, agent.ID, run2.ID, "completed")
+	waitForRun(t, svc, run2.ID, "completed")
 }
 
-// Editing a shared profile changes every referencing agent's subsequent runs.
+// Editing a shared profile changes every referencing context's subsequent runs.
 func TestSharedProfileEditAffectsSubsequentRuns(t *testing.T) {
 	svc, _ := newTestService(t, &scriptModel{}, &scriptTools{})
-	agentA, err := svc.CreateAgent("甲", storage.DefaultProfileID)
+	contextA, err := testfixture.Context(svc.store, context.Background(), "甲", storage.DefaultProfileID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	agentB, err := svc.CreateAgent("乙", storage.DefaultProfileID)
+	contextB, err := testfixture.Context(svc.store, context.Background(), "乙", storage.DefaultProfileID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessionA, err := svc.CreateAgentSession(agentA.ID)
+	sessionA, err := svc.createContextSession(contextA.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessionB, err := svc.CreateAgentSession(agentB.ID)
+	sessionB, err := svc.createContextSession(contextB.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,14 +119,14 @@ func TestSharedProfileEditAffectsSubsequentRuns(t *testing.T) {
 	}
 	svc.chat = promptScript(t, extToolCall("c", "local__current_time", "{}"), "共享提示词 v2", false)
 	for _, tc := range []struct {
-		agentID   string
+		contextID string
 		sessionID string
-	}{{agentA.ID, sessionA.ID}, {agentB.ID, sessionB.ID}} {
-		run, err := svc.StartAgentTask(tc.agentID, tc.sessionID, "你好")
+	}{{contextA.ID, sessionA.ID}, {contextB.ID, sessionB.ID}} {
+		run, err := svc.StartConversationTask(tc.sessionID, "你好")
 		if err != nil {
 			t.Fatal(err)
 		}
-		waitForRun(t, svc, tc.agentID, run.ID, "completed")
+		waitForRun(t, svc, run.ID, "completed")
 	}
 }
 
@@ -147,21 +148,21 @@ func TestInFlightRunKeepsProfileSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := svc.CreateAgent("甲", profile.ID)
+	local, err := testfixture.Context(svc.store, context.Background(), "甲", profile.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := svc.CreateAgentSession(agent.ID)
+	session, err := svc.createContextSession(local.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	setAgentPolicy(t, svc, agent.ID, func(p *storage.AgentPolicy) { p.ApprovalMode = "semi" })
+	setContextPolicy(t, svc, local.ID, func(p *storage.ContextPolicy) { p.ApprovalMode = "semi" })
 	svc.chat = promptScript(t, extToolCall("call-1", "extsvc__ping", "{}"), "旧提示词", true)
-	run, err := svc.StartAgentTask(agent.ID, session.ID, "ping 一下")
+	run, err := svc.StartConversationTask(session.ID, "ping 一下")
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := waitForCallState(t, svc, agent.ID, session.ID, storage.CallPending)
+	call := waitForCallState(t, svc, session.ID, storage.CallPending)
 
 	// Edit the shared profile while the run waits for approval.
 	target := findProfile(t, svc, profile.ID)
@@ -171,26 +172,26 @@ func TestInFlightRunKeepsProfileSnapshot(t *testing.T) {
 	if _, err := svc.UpdateProfile(target); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ApproveToolCall(agent.ID, call.ID); err != nil {
+	if _, err := svc.ApproveToolCall(call.ID); err != nil {
 		t.Fatal(err)
 	}
 	close(release)
-	waitForRun(t, svc, agent.ID, run.ID, "completed")
-	runRow, err := svc.GetRun(agent.ID, run.ID)
+	waitForRun(t, svc, run.ID, "completed")
+	runRow, err := svc.GetRun(run.ID)
 	if err != nil || runRow.ProfileID != profile.ID || runRow.ProfileRevision != 1 {
 		t.Fatalf("in-flight run must record its snapshot revision: %+v %v", runRow, err)
 	}
 	// The next run resolves the newly committed content.
 	svc.chat = promptScript(t, extToolCall("call-2", "local__current_time", "{}"), "新提示词", false)
-	run2, err := svc.StartAgentTask(agent.ID, session.ID, "再问")
+	run2, err := svc.StartConversationTask(session.ID, "再问")
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, svc, agent.ID, run2.ID, "completed")
+	waitForRun(t, svc, run2.ID, "completed")
 }
 
 // A profile copy is an independent combination: editing the copy leaves the
-// original untouched, and copy edits do not leak into other agents.
+// original untouched, and copy edits do not leak into other contexts.
 func TestProfileCopyIndependent(t *testing.T) {
 	svc, _ := newTestService(t, &scriptModel{}, &scriptTools{})
 	copied, err := svc.CreateProfile("", storage.DefaultProfileID)
@@ -208,20 +209,20 @@ func TestProfileCopyIndependent(t *testing.T) {
 	if strings.Contains(original.Data.SystemPrompt, "副本提示词") {
 		t.Fatalf("copy edit leaked into the original: %+v", original)
 	}
-	agent, err := svc.CreateAgent("甲", copied.ID)
+	local, err := testfixture.Context(svc.store, context.Background(), "甲", copied.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := svc.CreateAgentSession(agent.ID)
+	session, err := svc.createContextSession(local.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	svc.chat = promptScript(t, extToolCall("c", "local__current_time", "{}"), "副本提示词", false)
-	run, err := svc.StartAgentTask(agent.ID, session.ID, "你好")
+	run, err := svc.StartConversationTask(session.ID, "你好")
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForRun(t, svc, agent.ID, run.ID, "completed")
+	waitForRun(t, svc, run.ID, "completed")
 }
 
 // Saving a combination whose capability references do not exist on this host

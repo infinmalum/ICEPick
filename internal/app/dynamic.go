@@ -35,7 +35,7 @@ type scheduledResult struct {
 	err             error
 }
 
-func (s *Service) executeDynamic(ctx context.Context, root, session string, source config.Model, p storage.AgentProfile, history []model.Message) error {
+func (s *Service) executeDynamic(ctx context.Context, root, session string, source config.Model, p storage.RunProfile, history []model.Message) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup
@@ -49,7 +49,7 @@ func (s *Service) executeDynamic(ctx context.Context, root, session string, sour
 	planningFailures := 0
 	validationError := ""
 	runner := bookkeepingTools{inner: emptyTools{}, svc: s, profile: p, sessionID: session, runID: root}
-	engine := agent.Engine{Tools: runner, Recorder: runRecorder{svc: s, runID: root, sessionID: session, classifier: s.classifierFor(p)}, Gate: toolGate{svc: s, agentID: p.AgentID, snapshot: &p, runID: root}, Approver: s, ApprovalTimeout: s.ApprovalTimeout}
+	engine := agent.Engine{Tools: runner, Recorder: runRecorder{svc: s, runID: root, sessionID: session, classifier: s.classifierFor(p)}, Gate: toolGate{svc: s, contextID: p.ContextID, snapshot: &p, runID: root}, Approver: s, ApprovalTimeout: s.ApprovalTimeout}
 	for {
 	drain:
 		for {
@@ -247,8 +247,8 @@ func (s *Service) executeDynamic(ctx context.Context, root, session string, sour
 	}
 }
 
-func (s *Service) plannerRound(ctx context.Context, root, parentSession string, parent storage.AgentProfile, g storage.TaskGraph, history []model.Message, validationError string) (patch plannerPatch, err error) {
-	session, err := s.store.CreateDelegationSession(ctx, parent.AgentID, "planner 规划")
+func (s *Service) plannerRound(ctx context.Context, root, parentSession string, parent storage.RunProfile, g storage.TaskGraph, history []model.Message, validationError string) (patch plannerPatch, err error) {
+	session, err := s.store.CreateDelegationSession(ctx, parent.ContextID, parent.ProfileID, "planner 规划")
 	if err != nil {
 		return patch, err
 	}
@@ -291,11 +291,11 @@ func (s *Service) plannerRound(ctx context.Context, root, parentSession string, 
 	for name, w := range resources.Workers {
 		workers[name] = w.Name
 	}
-	actor, err := s.store.GetAgent(ctx, parent.AgentID)
+	localContext, err := s.store.GetLocalContext(ctx, parent.ContextID)
 	if err != nil {
 		return patch, err
 	}
-	payload, err := json.Marshal(map[string]any{"validationError": validationError, "livePolicy": actor.Policy, "goal": g.Goal, "graph": g, "workers": workers, "evidence": evidence, "context": history})
+	payload, err := json.Marshal(map[string]any{"validationError": validationError, "livePolicy": localContext.Policy, "goal": g.Goal, "graph": g, "workers": workers, "evidence": evidence, "context": history})
 	if err != nil {
 		return patch, err
 	}
@@ -336,16 +336,12 @@ func (s *Service) plannerRound(ctx context.Context, root, parentSession string, 
 	}
 	return patch, nil
 }
-func (s *Service) componentChat(run, session string, p storage.AgentProfile, source config.Model) guardedChat {
+func (s *Service) componentChat(run, session string, p storage.RunProfile, source config.Model) guardedChat {
 	return guardedChat{svc: s, runID: run, inner: s.chat, check: func(ctx context.Context) error { return s.exfilCheckRun(ctx, run, session, source, p) }, payloadCheck: func(ctx context.Context, m []model.Message, t []model.Tool) error {
-		ids, err := s.runActorIDs(ctx, run)
-		if err != nil {
-			return err
-		}
-		return s.checkPayloadFor(ctx, source, ids, session, m, t)
+		return s.checkPayload(ctx, source, p.ContextID, session, m, t)
 	}}
 }
-func (s *Service) dynamicEvidence(ctx context.Context, g storage.TaskGraph, receiving string, p storage.AgentProfile) ([]map[string]any, error) {
+func (s *Service) dynamicEvidence(ctx context.Context, g storage.TaskGraph, receiving string, p storage.RunProfile) ([]map[string]any, error) {
 	items := []map[string]any{}
 	total := 0
 	for _, attempt := range g.Attempts {
@@ -401,7 +397,7 @@ func (s *Service) dynamicEvidence(ctx context.Context, g storage.TaskGraph, rece
 	}
 	return items, nil
 }
-func (s *Service) deliverDynamic(ctx context.Context, root, session string, source config.Model, p storage.AgentProfile, g storage.TaskGraph, history []model.Message) error {
+func (s *Service) deliverDynamic(ctx context.Context, root, session string, source config.Model, p storage.RunProfile, g storage.TaskGraph, history []model.Message) error {
 	evidence, err := s.dynamicEvidence(ctx, g, session, p)
 	if err != nil {
 		return err

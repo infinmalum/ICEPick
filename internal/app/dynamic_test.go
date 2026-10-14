@@ -106,16 +106,16 @@ func approveDynamicUntilDone(t *testing.T, svc *Service, c storage.Conversation,
 	t.Helper()
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		calls, err := svc.ListToolCalls(c.ContextID, c.ID)
+		calls, err := svc.ListToolCalls(c.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, call := range calls {
 			if call.State == storage.CallPending && call.ToolName == "local__delegate_task" {
-				_, _ = svc.ApproveToolCall(c.ContextID, call.ID)
+				_, _ = svc.ApproveToolCall(call.ID)
 			}
 		}
-		r, err := svc.GetRun(c.ContextID, run.ID)
+		r, err := svc.GetRun(run.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -138,7 +138,7 @@ func TestDynamicPlannerParallelDependencyAndDelivery(t *testing.T) {
 	if final.Status != "completed" {
 		t.Fatalf("dynamic failed: %+v", final)
 	}
-	g, err := svc.GetTaskGraph(c.ContextID, run.ID)
+	g, err := svc.GetTaskGraph(run.ID)
 	if err != nil || len(g.Attempts) != 3 || len(g.Artifacts) != 3 || g.Coordination.State != "complete" || g.Budget.UnknownUsage != 0 {
 		t.Fatalf("dynamic graph: %+v %v", g, err)
 	}
@@ -149,7 +149,7 @@ func TestDynamicPlannerParallelDependencyAndDelivery(t *testing.T) {
 	if maximum != 2 || planners < 2 {
 		t.Fatalf("coordination did not run: max=%d planner=%d", maximum, planners)
 	}
-	children, err := svc.ListChildRuns(c.ContextID, run.ID)
+	children, err := svc.ListChildRuns(run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestDynamicPlannerParallelDependencyAndDelivery(t *testing.T) {
 	if !found {
 		t.Fatal("planner Run role not persisted")
 	}
-	history, err := svc.ListMessages(c.ContextID, c.ID)
+	history, err := svc.ListMessages(c.ID)
 	if err != nil || !strings.Contains(history[len(history)-1].Content, "尚未独立审查") {
 		t.Fatal("main delivery missing", err)
 	}
@@ -175,7 +175,7 @@ func TestDynamicWaitingDoesNotPretendSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	final := approveDynamicUntilDone(t, svc, c, run)
-	g, err := svc.GetTaskGraph(c.ContextID, run.ID)
+	g, err := svc.GetTaskGraph(run.ID)
 	if err != nil || final.Status == "completed" || g.Coordination.State != "waiting" || g.Coordination.Reason != "请提供待分析材料" {
 		t.Fatalf("waiting state: %+v %+v %v", final, g, err)
 	}
@@ -248,7 +248,7 @@ func TestDynamicBoundedRetryKeepsFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	final := approveDynamicUntilDone(t, svc, c, r)
-	g, err := svc.GetTaskGraph(c.ContextID, r.ID)
+	g, err := svc.GetTaskGraph(r.ID)
 	if err != nil || final.Status != "completed" || len(g.Attempts) != 2 || g.Tasks[0].State != "failed" || !storage.TaskSatisfied(g, "first") {
 		t.Fatalf("bounded retry: %+v %+v %v", final, g, err)
 	}
@@ -265,7 +265,7 @@ func TestDynamicRootModelBudgetCannotReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	final := approveDynamicUntilDone(t, svc, c, r)
-	g, err := svc.GetTaskGraph(c.ContextID, r.ID)
+	g, err := svc.GetTaskGraph(r.ID)
 	if err != nil || final.Status == "completed" || g.Budget.ModelCalls != 1 {
 		t.Fatalf("model budget: %+v %+v %v", final, g.Budget, err)
 	}
@@ -298,7 +298,7 @@ func TestReadonlyGatewayBlocksUnknownSideEffects(t *testing.T) {
 	if _, err = store.SetTaskGraph(ctx, root.ID, 0, []storage.TaskSpec{spec}); err != nil {
 		t.Fatal(err)
 	}
-	session, err := store.CreateDelegationSession(ctx, c.ContextID, "child")
+	session, err := store.CreateDelegationSession(ctx, c.ContextID, storage.DefaultProfileID, "child")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +306,7 @@ func TestReadonlyGatewayBlocksUnknownSideEffects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gate := toolGate{svc: svc, agentID: c.ContextID, snapshot: &profile, runID: child.ID}
+	gate := toolGate{svc: svc, contextID: c.ContextID, snapshot: &profile, runID: child.ID}
 	decision := gate.Gate(ctx, agent.ToolRequest{Tool: "external__write", Arguments: "{}"})
 	if !strings.Contains(decision.Deny, "只读任务") {
 		t.Fatal("readonly gateway widened privileges", decision)
