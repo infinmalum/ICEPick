@@ -101,7 +101,7 @@ go test ./...
 - `internal/mcptools/`：使用官方 Go MCP SDK 连接工具服务；内置时间工具由本地 MCP 服务提供。
 - `internal/skills/`：发现并按需读取 Agent Skills。
 - `internal/storage/`：SQLite Profile/LocalContext、隔离会话、消息与任务状态。
-- `frontend/`：React/TypeScript 界面。
+- `frontend/src/App.tsx`：界面组装；`components/` 保存各功能面板，`hooks/` 分别管理工作区、对话执行、Profile、本机上下文和模型设置，`shared/` 保存常量与下载工具。
 - `build/`：Wails 平台构建配置。
 
 ## 文档
