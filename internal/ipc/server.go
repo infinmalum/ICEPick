@@ -355,12 +355,15 @@ func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 			return nil, err
 		}
 		return s.svc.ListRuns(params.SessionID)
-	case "tasks.graph", "tasks.reviews", "runs.get":
+	case "tasks.graph", "tasks.reviews", "tasks.retrospectives", "runs.get":
 		var params struct {
 			RunID string `json:"runId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
+		}
+		if request.Method == "tasks.retrospectives" {
+			return s.svc.ListTaskRetrospectives(params.RunID)
 		}
 		if request.Method == "tasks.reviews" {
 			return s.svc.ListTaskReviews(params.RunID)
@@ -378,13 +381,16 @@ func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 		}
 		return s.svc.ListChildRuns(params.RunID)
 
-	case "tasks.review":
+	case "tasks.review", "tasks.retrospect":
 		var params struct {
 			SessionID string `json:"sessionId"`
 			RunID     string `json:"runId"`
 		}
 		if err := decodeParams(request.Params, &params); err != nil {
 			return nil, err
+		}
+		if request.Method == "tasks.retrospect" {
+			return s.svc.StartConversationRetrospective(params.SessionID, params.RunID)
 		}
 		return s.svc.StartConversationReview(params.SessionID, params.RunID)
 	case "tasks.cancel":

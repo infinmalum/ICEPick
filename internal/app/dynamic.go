@@ -22,7 +22,8 @@ const plannerContract = `你是 ICEPick 的 planner。你只规划，不执行�
 tasks 为 null 表示没有计划变更，空数组不能作为完成证明。每个任务含 id、worker、task、materials、dependsOn、acceptance、accessMode(read/write/unknown)、resources(共享资源标识)及可选 replaces(已失败任务ID)。
 保留已有执行尝试的全部任务与契约，不修改其状态。独立的纯分析/只读任务用 read；写入、命令和外部未知副作用用 write/unknown，宿主串行执行它们。read 无法执行外部未知副作用工具。禁止重复已成功步骤。
 后继依赖前置ID，宿主从真实交付消息装配材料。失败后只有宿主允许的无副作用任务能重试，使用新ID+replaces，保留验收条件。结果未知时 blocked，不新建类似任务规避未知处置。
-关键事件可能仅意味着继续等待。无新任务且仍有运行中任务用 continue；需要用户信息用 waiting；无法继续用 blocked/failed。complete 必须已有实际成功任务和交付证据，全部任务被成功结果满足。succeeded 不表示已通过独立审查。你的规划也受根预算限制。`
+关键事件可能仅意味着继续等待。无新任务且仍有运行中任务用 continue；需要用户信息用 waiting；无法继续用 blocked/failed。complete 必须已有实际成功任务和交付证据，全部任务被成功结果满足。succeeded 不表示已通过独立审查。你的规划也受根预算限制。
+rework 非空时是独立审查要求的返工。保留旧任务；targets 的每个原任务必须增加新 ID 的修正任务，使用原 worker、直接 dependsOn 原任务，不用 replaces（旧任务执行成功但质量不合格）。修正任务必须包含具体缺陷与验收条件。delivery 缺陷由 main 重新汇总；必要检查通过 worker 的原有工具关口执行。全部修正成功后才能 complete，不能重复原步骤或忽略缺陷。`
 
 type plannerPatch struct {
 	ExpectedRevision int                `json:"expectedRevision"`
@@ -35,7 +36,7 @@ type scheduledResult struct {
 	err             error
 }
 
-func (s *Service) executeDynamic(ctx context.Context, root, session string, source config.Model, p storage.RunProfile, history []model.Message) error {
+func (s *Service) executeDynamic(ctx context.Context, root, session string, source config.Model, p storage.RunProfile, history []model.Message, rework *reworkRequest) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup
@@ -72,7 +73,7 @@ func (s *Service) executeDynamic(ctx context.Context, root, session string, sour
 			return errors.New("根任务已结束")
 		}
 		if g.Coordination.State == "complete" && g.Coordination.EventSeq <= g.Coordination.PlannedSeq && len(active) == 0 {
-			if err := validCompletion(g); err != nil {
+			if err := validReworkCompletion(g, rework); err != nil {
 				return err
 			}
 			return s.deliverDynamic(ctx, root, session, source, p, g, history)
@@ -90,7 +91,7 @@ func (s *Service) executeDynamic(ctx context.Context, root, session string, sour
 			if err != nil {
 				return err
 			}
-			patch, err := s.plannerRound(ctx, root, session, p, observed, history, validationError)
+			patch, err := s.plannerRound(ctx, root, session, p, observed, history, validationError, rework)
 			if err != nil {
 				planningFailures++
 				validationError = boundedText(err.Error(), 4000)
@@ -148,13 +149,8 @@ func (s *Service) executeDynamic(ctx context.Context, root, session string, sour
 				if len(active) > 0 {
 					break
 				}
-				if len(g.Tasks) == 0 || len(g.Artifacts) == 0 {
-					return errors.New("没有完成全部任务与交付证据，不能证明完成")
-				}
-				for _, item := range g.Tasks {
-					if !storage.TaskSatisfied(g, item.Spec.ID) {
-						return errors.New("planner 不能绕过未成功任务")
-					}
+				if err := validReworkCompletion(g, rework); err != nil {
+					return err
 				}
 				return s.deliverDynamic(ctx, root, session, source, p, g, history)
 			case "continue":
@@ -247,7 +243,7 @@ func (s *Service) executeDynamic(ctx context.Context, root, session string, sour
 	}
 }
 
-func (s *Service) plannerRound(ctx context.Context, root, parentSession string, parent storage.RunProfile, g storage.TaskGraph, history []model.Message, validationError string) (patch plannerPatch, err error) {
+func (s *Service) plannerRound(ctx context.Context, root, parentSession string, parent storage.RunProfile, g storage.TaskGraph, history []model.Message, validationError string, rework *reworkRequest) (patch plannerPatch, err error) {
 	session, err := s.store.CreateDelegationSession(ctx, parent.ContextID, parent.ProfileID, "planner 规划")
 	if err != nil {
 		return patch, err
@@ -295,7 +291,7 @@ func (s *Service) plannerRound(ctx context.Context, root, parentSession string, 
 	if err != nil {
 		return patch, err
 	}
-	payload, err := json.Marshal(map[string]any{"validationError": validationError, "livePolicy": localContext.Policy, "goal": g.Goal, "graph": g, "workers": workers, "evidence": evidence, "context": history})
+	payload, err := json.Marshal(map[string]any{"rework": rework, "validationError": validationError, "livePolicy": localContext.Policy, "goal": g.Goal, "graph": g, "workers": workers, "evidence": evidence, "context": history})
 	if err != nil {
 		return patch, err
 	}

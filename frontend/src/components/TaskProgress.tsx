@@ -6,6 +6,8 @@ type Props = {
     | "clearPlan"
     | "reviewBusy"
     | "reviewResult"
+    | "retrospectResult"
+    | "retrospectives"
     | "reviews"
     | "runs"
     | "sessionPlan"
@@ -18,6 +20,8 @@ export function TaskProgress(props: Props) {
     clearPlan,
     reviewBusy,
     reviewResult,
+    retrospectResult,
+    retrospectives,
     reviews,
     runs,
     sessionPlan,
@@ -89,14 +93,54 @@ export function TaskProgress(props: Props) {
         </div>
       )}
       {runs[0] && runs[0].status !== "running" && (
-        <button
-          type="button"
-          className="secondary"
-          disabled={reviewBusy}
-          onClick={reviewResult}
-        >
-          单次审查此结果
-        </button>
+        <div className="plan-head">
+          <button
+            type="button"
+            className="secondary"
+            disabled={reviewBusy}
+            onClick={reviewResult}
+          >
+            单次审查此结果
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={reviewBusy}
+            onClick={retrospectResult}
+          >
+            复盘此任务
+          </button>
+        </div>
+      )}
+      {retrospectives.length > 0 && (
+        <div className="plan-panel">
+          {retrospectives.map((report) => (
+            <details key={report.id} open>
+              <summary>
+                任务复盘 ·{" "}
+                {report.current ? "过程记录仍匹配" : "过程记录已变化"}
+              </summary>
+              <p>{report.result.summary}</p>
+              {(report.result.observations ?? []).map((o, i) => (
+                <p key={i}>
+                  {o.reference}：{o.description}
+                </p>
+              ))}
+              <p className="card-title">改进建议</p>
+              {(report.result.recommendations ?? []).map((text, i) => (
+                <p key={i}>{text}</p>
+              ))}
+              <p className="card-title">限制与缺口</p>
+              {(report.result.limitations ?? []).map((text, i) => (
+                <p key={i}>{text}</p>
+              ))}
+              <p className="hint">
+                复盘仅提出建议，不修改任务状态、Profile 或
+                Skill，也不代表验收通过。
+              </p>
+            </details>
+          ))}
+        </div>
       )}
       {reviews.length > 0 && (
         <div className="plan-panel">

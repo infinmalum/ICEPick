@@ -6,7 +6,7 @@ ICEPick 是一个本地优先、领域无关的 Agent 宿主。它使用 Go 和 
 
 目标是让用户通过 **Profile** 定义完整场景，选择主执行、规划、worker、审查、配置改进等内置 Agent 组件，组合模型、指令、工具、Skills 和执行流程。运行实例由宿主创建，用户无需维护另一套 Agent 列表。计划按实际能力提供“日常助手”“研究分析”“写作编辑”“开发协作”四个经真实验收的场景 Profile 和空白创建入口。审查和复盘在当前场景中调用，无需切换 Profile；Profile/Skills 改进经过候选、验证、发布和回退流程。
 
-R1–R2 两批增量已接入：桌面以 Profile 为入口，运行状态和授权由本机上下文自动管理，用户通过对话选择配置，不需要管理 Agent。已提供日常助手、写作编辑的可编辑模板副本与空白入口，标记为待真实模型验收。R3 已接入独立 planner、自动依赖调度和只读 worker 并行；研究分析与开发协作提供试验配置，需材料或工具依赖。R4 已接入独立审查门槛和历史结果单次复核；有限返工、固定流程和配置改进仍待交付。实现范围与后续阶段见[设计文档](docs/architecture.md)和[实施计划](IMPLEMENTATION_PLAN.md)。
+R1–R2 两批增量已接入：桌面以 Profile 为入口，运行状态和授权由本机上下文自动管理，用户通过对话选择配置，不需要管理 Agent。已提供日常助手、写作编辑的可编辑模板副本与空白入口，标记为待真实模型验收。R3 已接入独立 planner、自动依赖调度和只读 worker 并行；研究分析与开发协作提供试验配置，需材料或工具依赖。R4 已接入独立审查门槛、最多两轮的有限返工和历史结果单次复核与独立过程复盘；固定流程和配置改进仍待交付。实现范围与后续阶段见[设计文档](docs/architecture.md)和[实施计划](IMPLEMENTATION_PLAN.md)。
 
 ## 当前功能
 
@@ -27,7 +27,7 @@ R1–R2 两批增量已接入：桌面以 Profile 为入口，运行状态和授
 - Profile 分享包 v6：可明确选择包含 worker 来源，展平为独立配置；一键导出 zip（配置清单、人格/提示词独立文件、MCP 依赖引用、标准 Skills 目录），不含授权、会话、记忆、密钥与绝对路径；导入先预览缺失依赖与建议，确认后创建新 Profile（不自动安装资源、不创建本机上下文、不授权）。桌面端与 `icepick profiles export/import` 均可使用。
 - CLI/IPC：桌面端或 `icepick serve` 构成每数据目录唯一宿主；`icepick` 命令行经本机 IPC 驱动与桌面相同的服务契约。
 
-当前内置 read_file/write_file/edit_file/exec、tool_search，以及 Skill/记忆/计划/委派和过程检索工具；外部 MCP 工具已可经权限网关和审批调用，统一按 external/unknown 处理。已提供通用文件写入/精确编辑和本机命令执行；OpenAI、Anthropic 和 Gemini 原生联网搜索已接入；Jev、A2A 尚未实现。新对话默认半自动审批、一般资源需显式授权，远端外发另行授权；长期记忆与委派需在 Profile 偏好与本机上下文授权（记忆授权 / 委派允许列表）中同时开启。新 worker 使用对话本机授权，配置来源不提供权限或记忆。会话 Plan 保留待办语义；direct 支持 main 同步委派，dynamic 使用 planner 和宿主调度。动态交付物带消息引用、SHA256 与真实工具证据；worker 可按本根任务交换过程与观察，继承数据外发范围。Profile 可选择 off/on_demand/required 独立审查；required 未通过不能完成，结论绑定目标、交付文本及工具证据指纹。必要检查需指定工具成功执行并返回 JSON `{"passed":true}`，无法确认时为 inconclusive。桌面可单次复核结果；CLI `tasks review <sessionID> <runID>` 发起复核、`tasks status` 查看结论；旧任务终态保留。reviewer 当前只读取已有证据，自动返工与专用检查调度尚未实现；worker 的 succeeded/unreviewed 仍不等同于审查通过。
+当前内置 read_file/write_file/edit_file/exec、tool_search，以及 Skill/记忆/计划/委派和过程检索工具；外部 MCP 工具已可经权限网关和审批调用，统一按 external/unknown 处理。已提供通用文件写入/精确编辑和本机命令执行；OpenAI、Anthropic 和 Gemini 原生联网搜索已接入；Jev、A2A 尚未实现。新对话默认半自动审批、一般资源需显式授权，远端外发另行授权；长期记忆与委派需在 Profile 偏好与本机上下文授权（记忆授权 / 委派允许列表）中同时开启。新 worker 使用对话本机授权，配置来源不提供权限或记忆。会话 Plan 保留待办语义；direct 支持 main 同步委派，dynamic 使用 planner 和宿主调度。动态交付物带消息引用、SHA256 与真实工具证据；worker 可按本根任务交换过程与观察，继承数据外发范围。Profile 可选择 off/on_demand/required 独立审查；required 未通过不能完成，结论绑定目标、交付文本及工具证据指纹。必要检查需指定工具成功执行并返回 JSON `{"passed":true}`，无法确认时为 inconclusive。桌面可单次复核结果；CLI `tasks review <sessionID> <runID>` 发起复核、`tasks status` 查看结论；旧任务终态保留。reviewer 只读取证据；required 模式将缺陷交回 main，dynamic 模式由 planner 给原 worker 新建修正任务。最多返工两轮，共享原根预算、权限和取消信号；缺失检查由执行组件通过现有工具关口补做，返工后需要新检查证据。拒绝必要操作、效果未知或预算耗尽时停止；旧交付与审查记录保留。按需单次复核不自动返工；桌面“复盘此任务”和 CLI `tasks retrospect <sessionID> <runID>` 结合已结束任务的真实过程输出观察、建议与限制，支持无最终交付的失败任务；结论单独保存，不改变旧终态或 Profile/Skill，也不代表审查通过；worker 的 succeeded/unreviewed 仍不等同于审查通过。
 
 开发阶段不承诺旧数据或旧接口兼容。当前数据库格式为 v20、分享包格式为 v6；直接创建当前结构，遇到其他版本明确拒绝，不迁移、不自动删除数据。需要试用新版时使用新的数据目录。此政策持续到项目开始有实际用户并由维护者明确通知。MCP 服务在任务首次发现所选服务工具时启动。
 
@@ -126,4 +126,4 @@ go test ./...
 
 搜索记录保存实际事件、来源链接及能取得的用量；网页材料属于未知来源。OpenAI 和 Anthropic 每请求最多预留 3 次搜索，共享根工具预算，完整响应释放未用预留。Gemini 没有服务商内部搜索次数的硬上限参数，按每个宿主搜索请求预留并消耗 1 个预算单位，内部次数与独立费用未报告时明确显示未知；不会把查询条数当作实际调用/账单次数。中断保留未知结果与预留，不自动重试或重放。Google 搜索建议保存并在隔离、禁脚本的 iframe 中呈现；不把服务商 HTML 放进宿主页。真实服务及稳定场景验收仍待完成。
 
-当前数据库格式为 **v21**。Profile 定义工作方式，LocalContext 只拥有本机权限和私人状态，Conversation 明确选择 Profile，Run 固定执行配置。新建对话才创建 Context，宿主没有隐式默认 Context。消息、运行、计划和摘要的 Context 由 Session 推导，不重复保存归属列。任务查询、取消和工具审批只需资源 ID；CLI 使用 `tasks status <runID>`、`tasks cancel <runID>`、`approvals approve <callID>`，待审批列表可用 `approvals list --context <contextID>` 筛选。旧数据库格式明确拒绝，不迁移、不删除原文件。
+当前数据库格式为 **v22**。Profile 定义工作方式，LocalContext 只拥有本机权限和私人状态，Conversation 明确选择 Profile，Run 固定执行配置。新建对话才创建 Context，宿主没有隐式默认 Context。消息、运行、计划和摘要的 Context 由 Session 推导，不重复保存归属列。任务查询、取消和工具审批只需资源 ID；CLI 使用 `tasks status <runID>`、`tasks cancel <runID>`、`approvals approve <callID>`，待审批列表可用 `approvals list --context <contextID>` 筛选。旧数据库格式明确拒绝，不迁移、不删除原文件。

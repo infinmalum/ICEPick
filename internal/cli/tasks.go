@@ -14,20 +14,20 @@ import (
 
 func cmdTasks(client *ipc.Client, args []string) int {
 	if len(args) == 0 {
-		return usage("tasks 需要子命令 status|review|cancel")
+		return usage("tasks 需要子命令 status|review|retrospect|cancel")
 	}
 	switch args[0] {
-	case "review":
+	case "review", "retrospect":
 		parsed, err := parseCLI(args[1:])
 		if err == nil {
 			err = parsed.allowValues()
 		}
-		if err != nil || parsed.arg(0) == "" || parsed.arg(1) == "" {
-			return usage("用法: tasks review <sessionID> <runID>")
+		if err != nil || len(parsed.positional) != 2 || parsed.arg(0) == "" || parsed.arg(1) == "" {
+			return usage("用法: tasks " + args[0] + " <sessionID> <runID>")
 		}
 		var run storage.Run
-		if err := client.Call("tasks.review", map[string]any{"sessionId": parsed.arg(0), "runId": parsed.arg(1)}, &run); err != nil {
-			return fail("tasks.review", err)
+		if err := client.Call("tasks."+args[0], map[string]any{"sessionId": parsed.arg(0), "runId": parsed.arg(1)}, &run); err != nil {
+			return fail("tasks."+args[0], err)
 		}
 		printRun(run)
 		return 0
@@ -62,6 +62,22 @@ func cmdTasks(client *ipc.Client, args []string) int {
 				fmt.Printf("审查 %s · 当前 %t · %s\n%s\n", r.Result.Status, r.Current, r.Binding, r.Result.Summary)
 				for _, d := range r.Result.Defects {
 					fmt.Printf("  %s：%s\n", d.Reference, d.Description)
+				}
+			}
+		}
+
+		var reports []storage.TaskRetrospective
+		if err := client.Call("tasks.retrospectives", map[string]any{"runId": parsed.arg(0)}, &reports); err == nil {
+			for _, r := range reports {
+				fmt.Printf("复盘 · 记录仍匹配 %t\n%s\n", r.Current, r.Result.Summary)
+				for _, o := range r.Result.Observations {
+					fmt.Printf("  %s：%s\n", o.Reference, o.Description)
+				}
+				for _, text := range r.Result.Recommendations {
+					fmt.Printf("  建议：%s\n", text)
+				}
+				for _, text := range r.Result.Limitations {
+					fmt.Printf("  限制：%s\n", text)
 				}
 			}
 		}

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 type ReviewPolicy struct {
@@ -79,13 +80,14 @@ type TaskReview struct {
 // covers goal, immutable execution contract, delivered message, artifacts and
 // complete tool evidence, including resolution of previously unknown effects.
 type ReviewSnapshot struct {
-	Binding   string       `json:"binding"`
-	Goal      string       `json:"goal"`
-	Tasks     []TaskSpec   `json:"tasks"`
-	Delivery  Message      `json:"delivery"`
-	Artifacts []Artifact   `json:"artifacts"`
-	Calls     []ToolCall   `json:"calls"`
-	Policy    ReviewPolicy `json:"policy"`
+	Binding     string       `json:"binding"`
+	ChecksAfter string       `json:"checksAfter,omitempty"`
+	Goal        string       `json:"goal"`
+	Tasks       []TaskSpec   `json:"tasks"`
+	Delivery    Message      `json:"delivery"`
+	Artifacts   []Artifact   `json:"artifacts"`
+	Calls       []ToolCall   `json:"calls"`
+	Policy      ReviewPolicy `json:"policy"`
 }
 
 func reviewSnapshotInTx(ctx context.Context, tx *sql.Tx, root string) (ReviewSnapshot, error) {
@@ -163,6 +165,13 @@ func reviewSnapshotInTx(ctx context.Context, tx *sql.Tx, root string) (ReviewSna
 	}
 	sum := sha256.Sum256(payload)
 	out.Binding = hex.EncodeToString(sum[:])
+	// Earlier reviews apply to earlier deliveries. Rework must provide fresh
+	// machine evidence; inserting the current review cannot invalidate itself.
+	err = tx.QueryRowContext(ctx, `SELECT v.created_at FROM task_reviews v JOIN runs r ON r.id=v.reviewer_run_id WHERE v.root_run_id=? AND r.parent_run_id=? AND v.binding<>? ORDER BY v.created_at DESC,v.id DESC LIMIT 1`, root, root, out.Binding).Scan(&out.ChecksAfter)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return out, err
+	}
+
 	return out, nil
 }
 func (s *Store) ReviewSnapshot(ctx context.Context, root string) (ReviewSnapshot, error) {
@@ -170,7 +179,9 @@ func (s *Store) ReviewSnapshot(ctx context.Context, root string) (ReviewSnapshot
 	err := s.withTx(ctx, func(tx *sql.Tx) error { var err error; out, err = reviewSnapshotInTx(ctx, tx, root); return err })
 	return out, err
 }
-func missingReviewChecks(snap ReviewSnapshot) []string {
+
+// MissingReviewChecks validates successful, machine-readable and fresh evidence.
+func MissingReviewChecks(snap ReviewSnapshot) []string {
 	missing := []string{}
 	for _, name := range snap.Policy.RequiredChecks {
 		var last *ToolCall
@@ -182,7 +193,13 @@ func missingReviewChecks(snap ReviewSnapshot) []string {
 		var check struct {
 			Passed bool `json:"passed"`
 		}
-		if last == nil || last.State != CallSucceeded || json.Unmarshal([]byte(last.Result), &check) != nil || !check.Passed {
+		fresh := true
+		if last != nil && snap.ChecksAfter != "" {
+			boundary, e1 := time.Parse(time.RFC3339Nano, snap.ChecksAfter)
+			created, e2 := time.Parse(time.RFC3339Nano, last.CreatedAt)
+			fresh = e1 == nil && e2 == nil && created.After(boundary)
+		}
+		if !fresh || last == nil || last.State != CallSucceeded || json.Unmarshal([]byte(last.Result), &check) != nil || !check.Passed {
 			missing = append(missing, name)
 		}
 	}
@@ -248,7 +265,7 @@ func (s *Store) SaveTaskReview(ctx context.Context, root, reviewer, binding stri
 				snap.Policy.RequiredChecks = append(snap.Policy.RequiredChecks, name)
 			}
 		}
-		missing := missingReviewChecks(snap)
+		missing := MissingReviewChecks(snap)
 		unknown := false
 		for _, c := range snap.Calls {
 			if c.State == CallExecutionUnknown || c.State == CallExecuting || c.State == CallPending || c.State == CallApproved {
@@ -305,6 +322,22 @@ func (s *Store) ListTaskReviews(ctx context.Context, root string) ([]TaskReview,
 	return out, err
 }
 func enforceRequiredReview(ctx context.Context, tx *sql.Tx, root string) error {
+	var retrospectiveTarget string
+	retrospectiveErr := tx.QueryRowContext(ctx, `SELECT target_run_id FROM retrospective_requests WHERE run_id=?`, root).Scan(&retrospectiveTarget)
+	if retrospectiveErr == nil {
+		var count int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM task_retrospectives v JOIN runs r ON r.id=v.reviewer_run_id WHERE r.parent_run_id=? AND r.status='completed' AND v.root_run_id=?`, root, retrospectiveTarget).Scan(&count); err != nil {
+			return err
+		}
+		if count != 1 {
+			return errors.New("单次复盘没有有效记录")
+		}
+		return nil
+	}
+	if !errors.Is(retrospectiveErr, sql.ErrNoRows) {
+		return retrospectiveErr
+	}
+
 	var target string
 	reqErr := tx.QueryRowContext(ctx, `SELECT target_run_id FROM review_requests WHERE run_id=?`, root).Scan(&target)
 	if reqErr == nil {
@@ -354,7 +387,7 @@ func enforceRequiredReview(ctx context.Context, tx *sql.Tx, root string) error {
 func (s *Store) InitReviewRequest(ctx context.Context, root, target string) error {
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		var contextID, targetContext, status string
-		if err := tx.QueryRowContext(ctx, `SELECT (SELECT context_id FROM sessions WHERE id=runs.session_id) FROM runs WHERE id=? AND status='running' AND parent_run_id IS NULL`, root).Scan(&contextID); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT (SELECT context_id FROM sessions WHERE id=runs.session_id) FROM runs WHERE id=? AND status='running' AND parent_run_id IS NULL AND NOT EXISTS(SELECT 1 FROM retrospective_requests WHERE run_id=runs.id)`, root).Scan(&contextID); err != nil {
 			return err
 		}
 		if err := tx.QueryRowContext(ctx, `SELECT (SELECT context_id FROM sessions WHERE id=runs.session_id),status FROM runs WHERE id=? AND parent_run_id IS NULL`, target).Scan(&targetContext, &status); err != nil {

@@ -110,8 +110,14 @@ func TestRequiredReviewRejectsMissingChecksDefectsAndForgedEvidence(t *testing.T
 				if len(reviews) != 0 {
 					t.Fatal("invalid review saved")
 				}
-			} else if len(reviews) != 1 || reviews[0].Result.Status != tc.want {
-				t.Fatalf("%+v", reviews)
+			} else {
+				wantCount := 1
+				if tc.name == "missing" || tc.name == "defects" {
+					wantCount = 3
+				}
+				if len(reviews) != wantCount || reviews[len(reviews)-1].Result.Status != tc.want || !reviews[len(reviews)-1].Current {
+					t.Fatalf("%+v", reviews)
+				}
 			}
 		})
 	}

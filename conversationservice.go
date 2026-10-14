@@ -72,3 +72,10 @@ func (s *StatusService) ConversationSearchAvailability(id string) (app.SearchAva
 func (s *StatusService) ListConversationSearch(id string) ([]storage.SearchRequest, error) {
 	return s.svc.ListConversationSearch(id)
 }
+
+func (s *StatusService) StartConversationRetrospective(sessionID, target string) (storage.Run, error) {
+	return s.svc.StartConversationRetrospective(sessionID, target)
+}
+func (s *StatusService) ListTaskRetrospectives(runID string) ([]storage.TaskRetrospective, error) {
+	return s.svc.ListTaskRetrospectives(runID)
+}

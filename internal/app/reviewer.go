@@ -155,19 +155,6 @@ func (s *Service) reviewTarget(ctx context.Context, root, executionRoot, parentS
 	}
 	return review, err
 }
-func (s *Service) requireDeliveryReview(ctx context.Context, root, session string, p storage.RunProfile) error {
-	if p.Execution.Review.Mode != "required" {
-		return nil
-	}
-	review, err := s.reviewDelivery(ctx, root, session, p)
-	if err != nil {
-		return fmt.Errorf("必需审查失败：%w", err)
-	}
-	if review.Result.Status != "passed" {
-		return fmt.Errorf("独立审查 %s：%s", review.Result.Status, review.Result.Summary)
-	}
-	return nil
-}
 func (s *Service) ListTaskReviews(root string) ([]storage.TaskReview, error) {
 	if _, err := s.GetRun(root); err != nil {
 		return nil, err
@@ -178,6 +165,17 @@ func (s *Service) ListTaskReviews(root string) ([]storage.TaskReview, error) {
 // Explicit review uses the current conversation Profile; the target's frozen
 // contract and evidence remain intact and its terminal status is untouched.
 func (s *Service) StartConversationReview(sessionID, target string) (storage.Run, error) {
+	return s.startConversationInspection(sessionID, target, false)
+}
+func (s *Service) StartConversationRetrospective(sessionID, target string) (storage.Run, error) {
+	return s.startConversationInspection(sessionID, target, true)
+}
+func (s *Service) startConversationInspection(sessionID, target string, retrospective bool) (storage.Run, error) {
+	label := "单次审查"
+	if retrospective {
+		label = "任务复盘"
+	}
+
 	s.taskMu.Lock()
 	defer s.taskMu.Unlock()
 	c, err := s.store.GetConversation(context.Background(), sessionID)
@@ -211,10 +209,15 @@ func (s *Service) StartConversationReview(sessionID, target string) (storage.Run
 	if p.Execution.Review.Mode != "on_demand" && p.Execution.Review.Mode != "required" {
 		return fail(errors.New("当前 Profile 未启用审查，请选择按需或必需模式"))
 	}
-	if err := s.store.InitReviewRequest(ctx, run.ID, target); err != nil {
+	if retrospective {
+		err = s.store.InitRetrospectiveRequest(ctx, run.ID, target)
+	} else {
+		err = s.store.InitReviewRequest(ctx, run.ID, target)
+	}
+	if err != nil {
 		return fail(err)
 	}
-	if _, err := s.store.AddMessage(ctx, sessionID, run.ID, storage.RoleUser, "单次审查任务 "+target); err != nil {
+	if _, err := s.store.AddMessage(ctx, sessionID, run.ID, storage.RoleUser, label+"任务 "+target); err != nil {
 		return fail(err)
 	}
 	s.running[sessionID] = run.ID
@@ -226,13 +229,23 @@ func (s *Service) StartConversationReview(sessionID, target string) (storage.Run
 			}
 			s.taskMu.Unlock()
 		}()
-		review, err := s.reviewTarget(ctx, target, run.ID, sessionID, p)
+		var summary string
+		var err error
+		if retrospective {
+			report, e := s.retrospectTarget(ctx, target, run.ID, sessionID, p)
+			err = e
+			summary = formatRetrospective(report.Result)
+		} else {
+			review, e := s.reviewTarget(ctx, target, run.ID, sessionID, p)
+			err = e
+			summary = review.Result.Status + "\n" + review.Result.Summary
+		}
 		status, detail := "completed", ""
 		if err != nil {
 			status = "failed"
 			detail = err.Error()
 		} else {
-			_, err = s.store.AddMessage(ctx, sessionID, run.ID, storage.RoleAssistant, "审查任务 "+target+"："+review.Result.Status+"\n"+review.Result.Summary)
+			_, err = s.store.AddMessage(ctx, sessionID, run.ID, storage.RoleAssistant, label+"任务 "+target+"：\n"+summary)
 			if err != nil {
 				status = "failed"
 				detail = err.Error()
@@ -241,7 +254,7 @@ func (s *Service) StartConversationReview(sessionID, target string) (storage.Run
 		if err := s.runs.Finish(run.ID, status, detail); err != nil {
 			_ = s.runs.Finish(run.ID, "failed", err.Error())
 		}
-		s.publish(Event{Type: "run.updated", SessionID: sessionID, RunID: run.ID, Detail: "单次审查结束"})
+		s.publish(Event{Type: "run.updated", SessionID: sessionID, RunID: run.ID, Detail: label + "结束"})
 	}()
 	return run, nil
 }

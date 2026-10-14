@@ -25,6 +25,8 @@ type Props = {
     | "resolveUnknown"
     | "reviewBusy"
     | "reviewResult"
+    | "retrospectResult"
+    | "retrospectives"
     | "reviews"
     | "runs"
     | "searchAvailability"

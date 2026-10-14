@@ -4,6 +4,7 @@ import { StatusService, type AppStatus } from "../../bindings/icepick";
 import type {
   SearchRequest,
   TaskReview,
+  TaskRetrospective,
   TaskGraph,
   Message,
   Profile,
@@ -48,6 +49,7 @@ export function useConversation(
   );
   const [sessionPlan, setSessionPlan] = useState<SessionPlanView | null>(null);
   const [reviews, setReviews] = useState<TaskReview[]>([]);
+  const [retrospectives, setRetrospectives] = useState<TaskRetrospective[]>([]);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [taskGraph, setTaskGraph] = useState<TaskGraph | null>(null);
   const [childRuns, setChildRuns] = useState<Run[]>([]);
@@ -99,6 +101,7 @@ export function useConversation(
     setLoadingSession(true);
     setTaskGraph(null);
     setReviews([]);
+    setRetrospectives([]);
     Promise.all([
       StatusService.ListMessages(selected),
       StatusService.ListRuns(selected),
@@ -335,16 +338,20 @@ export function useConversation(
     if (!latestRunID) {
       setTaskGraph(null);
       setReviews([]);
+      setRetrospectives([]);
       setChildRuns([]);
       return;
     }
     try {
       const sessionID = activeSessionID.current;
-      const [items, graph, reviewItems] = await Promise.all([
-        StatusService.ListChildRuns(latestRunID),
-        StatusService.GetTaskGraph(latestRunID).catch(() => null),
-        StatusService.ListTaskReviews(latestRunID).catch(() => []),
-      ]);
+      const [items, graph, reviewItems, retrospectiveItems] = await Promise.all(
+        [
+          StatusService.ListChildRuns(latestRunID),
+          StatusService.GetTaskGraph(latestRunID).catch(() => null),
+          StatusService.ListTaskReviews(latestRunID).catch(() => []),
+          StatusService.ListTaskRetrospectives(latestRunID).catch(() => []),
+        ],
+      );
       if (
         activeContextID.current === contextID &&
         activeSessionID.current === sessionID
@@ -352,6 +359,7 @@ export function useConversation(
         setChildRuns(items ?? []);
         setTaskGraph(graph);
         setReviews(reviewItems ?? []);
+        setRetrospectives(retrospectiveItems ?? []);
       }
     } catch {
       setChildRuns([]);
@@ -396,14 +404,18 @@ export function useConversation(
       setTaskError(String(reason));
     }
   }
-  async function reviewResult() {
+  async function inspectResult(retrospective: boolean) {
     if (!selected || !runs[0]) return;
     setReviewBusy(true);
     try {
-      const run = await StatusService.StartConversationReview(
-        selected,
-        runs[0].id,
-      );
+      const sessionID = selected;
+      const start = retrospective
+        ? StatusService.StartConversationRetrospective
+        : StatusService.StartConversationReview;
+      const target =
+        retrospectives[0]?.rootRunId ?? reviews[0]?.rootRunId ?? runs[0].id;
+      const run = await start(sessionID, target);
+      if (activeSessionID.current !== sessionID) return;
       setRuns((current) => [run, ...current]);
       setActiveRun(run.id);
     } catch (reason) {
@@ -443,7 +455,9 @@ export function useConversation(
     openChildSession,
     sendTask,
     cancelTask,
-    reviewResult,
+    reviewResult: () => inspectResult(false),
+    retrospectResult: () => inspectResult(true),
+    retrospectives,
   };
 }
 export type ConversationState = ReturnType<typeof useConversation>;

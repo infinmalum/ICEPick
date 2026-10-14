@@ -483,9 +483,18 @@ func (s *Service) executeTask(ctx context.Context, runID, sessionID string, sour
 		return
 	}
 	if profile.Execution.Workflow == "dynamic" {
-		err := s.executeDynamic(ctx, runID, sessionID, source, profile, history.history)
+		err := s.executeDynamic(ctx, runID, sessionID, source, profile, history.history, nil)
 		if err == nil {
-			err = s.requireDeliveryReview(ctx, runID, sessionID, profile)
+			err = s.requireDeliveryReview(ctx, runID, sessionID, profile, func(request reworkRequest) error {
+				if err := s.store.NotifyCoordination(ctx, runID, "review.rework"); err != nil {
+					return err
+				}
+				updated, err := s.buildRunContext(sessionID, profile)
+				if err != nil {
+					return err
+				}
+				return s.executeDynamic(ctx, runID, sessionID, source, profile, updated.history, &request)
+			})
 		}
 		if err != nil {
 			g, e := s.store.GetTaskGraph(context.WithoutCancel(ctx), runID)
@@ -579,7 +588,15 @@ func (s *Service) executeTask(ctx context.Context, runID, sessionID string, sour
 		_ = s.runs.Finish(runID, "failed", err.Error())
 		return
 	}
-	if err := s.requireDeliveryReview(ctx, runID, sessionID, profile); err != nil {
+	if err := s.requireDeliveryReview(ctx, runID, sessionID, profile, func(_ reworkRequest) error {
+		updated, err := s.buildRunContext(sessionID, profile)
+		if err != nil {
+			return err
+		}
+		engine.InitialSummary = updated.summary
+		_, err = engine.Run(ctx, source, updated.history)
+		return err
+	}); err != nil {
 		_ = s.runs.Finish(runID, "failed", err.Error())
 		return
 	}

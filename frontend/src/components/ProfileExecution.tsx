@@ -192,7 +192,7 @@ export function ProfileExecution(props: Props) {
         </label>
         <p className="hint">
           审查依据交付物和已有工具记录。必要检查需由执行组件完成并返回 JSON
-          passed:true；未执行或结果未知时无法判定。当前版本不会自动返工。
+          passed:true；未执行或结果未知时无法判定。必需审查最多返工两轮，共享任务预算；按需审查只给出结论。
         </p>
         {(["main", "planner", "worker", "reviewer"] as const).map((role) => {
           const component = profileDraft.data.execution[role] ?? {

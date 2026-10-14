@@ -104,3 +104,70 @@ func TestRequiredChecksNeedMachineReadableSuccess(t *testing.T) {
 		})
 	}
 }
+
+func TestReworkCannotReusePreviousSuccessfulCheck(t *testing.T) {
+	s, c, root, reviewer := reviewStorageFixture(t, []string{"tests__run"})
+	ctx := context.Background()
+	addCheck := func(id string) {
+		t.Helper()
+		_, calls, err := s.AddAssistantMessage(ctx, c.ID, root.ID, "", []MessageToolCall{{ID: id, Name: "tests__run", Arguments: "{}"}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = s.BeginToolCall(ctx, calls[0].ID); err != nil {
+			t.Fatal(err)
+		}
+		if err = s.FinishToolCall(ctx, calls[0].ID, CallSucceeded, `{"passed":true}`, "", "public"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	addCheck("old-check")
+	snap, err := s.ReviewSnapshot(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review, err := s.SaveTaskReview(ctx, root.ID, reviewer.ID, snap.Binding, ReviewResult{Status: "changes_requested", Summary: "修正交付", Defects: []ReviewDefect{{Reference: "delivery", Description: "缺内容"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.AddMessage(ctx, c.ID, root.ID, RoleAssistant, "修正后的交付"); err != nil {
+		t.Fatal(err)
+	}
+	snap, err = s.ReviewSnapshot(ctx, root.ID)
+	if err != nil || snap.ChecksAfter != review.CreatedAt || len(MissingReviewChecks(snap)) != 1 {
+		t.Fatal(snap, err)
+	}
+	nextReviewer := func() {
+		t.Helper()
+		if err := s.SetRunStatus(ctx, reviewer.ID, "completed", ""); err != nil {
+			t.Fatal(err)
+		}
+		session, err := s.CreateDelegationSession(ctx, c.ContextID, c.ProfileID, "再次审查")
+		if err != nil {
+			t.Fatal(err)
+		}
+		reviewer, _, err = s.CreateRunWithOptions(ctx, session.ID, CreateRunOptions{ParentRunID: root.ID, Depth: 1, WorkerName: "@reviewer", Component: "reviewer"})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	nextReviewer()
+	result, err := s.SaveTaskReview(ctx, root.ID, reviewer.ID, snap.Binding, ReviewResult{Status: "passed", Summary: "模型认为通过"})
+	if err != nil || result.Result.Status != "inconclusive" {
+		t.Fatal(result, err)
+	}
+	addCheck("fresh-check")
+	snap, err = s.ReviewSnapshot(ctx, root.ID)
+	if err != nil || len(MissingReviewChecks(snap)) != 0 {
+		t.Fatal(snap, err)
+	}
+	nextReviewer()
+	result, err = s.SaveTaskReview(ctx, root.ID, reviewer.ID, snap.Binding, ReviewResult{Status: "passed", Summary: "新证据通过"})
+	if err != nil || result.Result.Status != "passed" {
+		t.Fatal(result, err)
+	}
+	reviews, err := s.ListTaskReviews(ctx, root.ID)
+	if err != nil || len(reviews) != 3 || !reviews[2].Current {
+		t.Fatal(reviews, err)
+	}
+}
