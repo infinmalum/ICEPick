@@ -185,7 +185,8 @@ func validateExecution(data ProfileData) error {
 }
 
 // ResolveComponent makes a single-level immutable execution projection.
-// An explicit empty tool subset means no tools, unlike the legacy whitelist.
+// An explicit empty component tool subset means no tools; the common allowlist
+// only narrows the selected catalogs when it is nonempty.
 func (data ProfileData) ResolveComponent(role string) (ProfileData, error) {
 	if err := validateExecution(data); err != nil {
 		return ProfileData{}, err

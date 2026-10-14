@@ -99,3 +99,8 @@ func (s *SelectedTools) Call(ctx context.Context, name, args string) (string, er
 	}
 	return s.hub.Call(ctx, name, args)
 }
+
+// LocalDefinitions does not connect any external process.
+func (s *SelectedTools) LocalDefinitions(ctx context.Context) ([]model.Tool, error) {
+	return s.hub.definitions(ctx, func(name string) bool { return name == "local" && s.enabled(name) })
+}

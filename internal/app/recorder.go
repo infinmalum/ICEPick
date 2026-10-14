@@ -27,7 +27,35 @@ var _ agent.Recorder = runRecorder{}
 // ModelRequest persists the full request snapshot: the model parameters that
 // will be used, the exact prompt history and the tool definitions offered.
 func (r runRecorder) ModelRequest(ctx context.Context, source config.Model, messages []model.Message, tools []model.Tool) (string, error) {
-	payload, err := json.Marshal(modelRequestSnapshot{Model: source, Messages: messages, Tools: tools, OutputTokenLimit: 8192})
+	resources, err := r.svc.store.RunResources(ctx, r.runID)
+	if err != nil {
+		return "", err
+	}
+	run, err := r.svc.store.GetRun(ctx, r.runID)
+	if err != nil {
+		return "", err
+	}
+	searchPath := "off"
+	if resources.Options.WebSearch && (run.Component == "main" || run.Component == "worker") && ctx.Value(suppressSearchKey{}) != true {
+		p, _, err := r.svc.store.ProfileSnapshot(ctx, r.runID)
+		if err != nil {
+			return "", err
+		}
+		route := searchRoute(source, p, resources.SearchTools)
+		if route.Available {
+			searchPath = route.Route
+		}
+		if run.Component == "worker" {
+			spec, found, err := r.svc.store.RunTaskSpec(ctx, r.runID)
+			if err != nil {
+				return "", err
+			}
+			if found && spec.AccessMode == "read" {
+				searchPath = "off"
+			}
+		}
+	}
+	payload, err := json.Marshal(modelRequestSnapshot{Model: source, Messages: messages, Tools: tools, OutputTokenLimit: 8192, Options: resources.Options, SearchRoute: searchPath})
 	if err != nil {
 		return "", err
 	}
@@ -39,10 +67,12 @@ func (r runRecorder) ModelRequest(ctx context.Context, source config.Model, mess
 }
 
 type modelRequestSnapshot struct {
-	Model            config.Model    `json:"model"`
-	Messages         []model.Message `json:"messages"`
-	Tools            []model.Tool    `json:"tools"`
-	OutputTokenLimit int             `json:"outputTokenLimit"`
+	SearchRoute      string                      `json:"searchRoute"`
+	Options          storage.ConversationOptions `json:"options"`
+	Model            config.Model                `json:"model"`
+	Messages         []model.Message             `json:"messages"`
+	Tools            []model.Tool                `json:"tools"`
+	OutputTokenLimit int                         `json:"outputTokenLimit"`
 }
 
 func (r runRecorder) ModelDone(ctx context.Context, stepID string, chatErr error) error {
@@ -58,7 +88,7 @@ func (r runRecorder) Assistant(ctx context.Context, msg model.Message) error {
 	for _, call := range msg.ToolCalls {
 		calls = append(calls, storage.MessageToolCall{ID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments})
 	}
-	_, _, err := r.svc.store.AddAssistantMessage(ctx, r.sessionID, r.runID, msg.Content, calls)
+	_, _, err := r.svc.store.AddAssistantMessage(ctx, r.sessionID, r.runID, msg.Content, calls, msg.ProviderState)
 	if err == nil {
 		r.svc.clearStream(r.runID)
 	}

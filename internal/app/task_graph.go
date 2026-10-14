@@ -66,7 +66,7 @@ func (s *Service) resolvePlannedTask(ctx context.Context, p storage.AgentProfile
 	if !p.PlanEnabled || !p.AllowsTool(taskPlanDefinition.Function.Name) {
 		return args, nil, errors.New("Profile 未允许根任务执行计划")
 	}
-	if args.Worker != "" || args.Agent != "" || args.Task != "" || args.Materials != "" {
+	if args.Worker != "" || args.Task != "" || args.Materials != "" {
 		return args, nil, errors.New("按计划执行时只传 taskId 和 taskFingerprint，不允许覆盖任务条件")
 	}
 	g, err := s.store.GetTaskGraph(ctx, runID)

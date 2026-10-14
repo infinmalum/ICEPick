@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"icepick/internal/config"
@@ -68,7 +69,9 @@ func TestConversationWithHTTPModelService(t *testing.T) {
 func TestProfileFirstTaskUsesComponentAndAuthorizedTool(t *testing.T) {
 	chat := &scriptModel{steps: []func([]model.Message) (model.ChatResponse, error){
 		func(messages []model.Message) (model.ChatResponse, error) {
-			if messages[0].Content != "component prompt" {
+			// The component override leads the prompt; host runtime capabilities
+			// may follow it without replacing the user configuration.
+			if !strings.HasPrefix(messages[0].Content, "component prompt") {
 				t.Errorf("component prompt not used: %s", messages[0].Content)
 			}
 			return model.ChatResponse{Message: model.Message{Role: "assistant", ToolCalls: []model.ToolCall{toolCall("time-1")}}}, nil

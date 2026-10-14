@@ -27,7 +27,7 @@ func findProfile(t *testing.T, svc *Service, id string) storage.Profile {
 // A system-prompt script asserts, on its second turn, which prompt the run
 // is actually executing with.
 func promptScript(t *testing.T, call model.ToolCall, wantPrompt string, firstTurnCallsTool bool) *scriptModel {
-	return &scriptModel{steps: []func([]model.Message) (model.ChatResponse, error){
+	chat := &scriptModel{steps: []func([]model.Message) (model.ChatResponse, error){
 		func([]model.Message) (model.ChatResponse, error) {
 			if firstTurnCallsTool {
 				return model.ChatResponse{Message: model.Message{Role: "assistant", ToolCalls: []model.ToolCall{call}}}, nil
@@ -41,6 +41,10 @@ func promptScript(t *testing.T, call model.ToolCall, wantPrompt string, firstTur
 			return model.ChatResponse{Message: model.Message{Role: "assistant", Content: "收到"}}, nil
 		},
 	}}
+	if firstTurnCallsTool && !strings.HasPrefix(call.Function.Name, "local__") {
+		chat.steps = append([]func([]model.Message) (model.ChatResponse, error){discoverToolStep(call.Function.Name)}, chat.steps...)
+	}
+	return chat
 }
 
 // Switching an agent to another profile keeps sessions and history while the
@@ -151,6 +155,7 @@ func TestInFlightRunKeepsProfileSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	setAgentPolicy(t, svc, agent.ID, func(p *storage.AgentPolicy) { p.ApprovalMode = "semi" })
 	svc.chat = promptScript(t, extToolCall("call-1", "extsvc__ping", "{}"), "旧提示词", true)
 	run, err := svc.StartAgentTask(agent.ID, session.ID, "ping 一下")
 	if err != nil {
@@ -217,60 +222,6 @@ func TestProfileCopyIndependent(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForRun(t, svc, agent.ID, run.ID, "completed")
-}
-
-// Deleting follows the reference rules: referenced profiles and agents with
-// history are protected, unreferenced profiles delete cleanly, and deleting
-// an agent never deletes the profile it referenced.
-func TestProfileAndAgentDeleteConstraints(t *testing.T) {
-	svc, _ := newTestService(t, &scriptModel{}, &scriptTools{})
-	profile, err := svc.CreateProfile("P", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	agent, err := svc.CreateAgent("甲", profile.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.DeleteProfile(profile.ID); err == nil || !strings.Contains(err.Error(), "引用") {
-		t.Fatalf("referenced profile delete must be refused: %v", err)
-	}
-	session, err := svc.CreateAgentSession(agent.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.DeleteAgent(agent.ID); err == nil {
-		t.Fatal("agent with sessions deleted")
-	}
-	sessions, err := svc.ListAgentSessions(agent.ID)
-	if err != nil || len(sessions) != 1 || sessions[0].ID != session.ID {
-		t.Fatalf("agent sessions: %+v %v", sessions, err)
-	}
-	// Point the agent at the shared default profile; the default stays
-	// referenced and the session still blocks agent deletion.
-	if _, err := svc.SwitchAgentProfile(agent.ID, storage.DefaultProfileID); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.DeleteProfile(storage.DefaultProfileID); err == nil {
-		t.Fatal("default profile still referenced")
-	}
-	// A second session keeps the agent undeletable; sessions are the
-	// instance's history, not the profile's.
-	if _, err := svc.CreateAgentSession(agent.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.DeleteAgent(agent.ID); err == nil {
-		t.Fatal("agent still owns sessions")
-	}
-	// Unreferenced profiles delete cleanly; deleting the agent left its
-	// former profile untouched.
-	if err := svc.DeleteProfile(profile.ID); err != nil {
-		t.Fatalf("unreferenced profile delete refused: %v", err)
-	}
-	profiles, err := svc.ListProfiles()
-	if err != nil || len(profiles) != 1 || profiles[0].ID != storage.DefaultProfileID {
-		t.Fatalf("remaining profiles: %+v %v", profiles, err)
-	}
 }
 
 // Saving a combination whose capability references do not exist on this host

@@ -89,11 +89,11 @@ func sharePackageFiles(name string, data storage.ProfileData) map[string]string 
 		"description": data.Description, "model": data.Model,
 		"allMcpServers": data.AllMCPServers, "enabledMcpServers": data.EnabledMCPServers,
 		"allowedTools": data.AllowedTools, "allSkills": data.AllSkills, "enabledSkills": data.EnabledSkills,
-		"delegation":    map[string]any{"enabled": data.Delegation.Enabled, "maxDepth": data.Delegation.MaxDepth, "selection": "pinned", "targetAgentId": "some-local-agent"},
+		"delegation":    map[string]any{"enabled": data.Delegation.Enabled, "maxDepth": data.Delegation.MaxDepth},
 		"contextBudget": data.ContextBudget, "memoryEnabled": data.MemoryEnabled, "planEnabled": data.PlanEnabled,
 	})
 	files := map[string]string{
-		"manifest.json": `{"formatVersion":1,"generator":"ICEPick","exportedAt":"2026-10-06T00:00:00Z","name":"` + name + `"}`,
+		"manifest.json": `{"formatVersion":6,"generator":"ICEPick","exportedAt":"2026-10-06T00:00:00Z","name":"` + name + `"}`,
 		"profile.json":  string(profileJSON),
 	}
 	if persona != "" {
@@ -113,8 +113,6 @@ func TestProfileShareRoundTrip(t *testing.T) {
 	}
 	profile.Data.Persona = "严谨的助手人格"
 	profile.Data.SystemPrompt = "总是先列计划再执行"
-	profile.Data.Delegation.Selection = storage.DelegationPinnedSelection
-	profile.Data.Delegation.TargetAgentID = storage.DefaultAgentID
 	if _, err := svc.UpdateProfile(profile); err != nil {
 		t.Fatal(err)
 	}
@@ -132,17 +130,6 @@ func TestProfileShareRoundTrip(t *testing.T) {
 	if preview.Name != profile.Name || preview.PersonaChars != len(profile.Data.Persona) || preview.PromptChars != len(profile.Data.SystemPrompt) {
 		t.Fatalf("preview mismatch: %+v", preview)
 	}
-	// The pinned target is a local identity: the preview must surface that
-	// it was stripped.
-	found := false
-	for _, warning := range preview.Warnings {
-		if strings.Contains(warning, "不携带目标") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("pinned-target warning missing: %+v", preview.Warnings)
-	}
 	imported, _, err := svc.ImportProfile(decodeBase64(t, exported.Data))
 	if err != nil {
 		t.Fatal(err)
@@ -153,9 +140,7 @@ func TestProfileShareRoundTrip(t *testing.T) {
 	if imported.Data.Persona != profile.Data.Persona || imported.Data.SystemPrompt != profile.Data.SystemPrompt {
 		t.Fatalf("imported content: %+v", imported.Data)
 	}
-	if imported.Data.Delegation.Selection != storage.DelegationModelSelection || imported.Data.Delegation.TargetAgentID != "" {
-		t.Fatalf("pinned target leaked into import: %+v", imported.Data.Delegation)
-	}
+
 	// Importing the same package twice yields two independent profiles with
 	// a disambiguated name.
 	second, _, err := svc.ImportProfile(decodeBase64(t, exported.Data))
@@ -274,7 +259,7 @@ func TestProfileShareComponentRoundTrip(t *testing.T) {
 func TestProfileShareRejectsPathEscape(t *testing.T) {
 	svc, _ := newShareService(t, nil)
 	data := zipBytes(t, map[string]string{
-		"manifest.json":       `{"formatVersion":1,"name":"x"}`,
+		"manifest.json":       `{"formatVersion":6,"name":"x"}`,
 		"profile.json":        `{}`,
 		"../escaped/evil.txt": "payload",
 	})
@@ -287,7 +272,7 @@ func TestProfileShareRejectsPathEscape(t *testing.T) {
 func TestProfileShareRejectsInvalidContent(t *testing.T) {
 	svc, _ := newShareService(t, nil)
 	data := zipBytes(t, map[string]string{
-		"manifest.json": `{"formatVersion":1,"name":"x"}`,
+		"manifest.json": `{"formatVersion":6,"name":"x"}`,
 		"profile.json":  `{"contextBudget": 12}`,
 	})
 	if _, _, err := svc.ImportProfile(data); err == nil {
@@ -374,7 +359,7 @@ func TestDynamicShareV4PreservesWorkflowPlannerAndBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	var manifest shareManifest
-	if err = json.Unmarshal(files[shareManifestFileName], &manifest); err != nil || manifest.FormatVersion != 5 {
+	if err = json.Unmarshal(files[shareManifestFileName], &manifest); err != nil || manifest.FormatVersion != 6 {
 		t.Fatal("new configuration exported under old format", manifest, err)
 	}
 	imported, _, err := svc.ImportProfile(data)

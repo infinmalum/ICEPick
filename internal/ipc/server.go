@@ -252,7 +252,7 @@ func writeLine(conn net.Conn, payload any) error {
 // rules and exfiltration gates behave identically over IPC.
 func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 	switch request.Method {
-	case "conversations.list", "conversations.get", "conversations.create", "conversations.select", "conversations.start", "contexts.get", "contexts.update", "templates.list", "templates.create", "templates.restore", "components.list", "profiles.archive", "profiles.references", "profiles.replaceArchive", "profiles.exportWorkers":
+	case "conversations.options", "conversations.searchAvailability", "conversations.searchRecords", "conversations.list", "conversations.get", "conversations.create", "conversations.select", "conversations.start", "contexts.get", "contexts.update", "templates.list", "templates.create", "templates.restore", "components.list", "profiles.archive", "profiles.references", "profiles.replaceArchive", "profiles.exportWorkers":
 		return s.dispatchConversation(request)
 	case "status":
 		return s.svc.GetStatus(), nil
@@ -337,69 +337,6 @@ func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 		}
 		return map[string]any{"profile": created, "preview": preview}, nil
 
-	case "agents.list":
-		return s.svc.ListAgents()
-	case "agents.profile":
-		var params struct {
-			AgentID string `json:"agentId"`
-		}
-		if err := decodeParams(request.Params, &params); err != nil {
-			return nil, err
-		}
-		return s.svc.GetAgentProfile(params.AgentID)
-	case "agents.create":
-		var params struct {
-			Name      string `json:"name"`
-			ProfileID string `json:"profileId"`
-		}
-		if err := decodeParams(request.Params, &params); err != nil {
-			return nil, err
-		}
-		return s.svc.CreateAgent(params.Name, params.ProfileID)
-	case "agents.update":
-		var params struct {
-			AgentID string              `json:"agentId"`
-			Name    string              `json:"name"`
-			Policy  storage.AgentPolicy `json:"policy"`
-		}
-		if err := decodeParams(request.Params, &params); err != nil {
-			return nil, err
-		}
-		return s.svc.UpdateAgent(params.AgentID, params.Name, params.Policy)
-	case "agents.switchProfile":
-		var params struct {
-			AgentID   string `json:"agentId"`
-			ProfileID string `json:"profileId"`
-		}
-		if err := decodeParams(request.Params, &params); err != nil {
-			return nil, err
-		}
-		return s.svc.SwitchAgentProfile(params.AgentID, params.ProfileID)
-	case "agents.delete":
-		var params struct {
-			AgentID string `json:"agentId"`
-		}
-		if err := decodeParams(request.Params, &params); err != nil {
-			return nil, err
-		}
-		return nil, s.svc.DeleteAgent(params.AgentID)
-
-	case "sessions.list":
-		var params struct {
-			AgentID string `json:"agentId"`
-		}
-		if err := decodeParams(request.Params, &params); err != nil {
-			return nil, err
-		}
-		return s.svc.ListAgentSessions(params.AgentID)
-	case "sessions.create":
-		var params struct {
-			AgentID string `json:"agentId"`
-		}
-		if err := decodeParams(request.Params, &params); err != nil {
-			return nil, err
-		}
-		return s.svc.CreateAgentSession(params.AgentID)
 	case "sessions.messages":
 		var params struct {
 			AgentID   string `json:"agentId"`
@@ -444,16 +381,6 @@ func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 		}
 		return s.svc.ListChildRuns(params.AgentID, params.RunID)
 
-	case "tasks.start":
-		var params struct {
-			AgentID   string `json:"agentId"`
-			SessionID string `json:"sessionId"`
-			Input     string `json:"input"`
-		}
-		if err := decodeParams(request.Params, &params); err != nil {
-			return nil, err
-		}
-		return s.svc.StartAgentTask(params.AgentID, params.SessionID, params.Input)
 	case "tasks.review":
 		var params struct {
 			SessionID string `json:"sessionId"`

@@ -290,7 +290,7 @@ func TestReadonlyGatewayBlocksUnknownSideEffects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, _, err := store.CreateRunWithOptions(ctx, c.ID, storage.CreateRunOptions{CaptureResources: true})
+	root, _, err := store.CreateRunWithOptions(ctx, c.ID, storage.CreateRunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

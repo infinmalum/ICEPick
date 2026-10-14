@@ -32,10 +32,12 @@ type Config struct {
 
 // MCPServer describes an explicitly enabled stdio MCP server process.
 type MCPServer struct {
-	Name       string   `json:"name"`
-	Command    string   `json:"command"`
-	Args       []string `json:"args,omitempty"`
-	WorkingDir string   `json:"workingDir,omitempty"`
+	// WebSearchTools explicitly registers this server's web-search tool names.
+	WebSearchTools []string `json:"webSearchTools,omitempty"`
+	Name           string   `json:"name"`
+	Command        string   `json:"command"`
+	Args           []string `json:"args,omitempty"`
+	WorkingDir     string   `json:"workingDir,omitempty"`
 	// Env lists environment variable NAMES the server process may inherit
 	// from ICEPick. Values are read from the host environment at launch and
 	// never stored in the config file; when the list is empty only PATH and
@@ -52,6 +54,11 @@ func (m MCPServer) validate() error {
 	}
 	if strings.TrimSpace(m.Command) == "" {
 		return fmt.Errorf("MCP 服务 %q 缺少启动命令", m.Name)
+	}
+	for _, name := range m.WebSearchTools {
+		if strings.TrimSpace(name) == "" || strings.TrimSpace(name) != name || len(name) > 512 {
+			return fmt.Errorf("MCP 服务 %q 的搜索工具名称无效", m.Name)
+		}
 	}
 	for _, name := range m.Env {
 		if name == "" || strings.ContainsAny(name, " =") {

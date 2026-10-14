@@ -14,15 +14,20 @@ type LocalContext struct {
 	Policy AgentPolicy `json:"policy"`
 }
 
+type ConversationOptions struct {
+	WebSearch bool `json:"webSearch"`
+}
+
 type Conversation struct {
-	Kind            string `json:"kind"`
-	ID              string `json:"id"`
-	ContextID       string `json:"contextId"`
-	ProfileID       string `json:"profileId"`
-	ProfileName     string `json:"profileName"`
-	Title           string `json:"title"`
-	CreatedAt       string `json:"createdAt"`
-	ProfileArchived bool   `json:"profileArchived"`
+	Options         ConversationOptions `json:"options"`
+	Kind            string              `json:"kind"`
+	ID              string              `json:"id"`
+	ContextID       string              `json:"contextId"`
+	ProfileID       string              `json:"profileId"`
+	ProfileName     string              `json:"profileName"`
+	Title           string              `json:"title"`
+	CreatedAt       string              `json:"createdAt"`
+	ProfileArchived bool                `json:"profileArchived"`
 }
 
 func (s *Store) GetLocalContext(ctx context.Context, id string) (LocalContext, error) {
@@ -73,7 +78,7 @@ func (s *Store) CreateConversation(ctx context.Context, profileID, reuseSession,
 			}
 		} else {
 			policy, _ := json.Marshal(AgentPolicy{ApprovalMode: "semi"})
-			if _, err := tx.ExecContext(ctx, `INSERT INTO agents(id,name,profile_id,policy,created_at,updated_at) VALUES(?,?,?,?,?,?)`, contextID, title, profileID, string(policy), now(), now()); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO contexts(id,name,profile_id,policy,created_at,updated_at) VALUES(?,?,?,?,?,?)`, contextID, title, profileID, string(policy), now(), now()); err != nil {
 				return err
 			}
 		}
@@ -86,11 +91,15 @@ func (s *Store) CreateConversation(ctx context.Context, profileID, reuseSession,
 	return s.GetConversation(ctx, sessionID)
 }
 
-const conversationSelect = `SELECT s.id,s.agent_id,COALESCE(NULLIF(s.profile_id,''),a.profile_id),p.name,s.title,s.created_at,p.archived_at IS NOT NULL,s.kind FROM sessions s JOIN agents a ON a.id=s.agent_id JOIN profiles p ON p.id=COALESCE(NULLIF(s.profile_id,''),a.profile_id)`
+const conversationSelect = `SELECT s.id,s.agent_id,COALESCE(NULLIF(s.profile_id,''),a.profile_id),p.name,s.title,s.created_at,p.archived_at IS NOT NULL,s.kind,s.options FROM sessions s JOIN contexts a ON a.id=s.agent_id JOIN profiles p ON p.id=COALESCE(NULLIF(s.profile_id,''),a.profile_id)`
 
 func scanConversation(row interface{ Scan(...any) error }) (Conversation, error) {
 	var c Conversation
-	err := row.Scan(&c.ID, &c.ContextID, &c.ProfileID, &c.ProfileName, &c.Title, &c.CreatedAt, &c.ProfileArchived, &c.Kind)
+	var raw string
+	err := row.Scan(&c.ID, &c.ContextID, &c.ProfileID, &c.ProfileName, &c.Title, &c.CreatedAt, &c.ProfileArchived, &c.Kind, &raw)
+	if err == nil {
+		err = json.Unmarshal([]byte(raw), &c.Options)
+	}
 	return c, err
 }
 
@@ -201,4 +210,23 @@ func (s *Store) RestoreTemplateProfile(ctx context.Context, id string, revision 
 	}
 	p.Data.TemplateID, p.Data.TemplateVersion = t.ID, t.Version
 	return s.UpdateProfile(ctx, p)
+}
+
+func (s *Store) SetConversationOptions(ctx context.Context, id string, options ConversationOptions) (Conversation, error) {
+	raw, err := json.Marshal(options)
+	if err != nil {
+		return Conversation{}, err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE sessions SET options=? WHERE id=? AND kind='normal'`, string(raw), id)
+	if err != nil {
+		return Conversation{}, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return Conversation{}, err
+	}
+	if n != 1 {
+		return Conversation{}, errors.New("找不到普通对话")
+	}
+	return s.GetConversation(ctx, id)
 }

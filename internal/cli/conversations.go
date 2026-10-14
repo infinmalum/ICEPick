@@ -4,19 +4,61 @@ import (
 	"fmt"
 	"os"
 
+	"icepick/internal/app"
 	"icepick/internal/ipc"
 	"icepick/internal/storage"
 )
 
 func cmdConversations(client *ipc.Client, args []string) int {
 	if len(args) == 0 {
-		return usage("conversations 需要 list|create|select|start|show")
+		return usage("conversations 需要 list|create|select|start|show|search")
 	}
 	parsed, err := parseCLI(args[1:], "wait", "unrestricted", "restricted", "memory", "no-memory")
 	if err != nil {
 		return usage(err.Error())
 	}
 	switch args[0] {
+	case "search":
+		if parsed.arg(0) == "" {
+			return usage("conversations search <id> [on|off|records]")
+		}
+		var c storage.Conversation
+		if err := client.Call("conversations.get", map[string]any{"id": parsed.arg(0)}, &c); err != nil {
+			return fail("读取对话", err)
+		}
+		choice := parsed.arg(1)
+		if choice == "records" {
+			var items []storage.SearchRequest
+			if err := client.Call("conversations.searchRecords", map[string]any{"id": c.ID}, &items); err != nil {
+				return fail("读取搜索记录", err)
+			}
+			for _, item := range items {
+				fmt.Printf("[%s] %s · %s · run %s\n", item.State, item.Provider, item.ID, item.RunID)
+				for _, citation := range item.Report.Citations {
+					fmt.Printf("  %s %s\n", citation.Title, citation.URL)
+				}
+				if item.Error != "" {
+					fmt.Println(item.Error)
+				}
+			}
+			return 0
+		}
+		if choice != "" && choice != "on" && choice != "off" {
+			return usage("搜索选项应为 on|off|records")
+		}
+		if choice != "" {
+			c.Options.WebSearch = choice == "on"
+			if err := client.Call("conversations.options", map[string]any{"id": c.ID, "options": c.Options}, &c); err != nil {
+				return fail("设置联网搜索", err)
+			}
+		}
+		var availability app.SearchAvailability
+		if err := client.Call("conversations.searchAvailability", map[string]any{"id": c.ID}, &availability); err != nil {
+			return fail("读取搜索能力", err)
+		}
+		fmt.Printf("联网搜索: %t · 可用: %t · 路径: %s\n%s\n", c.Options.WebSearch, availability.Available, availability.Route, availability.Reason)
+		return 0
+
 	case "permissions":
 		if parsed.arg(0) == "" {
 			return usage("conversations permissions <id> [--mode manual|semi|automatic] [--workspace <路径>] [--unrestricted|--restricted] [--memory|--no-memory]")
@@ -111,7 +153,15 @@ func cmdConversations(client *ipc.Client, args []string) int {
 			return fail("conversations.get", err)
 		}
 		if args[0] == "show" {
-			return cmdSessions(client, []string{"show", c.ID, "--agent", c.ContextID})
+			var messages []storage.Message
+			if err := client.Call("sessions.messages", map[string]any{"agentId": c.ContextID, "sessionId": c.ID}, &messages); err != nil {
+				return fail("读取对话", err)
+			}
+			fmt.Printf("%s（%s）\n", c.Title, c.ProfileName)
+			for _, message := range messages {
+				fmt.Printf("[%s] %s\n", message.Role, message.Content)
+			}
+			return 0
 		}
 		if len(parsed.positional) < 2 {
 			return usage("conversations start <id> <任务内容…> [--wait]")

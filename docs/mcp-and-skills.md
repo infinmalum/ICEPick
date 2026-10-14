@@ -50,3 +50,15 @@ worker 可用 local__search_worker_traces / local__list_worker_traces 查找本�
 
 
 独立审查当前只读取执行者已有工具证据。Profile 的 `execution.review.requiredChecks` 是必要检查工具名列表；对应工具必须经过原网关与审批，最后一次调用成功且结果为包含 `"passed": true` 的 JSON 对象，才能满足检查。普通文本或单纯调用成功不能满足必要检查；失败、缺失、未知执行结果会阻止必需审查通过。reviewer 当前没有工具、Skill、记忆或委派能力。
+
+
+本机基础工具使用 `local__write_file(path,content,expectedContent?)`、`local__edit_file(path,oldText,newText)` 和 `local__exec(executable,args,cwd,timeoutSeconds?)`。文件路径和命令 cwd 为绝对路径；write 未提供 expectedContent 时仅允许新建，覆盖必须匹配完整旧内容；edit 拒绝缺失和多处匹配。exec 不隐式启动 shell，需要 shell 时明确指定；命令列表精确匹配 executable，完整参数经过审批。结果中的 passed 仅表示该命令成功退出，不证明用户全部验收条件满足；进程取消可能保留未知效果。它不是操作系统沙箱。
+
+`local__tool_search(query,limit?)` 是宿主的跨服务商工具发现入口。首轮真实 MCP 路径只提供 local 工具；首次搜索才连接 Profile 所选服务并取得元数据。每次默认加载3个、最多5个匹配，真实 schema 在下一轮可调用，运行最多保留32个外部工具。搜索结果和后续模型请求保存定义与指纹，调用前重新枚举核对；变化后拒绝旧调用并要求重新搜索。发现不执行目标工具、不新增授权；外部调用仍需原网关审批和外发许可。一般外部工具先发现、下一轮调用；禁用 tool_search 不会恢复全量目录注入。对话开启联网搜索时，显式登记的搜索工具作为本轮选择的能力直接加载，仍执行同一审批与指纹校验。
+
+
+### 搜索 MCP 登记
+
+在已有服务配置中设置 `webSearchTools`，填写服务返回的真实工具名，例如 `"webSearchTools": ["web_search"]`。不会根据描述猜测服务是否可联网，也不会额外安装服务。对应 Profile/组件必须允许该服务和工具；对话搜索开关开启时提供实际 schema，关闭时不能发现或调用这些登记工具。原生接口可用时优先原生，原生请求失败不静默改用 MCP。
+
+搜索 MCP 的结果保留在原 ToolCall/Step；对话搜索记录可显示显式 JSON URL/title 来源，无法解析的文本保留原文，不编造引用。工具调用次数与服务内部搜索次数不同，未报告内部用量和独立费用时显示未知。其他 MCP 内部的联网行为仍由原权限机制处理。

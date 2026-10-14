@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+
 	"os"
 	"path/filepath"
 	"time"
@@ -18,15 +18,12 @@ import (
 )
 
 // currentVersion is the schema version this binary writes. Opening a database
-// with a higher version is refused so an old binary never writes a new schema.
-const currentVersion = 17
+// with a different version is refused; development releases do not migrate data.
+const currentVersion = 20
 
 type Store struct {
 	db   *sql.DB
 	path string
-	// backupPath names the pre-migration file snapshot that must be kept
-	// until the migration to the current version succeeded.
-	backupPath string
 }
 
 type Session struct {
@@ -46,16 +43,16 @@ type MessageToolCall struct {
 }
 
 type Message struct {
-	ID        string            `json:"id"`
-	SessionID string            `json:"sessionId"`
-	AgentID   string            `json:"agentId"`
-	RunID     string            `json:"runId"`
-	Seq       int               `json:"seq"`
-	Role      string            `json:"role"`
-	Content   string            `json:"content"`
-	ToolCalls []MessageToolCall `json:"toolCalls,omitempty"`
-	Legacy    bool              `json:"legacy"`
-	CreatedAt string            `json:"createdAt"`
+	ProviderState []json.RawMessage `json:"-"`
+	ID            string            `json:"id"`
+	SessionID     string            `json:"sessionId"`
+	AgentID       string            `json:"agentId"`
+	RunID         string            `json:"runId"`
+	Seq           int               `json:"seq"`
+	Role          string            `json:"role"`
+	Content       string            `json:"content"`
+	ToolCalls     []MessageToolCall `json:"toolCalls,omitempty"`
+	CreatedAt     string            `json:"createdAt"`
 }
 
 type Run struct {
@@ -88,27 +85,15 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
-	backup, err := snapshotDatabaseFiles(path)
-	if err != nil {
-		return nil, fmt.Errorf("迁移前备份: %w", err)
-	}
 	db, err := sql.Open("sqlite3", path+"?_busy_timeout=5000&_foreign_keys=on")
 	if err != nil {
-		removeIfAny(backup)
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db, path: path, backupPath: backup}
-	migrated, err := s.migrate()
-	if err != nil {
-		// Keep the pre-migration snapshot: this is exactly when it is
-		// needed to roll back to the previous binary.
+	s := &Store{db: db, path: path}
+	if err := s.initialize(); err != nil {
 		db.Close()
 		return nil, err
-	}
-	if !migrated {
-		removeIfAny(s.backupPath)
-		s.backupPath = ""
 	}
 	if err := os.Chmod(path, 0600); err != nil {
 		db.Close()
@@ -117,195 +102,7 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
-// snapshotDatabaseFiles copies the database and its rollback journal before
-// any connection touches the file, so the pair is exactly restorable by an
-// older binary. The snapshot is only kept when a migration actually runs.
-func snapshotDatabaseFiles(path string) (string, error) {
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		return "", nil
-	} else if err != nil {
-		return "", err
-	}
-	stamp := time.Now().UTC().Format("20060102T150405.000000000")
-	backup := path + ".pre-migration-" + stamp + ".bak"
-	if err := copyFile(path, backup); err != nil {
-		removeIfAny(backup)
-		return "", err
-	}
-	for _, suffix := range []string{"-journal", "-wal", "-shm"} {
-		side := path + suffix
-		if _, err := os.Stat(side); err == nil {
-			if err := copyFile(side, backup+suffix); err != nil {
-				removeIfAny(backup)
-				removeIfAny(backup + suffix)
-				return "", err
-			}
-		}
-	}
-	return backup, nil
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		return err
-	}
-	_, err = io.Copy(out, in)
-	if cerr := out.Close(); err == nil {
-		err = cerr
-	}
-	return err
-}
-
-func removeIfAny(path string) {
-	if path != "" {
-		_ = os.Remove(path)
-	}
-}
-
 func (s *Store) Close() error { return s.db.Close() }
-
-// BackupPath reports the pre-migration snapshot kept next to the database, if
-// a migration ran during Open. The snapshot stays until manually removed so a
-// rollback to the previous binary can restore it.
-func (s *Store) BackupPath() string { return s.backupPath }
-
-// migrate applies pending schema migrations and reports whether the database
-// file was actually migrated (a fresh empty database does not count).
-func (s *Store) migrate() (bool, error) {
-	var version int
-	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-		return false, err
-	}
-	if version > currentVersion {
-		return false, fmt.Errorf("数据库版本 %d 高于当前程序支持的版本", version)
-	}
-	migrated := version > 0 && version < currentVersion
-	if version == 0 {
-		if err := s.migrateFresh(); err != nil {
-			return false, err
-		}
-	}
-	if version < 2 {
-		if err := s.withTx(context.Background(), func(tx *sql.Tx) error {
-			if _, err := tx.Exec(`ALTER TABLE runs ADD COLUMN error TEXT NOT NULL DEFAULT ''`); err != nil {
-				return fmt.Errorf("数据库迁移: %w", err)
-			}
-			if _, err := tx.Exec(`PRAGMA user_version = 2`); err != nil {
-				return err
-			}
-			return nil
-		}); err != nil {
-			return false, err
-		}
-	}
-	if version < 3 {
-		if err := s.migrateProfiles(); err != nil {
-			return false, err
-		}
-	}
-	if version < 4 {
-		if err := s.migrateAgentRecords(); err != nil {
-			return false, err
-		}
-	}
-	if version < 5 {
-		if err := s.migrateSingleDefault(); err != nil {
-			return false, err
-		}
-	}
-	if version < 6 {
-		if err := s.migrateStructuredRuns(); err != nil {
-			return false, err
-		}
-	}
-	if version < 7 {
-		if err := s.withTx(context.Background(), func(tx *sql.Tx) error {
-			return migrateApprovalsV7(context.Background(), tx)
-		}); err != nil {
-			return false, err
-		}
-	}
-	if version < 8 {
-		if err := s.withTx(context.Background(), func(tx *sql.Tx) error {
-			return migrateProfilesV8(context.Background(), tx)
-		}); err != nil {
-			return false, err
-		}
-	}
-	if version < 9 {
-		if err := s.withTx(context.Background(), func(tx *sql.Tx) error { return migrateComponentsV9(context.Background(), tx) }); err != nil {
-			return false, err
-		}
-	}
-	if version < 10 {
-		if err := s.withTx(context.Background(), func(tx *sql.Tx) error { return migrateMemoryV10(context.Background(), tx) }); err != nil {
-			return false, err
-		}
-	}
-	if version < 11 {
-		if err := s.withTx(context.Background(), func(tx *sql.Tx) error { return migrateDelegationV11(context.Background(), tx) }); err != nil {
-			return false, err
-		}
-	}
-	if version < 12 {
-		if err := s.withTx(context.Background(), func(tx *sql.Tx) error { return migrateContextsV12(context.Background(), tx) }); err != nil {
-			return false, err
-		}
-	}
-	if version < 13 {
-		if err := s.withTx(context.Background(), func(tx *sql.Tx) error { return migrateRunResourcesV13(context.Background(), tx) }); err != nil {
-			return false, err
-		}
-	}
-	if version < 14 {
-		if err := s.withTx(context.Background(), func(tx *sql.Tx) error { return migratePlansV14(context.Background(), tx) }); err != nil {
-			return false, err
-		}
-	}
-	if version < 15 {
-		if err := s.withTx(context.Background(), func(tx *sql.Tx) error { return migrateTaskGraphV15(context.Background(), tx) }); err != nil {
-			return false, err
-		}
-	}
-	if version < 16 {
-		if err := s.withTx(context.Background(), func(tx *sql.Tx) error { return migrateCoordinationV16(context.Background(), tx) }); err != nil {
-			return false, err
-		}
-	}
-	if version < 17 {
-		if err := s.withTx(context.Background(), func(tx *sql.Tx) error { return migrateReviewV17(context.Background(), tx) }); err != nil {
-			return false, err
-		}
-	}
-	return migrated, nil
-}
-
-func (s *Store) migrateFresh() error {
-	return s.withTx(context.Background(), func(tx *sql.Tx) error {
-		if _, err := tx.Exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL)`); err != nil {
-			return fmt.Errorf("数据库迁移: %w", err)
-		}
-		if _, err := tx.Exec(`CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK(role IN ('user','assistant','tool')), content TEXT NOT NULL, created_at TEXT NOT NULL)`); err != nil {
-			return fmt.Errorf("数据库迁移: %w", err)
-		}
-		if _, err := tx.Exec(`CREATE INDEX messages_session_order ON messages(session_id, created_at, id)`); err != nil {
-			return fmt.Errorf("数据库迁移: %w", err)
-		}
-		if _, err := tx.Exec(`CREATE TABLE runs (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, status TEXT NOT NULL CHECK(status IN ('running','completed','cancelled','failed','interrupted')), created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
-			return fmt.Errorf("数据库迁移: %w", err)
-		}
-		if _, err := tx.Exec(`PRAGMA user_version = 1`); err != nil {
-			return err
-		}
-		return nil
-	})
-}
 
 func newID() (string, error) {
 	var bytes [16]byte
@@ -344,7 +141,7 @@ func (s *Store) CreateAgentSession(ctx context.Context, agentID, title string) (
 		return Session{}, err
 	}
 	item := Session{ID: id, AgentID: agentID, Title: title, Kind: SessionKindNormal, CreatedAt: now()}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO sessions (id, agent_id, kind, title, created_at) SELECT ?, id, 'normal', ?, ? FROM agents WHERE id = ?`, item.ID, item.Title, item.CreatedAt, agentID)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO sessions (id, agent_id, kind, title, created_at) SELECT ?, id, 'normal', ?, ? FROM contexts WHERE id = ?`, item.ID, item.Title, item.CreatedAt, agentID)
 	if err == nil {
 		var found string
 		err = s.db.QueryRowContext(ctx, `SELECT id FROM sessions WHERE id = ?`, item.ID).Scan(&found)
@@ -365,7 +162,7 @@ func (s *Store) CreateDelegationSession(ctx context.Context, agentID, title stri
 	}
 	item := Session{ID: id, AgentID: agentID, Title: title, Kind: SessionKindDelegation, CreatedAt: now()}
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		result, err := tx.ExecContext(ctx, `INSERT INTO sessions (id, agent_id, kind, title, created_at) SELECT ?, id, 'delegation', ?, ? FROM agents WHERE id = ?`, item.ID, item.Title, item.CreatedAt, agentID)
+		result, err := tx.ExecContext(ctx, `INSERT INTO sessions (id, agent_id, kind, title, created_at) SELECT ?, id, 'delegation', ?, ? FROM contexts WHERE id = ?`, item.ID, item.Title, item.CreatedAt, agentID)
 		if err != nil {
 			return err
 		}
@@ -445,8 +242,8 @@ func (s *Store) AddMessage(ctx context.Context, sessionID, runID, role, content 
 	created := now()
 	item := Message{ID: id, SessionID: sessionID, RunID: runID, Role: role, Content: content, CreatedAt: created}
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		err := tx.QueryRowContext(ctx, `INSERT INTO messages (id, session_id, agent_id, run_id, seq, role, content, tool_calls, legacy, created_at)
-			SELECT ?, id, agent_id, ?, COALESCE((SELECT MAX(seq) FROM messages WHERE session_id = ?), 0) + 1, ?, ?, '', 0, ? FROM sessions WHERE id = ?
+		err := tx.QueryRowContext(ctx, `INSERT INTO messages (id, session_id, agent_id, run_id, seq, role, content, tool_calls, created_at)
+			SELECT ?, id, agent_id, ?, COALESCE((SELECT MAX(seq) FROM messages WHERE session_id = ?), 0) + 1, ?, ?, '', ? FROM sessions WHERE id = ?
 			RETURNING agent_id, seq`,
 			item.ID, runID, sessionID, role, content, created, sessionID).
 			Scan(&item.AgentID, &item.Seq)
@@ -468,11 +265,7 @@ func (s *Store) AddMessage(ctx context.Context, sessionID, runID, role, content 
 // calls it requested. Every call gets a pending ToolCall row and a tool Step
 // in the same transaction; if any part fails nothing is persisted, so a
 // partial batch can never be replayed later.
-func (s *Store) AddAssistantMessage(ctx context.Context, sessionID, runID, content string, calls []MessageToolCall) (Message, []ToolCall, error) {
-	if len(calls) == 0 {
-		item, err := s.AddMessage(ctx, sessionID, runID, RoleAssistant, content)
-		return item, nil, err
-	}
+func (s *Store) AddAssistantMessage(ctx context.Context, sessionID, runID, content string, calls []MessageToolCall, providerState []json.RawMessage) (Message, []ToolCall, error) {
 	seen := map[string]bool{}
 	for _, call := range calls {
 		if call.ID == "" || seen[call.ID] {
@@ -485,17 +278,24 @@ func (s *Store) AddAssistantMessage(ctx context.Context, sessionID, runID, conte
 		return Message{}, nil, err
 	}
 	created := now()
-	item := Message{ID: id, SessionID: sessionID, RunID: runID, Role: RoleAssistant, Content: content, ToolCalls: append([]MessageToolCall(nil), calls...), CreatedAt: created}
+	item := Message{ID: id, SessionID: sessionID, RunID: runID, Role: RoleAssistant, Content: content, ProviderState: providerState, ToolCalls: append([]MessageToolCall{}, calls...), CreatedAt: created}
 	payload, err := json.Marshal(item.ToolCalls)
 	if err != nil {
 		return Message{}, nil, err
 	}
+	stateRaw, err := json.Marshal(providerState)
+	if err != nil {
+		return Message{}, nil, err
+	}
+	if len(stateRaw) > 512<<10 {
+		return Message{}, nil, errors.New("模型协议状态超过 512 KiB")
+	}
 	rows := make([]ToolCall, 0, len(calls))
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		if err := tx.QueryRowContext(ctx, `INSERT INTO messages (id, session_id, agent_id, run_id, seq, role, content, tool_calls, legacy, created_at)
-			SELECT ?, id, agent_id, ?, COALESCE((SELECT MAX(seq) FROM messages WHERE session_id = ?), 0) + 1, ?, ?, ?, 0, ? FROM sessions WHERE id = ?
+		if err := tx.QueryRowContext(ctx, `INSERT INTO messages (id, session_id, agent_id, run_id, seq, role, content, tool_calls, created_at, provider_state)
+			SELECT ?, id, agent_id, ?, COALESCE((SELECT MAX(seq) FROM messages WHERE session_id = ?), 0) + 1, ?, ?, ?, ?, ? FROM sessions WHERE id = ?
 			RETURNING agent_id, seq`,
-			item.ID, runID, sessionID, RoleAssistant, content, string(payload), created, sessionID).
+			item.ID, runID, sessionID, RoleAssistant, content, string(payload), created, string(stateRaw), sessionID).
 			Scan(&item.AgentID, &item.Seq); err != nil {
 			return err
 		}
@@ -534,7 +334,7 @@ func (s *Store) AddAssistantMessage(ctx context.Context, sessionID, runID, conte
 }
 
 func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]Message, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, agent_id, run_id, seq, role, content, tool_calls, legacy, created_at FROM messages WHERE session_id = ? ORDER BY seq`, sessionID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, agent_id, run_id, seq, role, content, tool_calls, created_at, provider_state FROM messages WHERE session_id = ? ORDER BY seq`, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -543,13 +343,17 @@ func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]Message, 
 	for rows.Next() {
 		var item Message
 		var payload string
-		if err := rows.Scan(&item.ID, &item.SessionID, &item.AgentID, &item.RunID, &item.Seq, &item.Role, &item.Content, &payload, &item.Legacy, &item.CreatedAt); err != nil {
+		var stateRaw string
+		if err := rows.Scan(&item.ID, &item.SessionID, &item.AgentID, &item.RunID, &item.Seq, &item.Role, &item.Content, &payload, &item.CreatedAt, &stateRaw); err != nil {
 			return nil, err
 		}
 		if payload != "" {
 			if err := json.Unmarshal([]byte(payload), &item.ToolCalls); err != nil {
 				return nil, fmt.Errorf("解析消息工具调用: %w", err)
 			}
+		}
+		if err := json.Unmarshal([]byte(stateRaw), &item.ProviderState); err != nil {
+			return nil, err
 		}
 		items = append(items, item)
 	}
@@ -558,14 +362,14 @@ func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]Message, 
 
 // CreateRunOptions distinguishes top-level runs from delegated subtask runs.
 type CreateRunOptions struct {
-	Component        string
-	TaskSpec         *TaskSpec
-	CaptureResources bool
-	SnapshotSkills   SkillSnapshotter
-	DefaultModel     config.Model
-	WorkerName       string
-	ParentRunID      string
-	Depth            int
+	SearchTools    []string
+	Component      string
+	TaskSpec       *TaskSpec
+	SnapshotSkills SkillSnapshotter
+	DefaultModel   config.Model
+	WorkerName     string
+	ParentRunID    string
+	Depth          int
 }
 
 // CreateRun starts a run for a session and resolves the owning Agent's
@@ -594,7 +398,7 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 			return errors.New("该会话已有运行中的任务")
 		}
 		var agentID, agentName, profileID, rawPolicy, kind string
-		if err := tx.QueryRowContext(ctx, `SELECT a.id,a.name,COALESCE(NULLIF(s.profile_id,''),a.profile_id),a.policy,s.kind FROM sessions s JOIN agents a ON a.id=s.agent_id WHERE s.id=?`, sessionID).Scan(&agentID, &agentName, &profileID, &rawPolicy, &kind); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT a.id,a.name,COALESCE(NULLIF(s.profile_id,''),a.profile_id),a.policy,s.kind FROM sessions s JOIN contexts a ON a.id=s.agent_id WHERE s.id=?`, sessionID).Scan(&agentID, &agentName, &profileID, &rawPolicy, &kind); err != nil {
 			return err
 		}
 		var policy AgentPolicy
@@ -645,14 +449,8 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 				}
 				policy = resources.RootPolicy
 				frozenMode = true
-			} else if resources.Version != 0 {
-				legacy, ok := resources.Legacy[agentID]
-				if !ok {
-					return errors.New("旧委派目标未包含在任务起始快照中")
-				}
-				frozen = legacy.Profile
-				policy = legacy.Policy
-				frozenMode = true
+			} else {
+				return errors.New("子运行必须选择内置组件或 worker 槽位")
 			}
 		}
 		if !frozenMode {
@@ -661,24 +459,25 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 			if err != nil {
 				return errors.New("会话没有可用的 Profile")
 			}
-			if opts.ParentRunID == "" && opts.CaptureResources {
-				resources, err = captureRunResources(ctx, tx, frozen, agentID, policy, opts.DefaultModel, opts.SnapshotSkills)
-				if err != nil {
-					return err
-				}
-				encoded, err := json.Marshal(resources)
-				if err != nil {
-					return err
-				}
-				resourcesRaw = string(encoded)
-				frozen = resources.Root
-				frozenMode = true
-			} else {
-				frozen.Data, err = frozen.Data.ResolveComponent(item.Component)
-				if err != nil {
-					return err
-				}
+			resources, err = captureRunResources(ctx, tx, frozen, agentID, policy, opts.DefaultModel, opts.SnapshotSkills)
+			if err != nil {
+				return err
 			}
+			var optionsRaw string
+			if err := tx.QueryRowContext(ctx, `SELECT options FROM sessions WHERE id=?`, sessionID).Scan(&optionsRaw); err != nil {
+				return err
+			}
+			if err := json.Unmarshal([]byte(optionsRaw), &resources.Options); err != nil {
+				return err
+			}
+			resources.SearchTools = append([]string(nil), opts.SearchTools...)
+			encoded, err := json.Marshal(resources)
+			if err != nil {
+				return err
+			}
+			resourcesRaw = string(encoded)
+			frozen = resources.Root
+			frozenMode = true
 		}
 		snapshot, err := json.Marshal(frozen.Data)
 		if err != nil {
@@ -701,7 +500,7 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 				return err
 			}
 			var count int
-			if err := tx.QueryRowContext(ctx, `WITH RECURSIVE tree(id) AS(SELECT ? UNION ALL SELECT r.id FROM runs r JOIN tree ON r.parent_run_id=tree.id) SELECT count(*) FROM runs WHERE id IN tree AND component='worker' AND id NOT IN(SELECT run_id FROM run_components)`, root).Scan(&count); err != nil {
+			if err := tx.QueryRowContext(ctx, `WITH RECURSIVE tree(id) AS(SELECT ? UNION ALL SELECT r.id FROM runs r JOIN tree ON r.parent_run_id=tree.id) SELECT count(*) FROM runs WHERE id IN tree AND component='worker' `, root).Scan(&count); err != nil {
 				return err
 			}
 			if count >= b.Limits.MaxAttempts {
@@ -710,17 +509,9 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 		}
 		item.ComponentVersion = componentVersion(item.Component)
 		persistedComponent := item.Component
-		if item.Component == "planner" || item.Component == "reviewer" {
-			persistedComponent = "worker"
-		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO runs(id,session_id,agent_id,profile_id,profile_revision,profile_snapshot,parent_run_id,depth,status,created_at,updated_at,component,component_version,worker_name,resources_snapshot) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, sessionID, agentID, frozen.ID, frozen.Revision, string(snapshot), parent, opts.Depth, item.Status, item.CreatedAt, item.UpdatedAt, persistedComponent, item.ComponentVersion, opts.WorkerName, resourcesRaw)
 		if err != nil {
 			return err
-		}
-		if item.Component == "planner" || item.Component == "reviewer" {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO run_components(run_id,role) VALUES(?,?)`, id, item.Component); err != nil {
-				return err
-			}
 		}
 		if opts.ParentRunID == "" {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO task_roots(run_id) VALUES(?)`, id); err != nil {
@@ -744,9 +535,7 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 		}
 		item.AgentID, item.ProfileID, item.ProfileRevision = agentID, frozen.ID, frozen.Revision
 		resolved = AgentProfile{AgentID: agentID, AgentName: agentName, ProfileID: frozen.ID, ProfileName: frozen.Name, ProfileRevision: frozen.Revision, ProfileData: frozen.Data, Policy: policy, ResourcesFrozen: frozenMode, FrozenSkills: frozen.Skills}
-		if resources.Version != 0 {
-			resolved.Resources = &resources
-		}
+		resolved.Resources = &resources
 		return nil
 	})
 	if err != nil {
@@ -757,7 +546,7 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 
 // ProfileSnapshot returns the resolved profile content a finished or running
 // run recorded at start. The second result reports whether a snapshot exists
-// (runs from before v8 carry none and fall back to profile lookups).
+// is present; all current runs capture it at creation.
 func (s *Store) ProfileSnapshot(ctx context.Context, runID string) (ProfileData, bool, error) {
 	var raw string
 	err := s.db.QueryRowContext(ctx, `SELECT profile_snapshot FROM runs WHERE id = ?`, runID).Scan(&raw)
@@ -831,6 +620,9 @@ func (s *Store) SetRunStatus(ctx context.Context, id, status, detail string) err
 // they become cancelled; executing calls may have taken effect, so they
 // become execution_unknown and block further progress until resolved.
 func sweepRunArtifacts(ctx context.Context, tx *sql.Tx, runID string) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE search_requests SET state='execution_unknown',error='任务结束时原生搜索请求未完成，结果与用量未知' WHERE run_id=? AND state='executing'`, runID); err != nil {
+		return err
+	}
 	ts := now()
 	if _, err := tx.ExecContext(ctx, `UPDATE tool_calls SET state='cancelled', error='任务已结束，调用未执行', updated_at=? WHERE run_id=? AND state IN ('pending','approved')`, ts, runID); err != nil {
 		return err
@@ -850,7 +642,7 @@ func sweepRunArtifacts(ctx context.Context, tx *sql.Tx, runID string) error {
 	return nil
 }
 
-const runColumns = `id, session_id, agent_id, profile_id, profile_revision, parent_run_id, depth, CASE WHEN status='failed' AND (SELECT state FROM task_coordination WHERE root_run_id=runs.id) IN ('waiting','blocked') THEN (SELECT state FROM task_coordination WHERE root_run_id=runs.id) ELSE status END, error, created_at, updated_at, COALESCE((SELECT role FROM run_components WHERE run_id=runs.id),component), component_version, worker_name`
+const runColumns = `id, session_id, agent_id, profile_id, profile_revision, parent_run_id, depth, CASE WHEN status='failed' AND (SELECT state FROM task_coordination WHERE root_run_id=runs.id) IN ('waiting','blocked') THEN (SELECT state FROM task_coordination WHERE root_run_id=runs.id) ELSE status END, error, created_at, updated_at, component, component_version, worker_name`
 
 func scanRun(scanner interface{ Scan(...any) error }) (Run, error) {
 	var item Run

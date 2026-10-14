@@ -391,6 +391,9 @@ func (s *Store) ResolveToolCall(ctx context.Context, id, state, result, note str
 func (s *Store) RecoverInterrupted(ctx context.Context) error {
 	ts := now()
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE search_requests SET state='execution_unknown',error='应用在原生搜索请求期间退出，结果与用量未知' WHERE state='executing'`); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE runs SET status = 'interrupted', error = '应用在任务运行期间退出', updated_at = ? WHERE status = 'running'`, ts); err != nil {
 			return err
 		}

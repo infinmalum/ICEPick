@@ -7,24 +7,31 @@ import (
 // The same application contract is used by Profile-first CLI and desktop.
 func (s *Server) dispatchConversation(request Request) (any, error) {
 	var params struct {
-		ID           string                     `json:"id"`
-		ProfileID    string                     `json:"profileId"`
-		ReuseSession string                     `json:"reuseSession"`
-		Title        string                     `json:"title"`
-		Name         string                     `json:"name"`
-		ContextID    string                     `json:"contextId"`
-		Input        string                     `json:"input"`
-		Revision     int                        `json:"revision"`
-		Groups       []string                   `json:"groups"`
-		Policy       storage.AgentPolicy        `json:"policy"`
-		Replacement  string                     `json:"replacement"`
-		Own          bool                       `json:"own"`
-		Expected     []storage.ProfileReference `json:"expected"`
+		Options      storage.ConversationOptions `json:"options"`
+		ID           string                      `json:"id"`
+		ProfileID    string                      `json:"profileId"`
+		ReuseSession string                      `json:"reuseSession"`
+		Title        string                      `json:"title"`
+		Name         string                      `json:"name"`
+		ContextID    string                      `json:"contextId"`
+		Input        string                      `json:"input"`
+		Revision     int                         `json:"revision"`
+		Groups       []string                    `json:"groups"`
+		Policy       storage.AgentPolicy         `json:"policy"`
+		Replacement  string                      `json:"replacement"`
+		Own          bool                        `json:"own"`
+		Expected     []storage.ProfileReference  `json:"expected"`
 	}
 	if err := decodeParams(request.Params, &params); err != nil {
 		return nil, err
 	}
 	switch request.Method {
+	case "conversations.options":
+		return s.svc.SetConversationOptions(params.ID, params.Options)
+	case "conversations.searchAvailability":
+		return s.svc.ConversationSearchAvailability(params.ID)
+	case "conversations.searchRecords":
+		return s.svc.ListConversationSearch(params.ID)
 	case "profiles.references":
 		return s.svc.ProfileReferences(params.ID)
 	case "profiles.replaceArchive":

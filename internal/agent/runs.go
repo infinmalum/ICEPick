@@ -30,8 +30,8 @@ func (r *Runs) Start(ctx context.Context, sessionID string) (storage.Run, contex
 	return r.start(ctx, sessionID, storage.CreateRunOptions{})
 }
 
-func (r *Runs) StartPrepared(ctx context.Context, sessionID string, model config.Model, snapshot storage.SkillSnapshotter) (storage.Run, context.Context, storage.AgentProfile, error) {
-	return r.start(ctx, sessionID, storage.CreateRunOptions{CaptureResources: true, DefaultModel: model, SnapshotSkills: snapshot})
+func (r *Runs) StartPrepared(ctx context.Context, sessionID string, model config.Model, snapshot storage.SkillSnapshotter, searchTools ...string) (storage.Run, context.Context, storage.AgentProfile, error) {
+	return r.start(ctx, sessionID, storage.CreateRunOptions{DefaultModel: model, SnapshotSkills: snapshot, SearchTools: searchTools})
 }
 
 func (r *Runs) StartWorker(ctx context.Context, sessionID, parentID string, depth int, name string) (storage.Run, context.Context, storage.AgentProfile, error) {
@@ -48,14 +48,6 @@ func (r *Runs) StartPlanner(ctx context.Context, session, parent string) (storag
 
 func (r *Runs) StartReviewer(ctx context.Context, session, parent string) (storage.Run, context.Context, storage.AgentProfile, error) {
 	return r.start(ctx, session, storage.CreateRunOptions{ParentRunID: parent, Depth: 1, WorkerName: "@reviewer", Component: "reviewer"})
-}
-
-// StartChild registers a delegated subtask run: the child session already
-// exists and belongs to the target Agent, and the run row links to its
-// parent. The child context derives from the parent run's context, so
-// cancelling the parent cancels every surviving subtask.
-func (r *Runs) StartChild(ctx context.Context, sessionID, parentRunID string, depth int) (storage.Run, context.Context, storage.AgentProfile, error) {
-	return r.start(ctx, sessionID, storage.CreateRunOptions{ParentRunID: parentRunID, Depth: depth})
 }
 
 func (r *Runs) start(ctx context.Context, sessionID string, opts storage.CreateRunOptions) (storage.Run, context.Context, storage.AgentProfile, error) {

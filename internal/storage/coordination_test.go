@@ -34,7 +34,7 @@ func TestRootBudgetIsSharedAcrossComponents(t *testing.T) {
 	if _, err = s.BeginModelStep(ctx, child.ID, "{}"); err == nil {
 		t.Fatal("child reset root model budget")
 	}
-	_, calls, err := s.AddAssistantMessage(ctx, child.SessionID, child.ID, "", []MessageToolCall{{ID: "one", Name: "local__current_time", Arguments: "{}"}, {ID: "two", Name: "local__current_time", Arguments: "{}"}})
+	_, calls, err := s.AddAssistantMessage(ctx, child.SessionID, child.ID, "", []MessageToolCall{{ID: "one", Name: "local__current_time", Arguments: "{}"}, {ID: "two", Name: "local__current_time", Arguments: "{}"}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestLateResponseCannotResolveUnknownEffect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, calls, err := s.AddAssistantMessage(ctx, child.SessionID, child.ID, "", []MessageToolCall{{ID: "late", Name: "external__write", Arguments: "{}"}})
+	_, calls, err := s.AddAssistantMessage(ctx, child.SessionID, child.ID, "", []MessageToolCall{{ID: "late", Name: "external__write", Arguments: "{}"}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestRetryCannotReplayKnownSideEffects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, calls, err := s.AddAssistantMessage(ctx, child.SessionID, child.ID, "", []MessageToolCall{{ID: "write", Name: "external__write", Arguments: "{}"}})
+	_, calls, err := s.AddAssistantMessage(ctx, child.SessionID, child.ID, "", []MessageToolCall{{ID: "write", Name: "external__write", Arguments: "{}"}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,43 +266,5 @@ func TestRetryCannotReplayKnownSideEffects(t *testing.T) {
 	g, _ := s.GetTaskGraph(ctx, root.ID)
 	if _, err = s.SetTaskGraph(ctx, root.ID, g.Revision, append(specs, retry)); err == nil {
 		t.Fatal("automatic retry replayed successful side effect")
-	}
-}
-
-func TestV15MigrationRetainsSucceededAttemptAndArtifact(t *testing.T) {
-	s, c, root, specs := taskGraphFixture(t)
-	ctx := context.Background()
-	child, err := createPlannedRun(t, s, c, root, specs[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = s.AddMessage(ctx, child.SessionID, child.ID, RoleAssistant, "既有交付"); err != nil {
-		t.Fatal(err)
-	}
-	if err = s.SetRunStatus(ctx, child.ID, "completed", ""); err != nil {
-		t.Fatal(err)
-	}
-	for _, q := range []string{`DROP TABLE review_requests`, `DROP TABLE task_reviews`, `DROP TABLE model_usage`, `DROP TABLE root_budgets`, `DROP TABLE task_events`, `DROP TABLE task_coordination`, `DROP TABLE task_artifacts`, `DROP TABLE worker_observations`, `DROP TABLE run_components`, `PRAGMA user_version=15`} {
-		if _, err = s.db.Exec(q); err != nil {
-			t.Fatal(err)
-		}
-	}
-	path := s.path
-	s.Close()
-	s, err = Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	g, err := s.GetTaskGraph(ctx, root.ID)
-	if err != nil || g.Tasks[0].State != "succeeded" || len(g.Attempts) != 1 || len(g.Artifacts) != 1 || g.Artifacts[0].RunID != child.ID {
-		t.Fatalf("v15 nonempty migration: %+v %v", g, err)
-	}
-	if err = s.RecoverInterrupted(ctx); err != nil {
-		t.Fatal(err)
-	}
-	g, err = s.GetTaskGraph(ctx, root.ID)
-	if err != nil || g.Tasks[0].State != "succeeded" || g.Coordination.State != "blocked" {
-		t.Fatal("recovery erased migrated result", g, err)
 	}
 }

@@ -45,59 +45,9 @@ func (s *StatusService) RestoreProfileDefault(revision int) (storage.Profile, er
 	return s.svc.RestoreProfileDefault(revision)
 }
 
-// DeleteProfile removes a profile after the user reassigned its referencing
-// agents.
+// DeleteProfile archives a profile while preserving existing history.
 func (s *StatusService) DeleteProfile(id string) error {
 	return s.svc.DeleteProfile(id)
-}
-
-// ListAgents returns the agent instances with their current profile
-// reference and machine policy.
-func (s *StatusService) ListAgents() ([]storage.Agent, error) {
-	return s.svc.ListAgents()
-}
-
-// GetAgentProfile resolves one agent's current profile combination.
-func (s *StatusService) GetAgentProfile(agentID string) (storage.AgentProfile, error) {
-	return s.svc.GetAgentProfile(agentID)
-}
-
-// CreateAgent registers a new instance referencing an existing profile; the
-// new agent initializes its own independent machine policy.
-func (s *StatusService) CreateAgent(name, profileID string) (storage.Agent, error) {
-	return s.svc.CreateAgent(name, profileID)
-}
-
-// UpdateAgent saves the agent-owned name and machine-local policy.
-func (s *StatusService) UpdateAgent(agentID, name string, policy storage.AgentPolicy) (storage.Agent, error) {
-	return s.svc.UpdateAgent(agentID, name, policy)
-}
-
-// SwitchAgentProfile points an agent at another profile without touching its
-// sessions, history or policy.
-func (s *StatusService) SwitchAgentProfile(agentID, profileID string) (storage.Agent, error) {
-	return s.svc.SwitchAgentProfile(agentID, profileID)
-}
-
-// DeleteAgent removes an instance that no longer owns sessions.
-func (s *StatusService) DeleteAgent(agentID string) error {
-	return s.svc.DeleteAgent(agentID)
-}
-
-func (s *StatusService) ListSessions() ([]storage.Session, error) {
-	return s.svc.ListSessions()
-}
-
-func (s *StatusService) ListAgentSessions(agentID string) ([]storage.Session, error) {
-	return s.svc.ListAgentSessions(agentID)
-}
-
-func (s *StatusService) CreateSession() (storage.Session, error) {
-	return s.svc.CreateSession()
-}
-
-func (s *StatusService) CreateAgentSession(agentID string) (storage.Session, error) {
-	return s.svc.CreateAgentSession(agentID)
 }
 
 // ListMessages returns the display projection of a session: persisted
@@ -268,14 +218,6 @@ func (s *StatusService) ImportProfile(dataBase64 string) (app.ImportResult, erro
 		return app.ImportResult{}, err
 	}
 	return app.ImportResult{Profile: profile, Preview: preview}, nil
-}
-
-func (s *StatusService) StartTask(sessionID, input string) (storage.Run, error) {
-	return s.svc.StartTask(sessionID, input)
-}
-
-func (s *StatusService) StartAgentTask(agentID, sessionID, input string) (storage.Run, error) {
-	return s.svc.StartAgentTask(agentID, sessionID, input)
 }
 
 func (s *StatusService) CancelTask(agentID, id string) error {

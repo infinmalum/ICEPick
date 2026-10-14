@@ -211,6 +211,22 @@ func (e Engine) Run(ctx context.Context, source config.Model, history []model.Me
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
+		if dynamic, ok := e.Tools.(interface{ DynamicDefinitions() bool }); ok && dynamic.DynamicDefinitions() && turn > 0 {
+			fresh, err := e.Tools.Definitions(ctx)
+			if err != nil {
+				return "", err
+			}
+			definitions = nil
+			allowed = map[string]bool{}
+			for _, d := range fresh {
+				name := d.Function.Name
+				if e.AllowedTools != nil && !configured[name] {
+					continue
+				}
+				definitions = append(definitions, d)
+				allowed[name] = true
+			}
+		}
 		if e.Compactor != nil && e.ContextBudget > 0 {
 			if err := e.compactTurn(ctx, rec, source, &messages, &summary, definitions); err != nil {
 				return "", fmt.Errorf("上下文压缩: %w", err)

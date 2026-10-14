@@ -28,7 +28,7 @@ func buildClosedTurnHistory(t *testing.T, svc *Service, store *storage.Store) (s
 	}
 	if _, _, err := store.AddAssistantMessage(ctx, session.ID, run.ID, "", []storage.MessageToolCall{
 		{ID: "c1", Name: "local__current_time", Arguments: "{}"},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	call, err := store.FindRunToolCall(ctx, run.ID, "c1")
@@ -81,7 +81,7 @@ func TestRunContextSummaryMemoryAndPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	steps := []storage.PlanStep{{Title: "回答新任务", Status: storage.PlanInProgress}}
-	if _, err := store.SetSessionPlan(ctx, sessionID, steps); err != nil {
+	if _, err := store.CompareAndSetSessionPlan(ctx, sessionID, steps, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -283,7 +283,7 @@ func TestSessionCompactorGatedByExfil(t *testing.T) {
 	// Make the covered history carry a credential scope.
 	if _, _, err := store.AddAssistantMessage(ctx, sessionID, runID, "", []storage.MessageToolCall{
 		{ID: "k1", Name: "local__read_file", Arguments: `{"path":"~/.ssh/id_rsa"}`},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	call, err := store.FindRunToolCall(ctx, runID, "k1")

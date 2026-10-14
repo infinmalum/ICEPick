@@ -38,6 +38,9 @@ func EstimateTokens(text string) int {
 func estimateMessages(messages []model.Message) int {
 	total := 0
 	for _, m := range messages {
+		for _, item := range m.ProviderState {
+			total += EstimateTokens(string(item))
+		}
 		total += EstimateTokens(m.Content) + EstimateTokens(m.ToolCallID) + 8
 		for _, c := range m.ToolCalls {
 			total += EstimateTokens(c.Function.Name) + EstimateTokens(c.Function.Arguments) + 8

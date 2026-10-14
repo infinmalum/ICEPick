@@ -63,7 +63,7 @@ func TestTransportFailureBlocksFurtherRuns(t *testing.T) {
 	}
 	svc.WaitIdle()
 	list, err := svc.ListToolCalls(storage.DefaultAgentID, session.ID)
-	if err != nil || len(list) != 1 || list[0].State != storage.CallExecutionUnknow {
+	if err != nil || len(list) != 2 || list[1].State != storage.CallExecutionUnknow {
 		t.Fatalf("outcome: %+v %v", list, err)
 	}
 	if _, err = svc.StartTask(session.ID, "retry"); err == nil {
@@ -103,7 +103,7 @@ func TestExfilAgentIsolationAndPayload(t *testing.T) {
 		t.Fatal("unclassified arguments escaped")
 	}
 	run, _, _ := store.CreateRun(ctx, session.ID)
-	_, calls, err := store.AddAssistantMessage(ctx, session.ID, run.ID, "", []storage.MessageToolCall{{ID: "failed", Name: "local__read_file", Arguments: "{}"}})
+	_, calls, err := store.AddAssistantMessage(ctx, session.ID, run.ID, "", []storage.MessageToolCall{{ID: "failed", Name: "local__read_file", Arguments: "{}"}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

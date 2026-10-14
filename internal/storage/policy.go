@@ -121,7 +121,7 @@ func (s *Store) DeleteExfilGrant(ctx context.Context, agentID, destination strin
 // summary is accounted for by the caller, which knows the profile.
 func (s *Store) SessionDataScopes(ctx context.Context, sessionID string) (hasUserInput bool, toolScopes []string, err error) {
 	var userCount int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE session_id = ? AND role = 'user' AND legacy = 0`, sessionID).Scan(&userCount); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE session_id = ? AND role = 'user' `, sessionID).Scan(&userCount); err != nil {
 		return false, nil, err
 	}
 	hasUserInput = userCount > 0

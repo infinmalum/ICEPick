@@ -57,15 +57,13 @@ func usage(errDetail string) int {
   icepick conversations list | create --profile <id> [--reuse <对话ID>]
   icepick conversations select <对话ID> --profile <id>
   icepick conversations start <对话ID> <任务内容…> [--wait] | show <对话ID>
+  icepick conversations search <对话ID> [on|off|records]
   icepick conversations permissions <对话ID> [--mode semi] [--workspace <路径>]
   icepick profiles list | create <名称> [--from <id>] | copy <id> <新名称>
   icepick profiles edit <id> [--name N] [--description D] [--prompt P] [--model 提供方/模型ID] [--budget N]
   icepick profiles restore | delete <id> [--replace <ProfileID> | --restore-workers]
   icepick profiles export <id> [--out <文件.zip>] [--include-workers] | import <包.zip|目录> [--yes]
-  icepick agents list | create <名称> --profile <id> | switch <agentID> <profileID>
-  icepick agents update <agentID> [--name N] [--mode manual|semi|automatic] [--delegate-to <名称或ID>[,…]] [--delegate-clear] | delete <agentID>
-  icepick sessions list [agentID] | create [agentID] | show <sessionID> --agent <agentID>
-  icepick tasks start <agentID> <sessionID> <任务内容…> [--wait] | status <runID> --agent <agentID> | review <sessionID> <runID> | cancel <runID> --agent <agentID>
+  icepick tasks status <runID> --agent <agentID> | review <sessionID> <runID> | cancel <runID> --agent <agentID>
   icepick approvals list [agentID] | approve <callID> --agent <agentID> | deny <callID> [原因] --agent <agentID>
   icepick memory list <agentID> | add <agentID> <内容…> | edit <agentID> <id> <内容…> | delete <agentID> <id> | export <agentID> [--out <文件>]
   icepick logs [行数]`)
@@ -127,10 +125,6 @@ func dispatch(client *ipc.Client, args []string) int {
 		return cmdStatus(client)
 	case "profiles":
 		return cmdProfiles(client, args[1:])
-	case "agents":
-		return cmdAgents(client, args[1:])
-	case "sessions":
-		return cmdSessions(client, args[1:])
 	case "tasks":
 		return cmdTasks(client, args[1:])
 	case "approvals":

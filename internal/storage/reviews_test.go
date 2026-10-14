@@ -27,7 +27,7 @@ func reviewStorageFixture(t *testing.T, checks []string) (*Store, Conversation, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	root, _, err := s.CreateRunWithOptions(ctx, c.ID, CreateRunOptions{CaptureResources: true})
+	root, _, err := s.CreateRunWithOptions(ctx, c.ID, CreateRunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestRequiredChecksNeedMachineReadableSuccess(t *testing.T) {
 		t.Run(tc.result, func(t *testing.T) {
 			s, c, root, reviewer := reviewStorageFixture(t, []string{"tests__run"})
 			ctx := context.Background()
-			_, calls, err := s.AddAssistantMessage(ctx, c.ID, root.ID, "", []MessageToolCall{{ID: "test", Name: "tests__run", Arguments: "{}"}})
+			_, calls, err := s.AddAssistantMessage(ctx, c.ID, root.ID, "", []MessageToolCall{{ID: "test", Name: "tests__run", Arguments: "{}"}}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -102,39 +102,5 @@ func TestRequiredChecksNeedMachineReadableSuccess(t *testing.T) {
 				t.Fatal(review, err)
 			}
 		})
-	}
-}
-
-func TestNonemptyV16ReviewMigration(t *testing.T) {
-	s, _, root, reviewer := reviewStorageFixture(t, nil)
-	ctx := context.Background()
-	// The prior schema had only planner overrides. Preserve an existing logical
-	// planner child plus all root configuration/messages during this upgrade.
-	if _, err := s.db.Exec(`UPDATE run_components SET role='planner' WHERE run_id=?`, reviewer.ID); err != nil {
-		t.Fatal(err)
-	}
-	for _, q := range []string{`DROP TABLE review_requests`, `DROP TABLE task_reviews`, `PRAGMA user_version=16`} {
-		if _, err := s.db.Exec(q); err != nil {
-			t.Fatal(err)
-		}
-	}
-	path := s.path
-	s.Close()
-	next, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer next.Close()
-	child, err := next.GetRun(ctx, reviewer.ID)
-	if err != nil || child.Component != "planner" {
-		t.Fatal(child, err)
-	}
-	snap, err := next.ReviewSnapshot(ctx, root.ID)
-	if err != nil || snap.Delivery.Content != "交付" || snap.Policy.Mode != "required" {
-		t.Fatal(snap, err)
-	}
-	reviews, err := next.ListTaskReviews(ctx, root.ID)
-	if err != nil || len(reviews) != 0 {
-		t.Fatal(reviews, err)
 	}
 }

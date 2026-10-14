@@ -76,8 +76,7 @@ func (s *Service) RestoreProfileDefault(revision int) (storage.Profile, error) {
 	return s.store.RestoreDefaultProfileData(context.Background(), revision)
 }
 
-// DeleteProfile removes a profile. A profile that any Agent still references
-// must be reassigned first; the error names the referencing agents.
+// DeleteProfile archives a profile while preserving existing history.
 func (s *Service) DeleteProfile(id string) error {
 	if err := s.checkReady(); err != nil {
 		return err

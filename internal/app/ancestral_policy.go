@@ -33,7 +33,7 @@ func (s *Service) runActors(ctx context.Context, runID string) ([]storage.Run, e
 }
 
 // Frozen permission ceilings and every live ancestor restriction apply to
-// descendants. Revoking legacy delegation also stops an already-running child.
+// descendants.
 func (s *Service) restrictRunPolicy(ctx context.Context, runID string, p storage.AgentProfile) (storage.AgentPolicy, error) {
 	policy := p.Policy
 	runs, err := s.runActors(ctx, runID)
@@ -44,24 +44,20 @@ func (s *Service) restrictRunPolicy(ctx context.Context, runID string, p storage
 	if err != nil {
 		return policy, err
 	}
-	for i, run := range runs {
+	for _, run := range runs {
 		actor, err := s.store.GetAgent(ctx, run.AgentID)
 		if err != nil {
 			return policy, err
 		}
 		policy = restrictPolicy(policy, actor.Policy)
-		if resources.Version != 0 {
+		{
 			if run.AgentID == resources.RootContextID {
 				policy = restrictPolicy(policy, resources.RootPolicy)
-			} else if initial, ok := resources.Legacy[run.AgentID]; ok {
-				policy = restrictPolicy(policy, initial.Policy)
 			} else {
 				return policy, errors.New("运行身份不在起始依赖中")
 			}
 		}
-		if i+1 < len(runs) && runs[i+1].WorkerName == "" && !policyAllowsTarget(actor.Policy, runs[i+1].AgentID) {
-			return policy, errors.New("祖先任务的委派授权已撤销")
-		}
+
 	}
 	return policy, nil
 }
@@ -93,7 +89,7 @@ func (s *Service) exfilCheckRun(ctx context.Context, runID, sessionID string, so
 	for _, run := range runs {
 		if !seen[run.AgentID] {
 			seen[run.AgentID] = true
-			if resources.GrantsFrozen {
+			{
 				allowed := map[string]bool{}
 				for _, scope := range resources.Grants[run.AgentID][origin].Scopes {
 					allowed[scope] = true

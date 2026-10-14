@@ -51,6 +51,18 @@ func (c Classifier) Classify(name, arguments string) (Effect, Sensitivity) {
 		return EffectExternal, SensUnknown
 	}
 	switch name {
+	case "local__exec":
+		return EffectExecute, SensUnknown
+	case "local__tool_search":
+		return EffectRead, SensWorkspace
+	case "local__write_file", "local__edit_file":
+		var args struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal([]byte(arguments), &args) != nil || args.Path == "" {
+			return EffectWrite, SensUnknown
+		}
+		return EffectWrite, c.classifyPath(args.Path)
 	case "local__current_time":
 		return EffectPure, SensPublic
 	case "local__search_worker_traces", "local__list_worker_traces", "local__get_worker_trace":
@@ -96,8 +108,22 @@ func (c Classifier) classifyPath(path string) Sensitivity {
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
 		abs = resolved
 	} else {
-		// A not-yet-existing path keeps its lexical classification below.
-		abs = filepath.Clean(abs)
+		// Resolve the existing parent of a new file as well, so a symlinked
+		// directory cannot hide a credential destination from classification.
+		parent, tail := filepath.Dir(abs), filepath.Base(abs)
+		for {
+			if resolved, e := filepath.EvalSymlinks(parent); e == nil {
+				abs = filepath.Join(resolved, tail)
+				break
+			}
+			next := filepath.Dir(parent)
+			if next == parent {
+				abs = filepath.Clean(abs)
+				break
+			}
+			tail = filepath.Join(filepath.Base(parent), tail)
+			parent = next
+		}
 	}
 	for _, root := range c.Protected {
 		if root != "" && under(abs, root) {

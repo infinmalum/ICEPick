@@ -53,7 +53,7 @@ func (s *Store) AddAgentMemory(ctx context.Context, agentID, content, source, so
 	item := Memory{ID: id, AgentID: agentID, Content: content, Source: source, Scope: scope, SourceSessionID: sourceSessionID, CreatedAt: now(), UpdatedAt: now()}
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
 		return tx.QueryRowContext(ctx, `INSERT INTO agent_memories (id, agent_id, content, source, scope, source_session_id, created_at, updated_at)
-			SELECT ?, id, ?, ?, ?, ?, ?, ? FROM agents WHERE id = ? RETURNING agent_id`,
+			SELECT ?, id, ?, ?, ?, ?, ?, ? FROM contexts WHERE id = ? RETURNING agent_id`,
 			item.ID, item.Content, item.Source, item.Scope, item.SourceSessionID, item.CreatedAt, item.UpdatedAt, agentID).
 			Scan(&item.AgentID)
 	})

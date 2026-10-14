@@ -16,10 +16,11 @@ import (
 )
 
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ProviderState []json.RawMessage `json:"provider_state,omitempty"`
+	Role          string            `json:"role"`
+	Content       string            `json:"content,omitempty"`
+	ToolCallID    string            `json:"tool_call_id,omitempty"`
+	ToolCalls     []ToolCall        `json:"tool_calls,omitempty"`
 }
 
 type ToolCall struct {
@@ -47,6 +48,7 @@ type Usage struct {
 }
 
 type ChatResponse struct {
+	Search       SearchReport
 	Message      Message
 	FinishReason string
 	Usage        Usage
@@ -81,7 +83,7 @@ func (c ChatClient) Chat(ctx context.Context, source config.Model, messages []Me
 		Tools     []Tool    `json:"tools,omitempty"`
 		Stream    bool      `json:"stream"`
 		MaxTokens int       `json:"max_tokens"`
-	}{Model: source.Name, Messages: messages, Tools: tools, Stream: false, MaxTokens: 8192}
+	}{Model: source.Name, Messages: compatMessages(messages), Tools: tools, Stream: false, MaxTokens: 8192}
 	data, err := json.Marshal(request)
 	if err != nil {
 		return ChatResponse{}, fmt.Errorf("编码模型请求: %w", err)
@@ -148,7 +150,7 @@ func (c ChatClient) ChatStream(ctx context.Context, source config.Model, message
 		Stream    bool           `json:"stream"`
 		Options   *streamOptions `json:"stream_options,omitempty"`
 		MaxTokens int            `json:"max_tokens"`
-	}{Model: source.Name, Messages: messages, Tools: tools, Stream: true, MaxTokens: 8192}
+	}{Model: source.Name, Messages: compatMessages(messages), Tools: tools, Stream: true, MaxTokens: 8192}
 	if onDelta != nil {
 		request.Options = &streamOptions{IncludeUsage: true}
 	}
@@ -224,4 +226,12 @@ func validateRequest(source config.Model, messages []Message) error {
 		return errors.New("消息列表不能为空")
 	}
 	return nil
+}
+
+func compatMessages(messages []Message) []Message {
+	copy := append([]Message(nil), messages...)
+	for i := range copy {
+		copy[i].ProviderState = nil
+	}
+	return copy
 }

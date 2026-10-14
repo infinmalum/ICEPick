@@ -5,7 +5,7 @@ import (
 	"icepick/internal/storage"
 )
 
-// The Profile-first desktop contract. Legacy methods remain IPC-compatible.
+// Desktop operations use conversations and Profiles.
 func (s *StatusService) ListConversations() ([]storage.Conversation, error) {
 	return s.svc.ListConversations()
 }
@@ -57,4 +57,18 @@ func (s *StatusService) ListTaskReviews(agentID, runID string) ([]storage.TaskRe
 }
 func (s *StatusService) StartConversationReview(sessionID, target string) (storage.Run, error) {
 	return s.svc.StartConversationReview(sessionID, target)
+}
+
+func (s *StatusService) StartConversationTask(sessionID, input string) (storage.Run, error) {
+	return s.svc.StartConversationTask(sessionID, input)
+}
+
+func (s *StatusService) SetConversationOptions(id string, options storage.ConversationOptions) (storage.Conversation, error) {
+	return s.svc.SetConversationOptions(id, options)
+}
+func (s *StatusService) ConversationSearchAvailability(id string) (app.SearchAvailability, error) {
+	return s.svc.ConversationSearchAvailability(id)
+}
+func (s *StatusService) ListConversationSearch(id string) ([]storage.SearchRequest, error) {
+	return s.svc.ListConversationSearch(id)
 }

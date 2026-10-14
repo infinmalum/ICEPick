@@ -31,7 +31,7 @@ func TestRunGrantCeilingAndRevocation(t *testing.T) {
 	if _, err = svc.GrantExfil(c.ContextID, origin, []string{storage.ScopePersonal}); err != nil {
 		t.Fatal(err)
 	}
-	run, profile, err := store.CreateRunWithOptions(ctx, c.ID, storage.CreateRunOptions{CaptureResources: true})
+	run, profile, err := store.CreateRunWithOptions(ctx, c.ID, storage.CreateRunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

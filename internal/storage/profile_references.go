@@ -16,7 +16,7 @@ type ProfileReference struct {
 }
 
 func referencedProfiles(ctx context.Context, tx *sql.Tx, target string) ([]Profile, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id,name,revision,config FROM resolved_profiles WHERE archived_at IS NULL AND id<>? ORDER BY id`, target)
+	rows, err := tx.QueryContext(ctx, `SELECT id,name,revision,config FROM profiles WHERE archived_at IS NULL AND id<>? ORDER BY id`, target)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +121,7 @@ func (s *Store) ArchiveProfileReplacing(ctx context.Context, id, replacement str
 			if err != nil || count != 1 {
 				return fmt.Errorf("发布替代配置失败: %v", err)
 			}
-			if err := saveProfileComponents(ctx, tx, p.ID, p.Data); err != nil {
+			if err := saveProfileConfig(ctx, tx, p.ID, p.Data); err != nil {
 				return err
 			}
 			if err := saveProfileRevision(ctx, tx, p.ID, p.Revision+1, p.Name, p.Data); err != nil {

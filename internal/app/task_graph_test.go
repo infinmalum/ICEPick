@@ -136,7 +136,7 @@ func TestPlannedTaskApprovalBindsContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, profile, err := store.CreateRunWithOptions(ctx, c.ID, storage.CreateRunOptions{CaptureResources: true})
+	run, profile, err := store.CreateRunWithOptions(ctx, c.ID, storage.CreateRunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

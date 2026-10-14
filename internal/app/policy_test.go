@@ -31,10 +31,10 @@ func extToolCall(id, name, arguments string) model.ToolCall {
 	return call
 }
 
-// toolCallScript builds a two-turn model script: one tool call, then a final
+// toolCallScript discovers external tools, calls one, then returns a final
 // answer that asserts the tool result (or denial) actually reached the model.
 func toolCallScript(t *testing.T, call model.ToolCall, toolResult string, finalContent string) *scriptModel {
-	return &scriptModel{steps: []func([]model.Message) (model.ChatResponse, error){
+	chat := &scriptModel{steps: []func([]model.Message) (model.ChatResponse, error){
 		func([]model.Message) (model.ChatResponse, error) {
 			return model.ChatResponse{Message: model.Message{Role: "assistant", ToolCalls: []model.ToolCall{call}}}, nil
 		},
@@ -45,6 +45,17 @@ func toolCallScript(t *testing.T, call model.ToolCall, toolResult string, finalC
 			return model.ChatResponse{Message: model.Message{Role: "assistant", Content: finalContent}}, nil
 		},
 	}}
+	if !strings.HasPrefix(call.Function.Name, "local__") {
+		chat.steps = append([]func([]model.Message) (model.ChatResponse, error){discoverToolStep(call.Function.Name)}, chat.steps...)
+	}
+	return chat
+}
+
+func discoverToolStep(name string) func([]model.Message) (model.ChatResponse, error) {
+	return func([]model.Message) (model.ChatResponse, error) {
+		raw := `{"query":"` + name + `"}`
+		return model.ChatResponse{Message: model.Message{Role: "assistant", ToolCalls: []model.ToolCall{extToolCall("discover", "local__tool_search", raw)}}}, nil
+	}
 }
 
 func waitForCallState(t *testing.T, svc *Service, agentID, sessionID, state string) storage.ToolCall {
@@ -55,7 +66,7 @@ func waitForCallState(t *testing.T, svc *Service, agentID, sessionID, state stri
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(calls) > 0 && calls[len(calls)-1].State == state {
+		if len(calls) > 0 && calls[len(calls)-1].ToolName != "local__tool_search" && calls[len(calls)-1].State == state {
 			return calls[len(calls)-1]
 		}
 		if time.Now().After(deadline) {
@@ -110,7 +121,7 @@ func TestApprovalFlowSemiMode(t *testing.T) {
 	}
 	waitForRun(t, svc, storage.DefaultAgentID, run.ID, "completed")
 	calls, _ := svc.ListToolCalls(storage.DefaultAgentID, session.ID)
-	if len(calls) != 1 || calls[0].State != storage.CallSucceeded || calls[0].Result != "pong" {
+	if len(calls) != 2 || calls[1].State != storage.CallSucceeded || calls[1].Result != "pong" {
 		t.Fatalf("approved call outcome: %+v", calls)
 	}
 	if len(tools.calls) != 1 {
@@ -120,17 +131,7 @@ func TestApprovalFlowSemiMode(t *testing.T) {
 
 // A denial is terminal and reaches the model as a tool error.
 func TestApprovalDenialReturnsToModel(t *testing.T) {
-	chat := &scriptModel{steps: []func([]model.Message) (model.ChatResponse, error){
-		func([]model.Message) (model.ChatResponse, error) {
-			return model.ChatResponse{Message: model.Message{Role: "assistant", ToolCalls: []model.ToolCall{extToolCall("call-1", "extsvc__ping", "{}")}}}, nil
-		},
-		func(messages []model.Message) (model.ChatResponse, error) {
-			if !strings.Contains(messages[len(messages)-1].Content, "用户拒绝") {
-				t.Fatalf("denial not returned to model: %+v", messages)
-			}
-			return model.ChatResponse{Message: model.Message{Role: "assistant", Content: "好的，不发了"}}, nil
-		},
-	}}
+	chat := toolCallScript(t, extToolCall("call-1", "extsvc__ping", "{}"), "用户拒绝", "好的，不发了")
 	tools := &scriptTools{defs: extToolDef("extsvc__ping"), respond: func(name, _ string) (string, error) {
 		return "pong", nil
 	}}
@@ -149,7 +150,7 @@ func TestApprovalDenialReturnsToModel(t *testing.T) {
 	}
 	waitForRun(t, svc, storage.DefaultAgentID, run.ID, "completed")
 	calls, _ := svc.ListToolCalls(storage.DefaultAgentID, session.ID)
-	if len(calls) != 1 || calls[0].State != storage.CallFailed || !strings.Contains(calls[0].Error, "用户拒绝") {
+	if len(calls) != 2 || calls[1].State != storage.CallFailed || !strings.Contains(calls[1].Error, "用户拒绝") {
 		t.Fatalf("denial outcome: %+v", calls)
 	}
 	if len(tools.calls) != 0 {
@@ -160,17 +161,7 @@ func TestApprovalDenialReturnsToModel(t *testing.T) {
 // An approval window that times out expires the call explicitly; the session
 // stays usable afterwards.
 func TestApprovalTimeoutExpiresCall(t *testing.T) {
-	chat := &scriptModel{steps: []func([]model.Message) (model.ChatResponse, error){
-		func([]model.Message) (model.ChatResponse, error) {
-			return model.ChatResponse{Message: model.Message{Role: "assistant", ToolCalls: []model.ToolCall{extToolCall("call-1", "extsvc__ping", "{}")}}}, nil
-		},
-		func(messages []model.Message) (model.ChatResponse, error) {
-			if !strings.Contains(messages[len(messages)-1].Content, "审批超时") {
-				t.Fatalf("timeout not returned to model: %+v", messages)
-			}
-			return model.ChatResponse{Message: model.Message{Role: "assistant", Content: "超时了"}}, nil
-		},
-	}}
+	chat := toolCallScript(t, extToolCall("call-1", "extsvc__ping", "{}"), "审批超时", "超时了")
 	tools := &scriptTools{defs: extToolDef("extsvc__ping"), respond: func(name, _ string) (string, error) {
 		return "pong", nil
 	}}
@@ -186,7 +177,7 @@ func TestApprovalTimeoutExpiresCall(t *testing.T) {
 	}
 	waitForRun(t, svc, storage.DefaultAgentID, run.ID, "completed")
 	calls, _ := svc.ListToolCalls(storage.DefaultAgentID, session.ID)
-	if len(calls) != 1 || calls[0].State != storage.CallCancelled {
+	if len(calls) != 2 || calls[1].State != storage.CallCancelled {
 		t.Fatalf("expired call: %+v", calls)
 	}
 	if len(tools.calls) != 0 {
@@ -335,7 +326,7 @@ func TestExfilCheckAndGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, calls, err := store.AddAssistantMessage(ctx, session.ID, run.ID, "", []storage.MessageToolCall{{ID: "c1", Name: "local__read_file", Arguments: "{}"}})
+	_, calls, err := store.AddAssistantMessage(ctx, session.ID, run.ID, "", []storage.MessageToolCall{{ID: "c1", Name: "local__read_file", Arguments: "{}"}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

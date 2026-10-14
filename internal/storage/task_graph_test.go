@@ -25,7 +25,7 @@ func taskGraphFixture(t *testing.T) (*Store, Conversation, Run, []TaskSpec) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, _, err := s.CreateRunWithOptions(ctx, c.ID, CreateRunOptions{CaptureResources: true})
+	r, _, err := s.CreateRunWithOptions(ctx, c.ID, CreateRunOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestTaskRecoveryDoesNotReplayUnknownEffects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, calls, err := s.AddAssistantMessage(ctx, child.SessionID, child.ID, "", []MessageToolCall{{ID: "effect", Name: "external__write", Arguments: "{}"}})
+	_, calls, err := s.AddAssistantMessage(ctx, child.SessionID, child.ID, "", []MessageToolCall{{ID: "effect", Name: "external__write", Arguments: "{}"}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,49 +185,5 @@ func TestRootCannotCompleteWithUnexecutedPlan(t *testing.T) {
 	r, err := s.GetRun(context.Background(), root.ID)
 	if err != nil || r.Status != "failed" {
 		t.Fatalf("premature completion: %+v %v", r, err)
-	}
-}
-
-func TestTaskGraphMigrationKeepsLegacyRunAndPlan(t *testing.T) {
-	s := openTestStore(t)
-	ctx := context.Background()
-	session, err := s.CreateAgentSession(ctx, DefaultAgentID, "legacy")
-	if err != nil {
-		t.Fatal(err)
-	}
-	root, _, err := s.CreateRun(ctx, session.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = s.AddMessage(ctx, session.ID, root.ID, RoleUser, "旧任务目标"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = s.SetSessionPlan(ctx, session.ID, []PlanStep{{Title: "旧待办已完成", Status: PlanDone}}); err != nil {
-		t.Fatal(err)
-	}
-	if err = s.SetRunStatus(ctx, root.ID, "completed", ""); err != nil {
-		t.Fatal(err)
-	}
-	for _, q := range []string{`DROP TABLE review_requests`, `DROP TABLE task_reviews`, `DROP TABLE model_usage`, `DROP TABLE root_budgets`, `DROP TABLE task_events`, `DROP TABLE task_coordination`, `DROP TABLE task_artifacts`, `DROP TABLE worker_observations`, `DROP TABLE run_components`, `DROP TABLE task_attempts`, `DROP TABLE task_items`, `DROP TABLE task_plan_revisions`, `DROP TABLE task_roots`, `PRAGMA user_version=14`} {
-		if _, err = s.db.Exec(q); err != nil {
-			t.Fatal(err)
-		}
-	}
-	path := s.path
-	if err = s.Close(); err != nil {
-		t.Fatal(err)
-	}
-	s, err = Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	g, err := s.GetTaskGraph(ctx, root.ID)
-	if err != nil || g.Goal != "旧任务目标" || g.RunStatus != "completed" || len(g.Tasks) != 0 || len(g.Attempts) != 0 {
-		t.Fatalf("legacy graph: %+v %v", g, err)
-	}
-	plan, found, err := s.GetSessionPlan(ctx, session.ID)
-	if err != nil || !found || plan.Revision != 1 {
-		t.Fatalf("legacy plan changed: %+v %v %v", plan, found, err)
 	}
 }

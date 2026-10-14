@@ -56,6 +56,15 @@ func (s *Service) buildRunContext(sessionID string, profile storage.AgentProfile
 			window.history = append(window.history, model.Message{Role: "user", Content: entry.Content})
 		case storage.RoleAssistant:
 			turn := model.Message{Role: "assistant", Content: entry.Content}
+			if len(entry.ProviderState) > 0 {
+				prior, found, err := s.store.ProfileSnapshot(ctx, entry.RunID)
+				if err != nil {
+					return sessionWindow{}, err
+				}
+				if found && prior.Model.Provider == profile.Model.Provider && prior.Model.Name == profile.Model.Name && strings.TrimRight(prior.Model.EffectiveBaseURL(), "/") == strings.TrimRight(profile.Model.EffectiveBaseURL(), "/") {
+					turn.ProviderState = entry.ProviderState
+				}
+			}
 			for _, call := range entry.Calls {
 				turn.ToolCalls = append(turn.ToolCalls, model.ToolCall{ID: call.ID, Type: "function", Function: struct {
 					Name      string `json:"name"`
@@ -71,6 +80,9 @@ func (s *Service) buildRunContext(sessionID string, profile storage.AgentProfile
 		return sessionWindow{}, err
 	}
 	s.injectPlan(ctx, sessionID, profile, &window)
+	if profile.Resources != nil && profile.Resources.Options.WebSearch {
+		window.history[0].Content += "\n" + searchInstruction(model.NativeSearchSupported(profile.Model) && allowsNativeSearch(profile.ProfileData))
+	}
 	return window, nil
 }
 
@@ -165,6 +177,13 @@ func (s *Service) systemPrompt(profile storage.AgentProfile) string {
 			prompt += "\n\n"
 		}
 		prompt += profile.SystemPrompt
+	}
+	if profile.AllowsTool("local__exec") || profile.AllowsTool("local__write_file") || profile.AllowsTool("local__edit_file") {
+		if profile.Policy.Permissions.Unrestricted {
+			prompt += "\n本机一般资源范围不限；文件操作使用绝对路径，命令明确给出工作目录。缺少任务目录时先询问用户。"
+		} else {
+			prompt += "\n本次任务允许的工作区根：" + strings.Join(profile.Policy.Permissions.WorkspacePaths, ", ") + "；允许的可执行文件（精确匹配）：" + strings.Join(profile.Policy.Permissions.Commands, ", ") + "。文件使用绝对路径，命令明确给出工作目录。权限会在实际执行前重新核对。"
+		}
 	}
 	if profile.AllowsTool("local__load_skill") {
 		summary := s.profileSkillSummary(profile)

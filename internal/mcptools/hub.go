@@ -341,3 +341,7 @@ type UnknownOutcomeError struct{ Err error }
 func (e *UnknownOutcomeError) Error() string        { return e.Err.Error() }
 func (e *UnknownOutcomeError) Unwrap() error        { return e.Err }
 func (e *UnknownOutcomeError) OutcomeUnknown() bool { return true }
+
+func (h *Hub) LocalDefinitions(ctx context.Context) ([]model.Tool, error) {
+	return h.definitions(ctx, func(name string) bool { return name == "local" })
+}

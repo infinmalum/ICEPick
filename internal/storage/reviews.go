@@ -118,7 +118,7 @@ func reviewSnapshotInTx(ctx context.Context, tx *sql.Tx, root string) (ReviewSna
 		out.Tasks = append(out.Tasks, task.Spec)
 	}
 	// Final assistant messages with no tool calls are the delivery candidate.
-	rows, err := tx.QueryContext(ctx, `SELECT id,session_id,agent_id,run_id,seq,role,content,tool_calls,legacy,created_at FROM messages WHERE run_id=? AND role='assistant' AND NOT EXISTS(SELECT 1 FROM tool_calls WHERE message_id=messages.id) ORDER BY seq DESC LIMIT 1`, root)
+	rows, err := tx.QueryContext(ctx, `SELECT id,session_id,agent_id,run_id,seq,role,content,tool_calls,created_at FROM messages WHERE run_id=? AND role='assistant' AND NOT EXISTS(SELECT 1 FROM tool_calls WHERE message_id=messages.id) ORDER BY seq DESC LIMIT 1`, root)
 	if err != nil {
 		return out, err
 	}
@@ -127,7 +127,7 @@ func reviewSnapshotInTx(ctx context.Context, tx *sql.Tx, root string) (ReviewSna
 		return out, errors.New("没有可审查的交付消息")
 	}
 	var callsRaw string
-	err = rows.Scan(&out.Delivery.ID, &out.Delivery.SessionID, &out.Delivery.AgentID, &out.Delivery.RunID, &out.Delivery.Seq, &out.Delivery.Role, &out.Delivery.Content, &callsRaw, &out.Delivery.Legacy, &out.Delivery.CreatedAt)
+	err = rows.Scan(&out.Delivery.ID, &out.Delivery.SessionID, &out.Delivery.AgentID, &out.Delivery.RunID, &out.Delivery.Seq, &out.Delivery.Role, &out.Delivery.Content, &callsRaw, &out.Delivery.CreatedAt)
 	rows.Close()
 	if err != nil {
 		return out, err
@@ -199,7 +199,7 @@ func (s *Store) SaveTaskReview(ctx context.Context, root, reviewer, binding stri
 	}
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		var parent, role, status, reviewerSnapshot string
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(r.parent_run_id,''),c.role,r.status,r.profile_snapshot FROM runs r JOIN run_components c ON c.run_id=r.id WHERE r.id=?`, reviewer).Scan(&parent, &role, &status, &reviewerSnapshot); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(r.parent_run_id,''),r.component,r.status,r.profile_snapshot FROM runs r WHERE r.id=?`, reviewer).Scan(&parent, &role, &status, &reviewerSnapshot); err != nil {
 			return err
 		}
 		if parent != root {

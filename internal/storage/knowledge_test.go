@@ -28,7 +28,7 @@ func buildToolHistory(t *testing.T, s *Store, agentID, credentialScope string) (
 	if _, _, err := s.AddAssistantMessage(ctx, session.ID, run.ID, "", []MessageToolCall{
 		{ID: "a", Name: "local__read_file", Arguments: "{}"},
 		{ID: "b", Name: "local__read_file", Arguments: "{}"},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	// seq 2 results: one credential-scoped, one plain success.
@@ -181,15 +181,17 @@ func TestSessionPlanRoundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	steps := []PlanStep{{Title: "查资料", Status: PlanDone}, {Title: "写结论", Status: PlanInProgress, Note: "等待结果"}}
-	plan, err := s.SetSessionPlan(ctx, session.ID, steps)
+	plan, err := s.CompareAndSetSessionPlan(ctx, session.ID, steps, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if plan.AgentID != DefaultAgentID {
 		t.Fatalf("plan ownership: %+v", plan)
 	}
-	// Replacing keeps a single row per session.
-	if _, err := s.SetSessionPlan(ctx, session.ID, []PlanStep{{Title: "重来", Status: PlanPending}}); err != nil {
+	if err := s.ClearSessionPlan(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CompareAndSetSessionPlan(ctx, session.ID, []PlanStep{{Title: "重来", Status: PlanPending}}, 2); err != nil {
 		t.Fatal(err)
 	}
 	saved, found, err := s.GetSessionPlan(ctx, session.ID)

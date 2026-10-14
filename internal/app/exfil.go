@@ -34,48 +34,10 @@ var (
 )
 
 func (g guardedChat) Chat(ctx context.Context, source config.Model, messages []model.Message, tools []model.Tool) (model.ChatResponse, error) {
-	if g.payloadCheck != nil {
-		if err := g.payloadCheck(ctx, messages, tools); err != nil {
-			return model.ChatResponse{}, err
-		}
-	}
-	if err := g.check(ctx); err != nil {
-		return model.ChatResponse{}, err
-	}
-	resp, err := g.inner.Chat(ctx, source, messages, tools)
-	if g.svc != nil {
-		if e := g.svc.store.RecordUsage(context.WithoutCancel(ctx), g.runID, usageTokens(resp.Usage)); e != nil {
-			return resp, e
-		}
-	}
-	return resp, err
+	return g.callModel(ctx, source, messages, tools, nil)
 }
-
 func (g guardedChat) ChatStream(ctx context.Context, source config.Model, messages []model.Message, tools []model.Tool, onDelta func(string) error) (model.ChatResponse, error) {
-	if g.payloadCheck != nil {
-		if err := g.payloadCheck(ctx, messages, tools); err != nil {
-			return model.ChatResponse{}, err
-		}
-	}
-	if err := g.check(ctx); err != nil {
-		return model.ChatResponse{}, err
-	}
-	if streamer, ok := g.inner.(agent.StreamingChatModel); ok {
-		resp, err := streamer.ChatStream(ctx, source, messages, tools, onDelta)
-		if g.svc != nil {
-			if e := g.svc.store.RecordUsage(context.WithoutCancel(ctx), g.runID, usageTokens(resp.Usage)); e != nil {
-				return resp, e
-			}
-		}
-		return resp, err
-	}
-	resp, err := g.inner.Chat(ctx, source, messages, tools)
-	if g.svc != nil {
-		if e := g.svc.store.RecordUsage(context.WithoutCancel(ctx), g.runID, usageTokens(resp.Usage)); e != nil {
-			return resp, e
-		}
-	}
-	return resp, err
+	return g.callModel(ctx, source, messages, tools, onDelta)
 }
 
 // endpointOrigin normalizes a model base URL to scheme://host:port and

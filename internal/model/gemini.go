@@ -26,7 +26,7 @@ func (c Client) geminiClient(ctx context.Context, source config.Model) (*genai.C
 	if base := source.BaseURL; base != "" {
 		cfg.HTTPOptions = genai.HTTPOptions{BaseURL: base}
 	}
-	cfg.HTTPClient = c.HTTP
+	cfg.HTTPClient = c.httpClient()
 	client, err := genai.NewClient(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("初始化 Gemini 客户端: %w", err)
@@ -202,6 +202,9 @@ func geminiMerge(chunks []*genai.GenerateContentResponse) ChatResponse {
 }
 
 func (c Client) geminiChat(ctx context.Context, source config.Model, messages []Message, tools []Tool) (ChatResponse, error) {
+	if NativeSearchSupported(source) {
+		return c.geminiInteractionChat(ctx, source, messages, tools, SearchOptions{}, nil, false)
+	}
 	client, err := c.geminiClient(ctx, source)
 	if err != nil {
 		return ChatResponse{}, err
@@ -224,6 +227,9 @@ func (c Client) geminiChat(ctx context.Context, source config.Model, messages []
 }
 
 func (c Client) geminiChatStream(ctx context.Context, source config.Model, messages []Message, tools []Tool, onDelta func(string) error) (ChatResponse, error) {
+	if NativeSearchSupported(source) {
+		return c.geminiInteractionChat(ctx, source, messages, tools, SearchOptions{}, onDelta, false)
+	}
 	client, err := c.geminiClient(ctx, source)
 	if err != nil {
 		return ChatResponse{}, err

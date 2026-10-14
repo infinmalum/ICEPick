@@ -2,8 +2,7 @@ package storage
 
 import (
 	"context"
-	"encoding/json"
-	"path/filepath"
+
 	"sync"
 	"testing"
 )
@@ -94,68 +93,5 @@ func TestPlanRevisionDependenciesAndClear(t *testing.T) {
 	var count int
 	if err = s.db.QueryRow(`SELECT count(*) FROM session_plan_revisions WHERE session_id=?`, session.ID).Scan(&count); err != nil || count != 5 {
 		t.Fatalf("history: %d %v", count, err)
-	}
-}
-
-func TestPlanMigrationV13RetainsLegacyAndIDsAfterRestart(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "plan.db")
-	s, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	session, err := s.CreateAgentSession(ctx, DefaultAgentID, "old plan")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, q := range []string{`DROP TABLE review_requests`, `DROP TABLE task_reviews`, `DROP TABLE model_usage`, `DROP TABLE root_budgets`, `DROP TABLE task_events`, `DROP TABLE task_coordination`, `DROP TABLE task_artifacts`, `DROP TABLE worker_observations`, `DROP TABLE run_components`, `DROP TABLE task_attempts`, `DROP TABLE task_items`, `DROP TABLE task_plan_revisions`, `DROP TABLE task_roots`, `DROP TABLE session_plan_revisions`, `ALTER TABLE session_plans DROP COLUMN revision`, `PRAGMA user_version=13`} {
-		if _, err = s.db.Exec(q); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err = s.db.Exec(`INSERT INTO session_plans(session_id,agent_id,plan,updated_at) VALUES(?,?,?,?)`, session.ID, DefaultAgentID, `[{"title":"旧任务","status":"in_progress","note":"保留"}]`, now()); err != nil {
-		t.Fatal(err)
-	}
-	if err = s.Close(); err != nil {
-		t.Fatal(err)
-	}
-	s, err = Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, found, err := s.GetSessionPlan(ctx, session.ID)
-	if err != nil || !found || p.Revision != 1 {
-		t.Fatalf("migrated: %+v %v %v", p, found, err)
-	}
-	var steps []PlanStep
-	if err = json.Unmarshal([]byte(p.Plan), &steps); err != nil || len(steps) != 1 || steps[0].ID == "" || steps[0].Note != "保留" {
-		t.Fatalf("legacy: %+v %v", steps, err)
-	}
-	id := steps[0].ID
-	s.Close()
-	s, err = Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	p, _, err = s.GetSessionPlan(ctx, session.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	json.Unmarshal([]byte(p.Plan), &steps)
-	if steps[0].ID != id {
-		t.Fatal("task identity changed after restart")
-	}
-	var foreignKeys int
-	rows, err := s.db.Query(`PRAGMA foreign_key_check`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rows.Next() {
-		foreignKeys++
-	}
-	rows.Close()
-	if foreignKeys != 0 {
-		t.Fatal("foreign key violation")
 	}
 }

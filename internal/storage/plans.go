@@ -64,7 +64,7 @@ func ValidatePlanSteps(steps []PlanStep) error {
 	for _, step := range steps {
 		if step.ID == "" {
 			continue
-		} // Legacy lists remain readable.
+		} // New steps may omit ID; the host assigns one before validation.
 		if !planID.MatchString(step.ID) {
 			return errors.New("任务 ID 需使用文字、数字、下划线或连字符，最多 64 字符")
 		}
@@ -123,37 +123,11 @@ func ValidatePlanSteps(steps []PlanStep) error {
 
 var planID = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}_-]{0,63}$`)
 
-// SetSessionPlan replaces the session's plan. The agent ownership is derived
-// from the session row in the same statement, so a plan can never be
-// attributed to a foreign context.
-// SetSessionPlan is a compatibility entry for older local callers. New model
-// updates must use CompareAndSetSessionPlan with the revision they observed.
-func (s *Store) SetSessionPlan(ctx context.Context, sessionID string, steps []PlanStep) (SessionPlan, error) {
-	return s.setSessionPlan(ctx, sessionID, steps, nil)
-}
-
-func (s *Store) CompareAndSetSessionPlan(ctx context.Context, sessionID string, steps []PlanStep, revision int) (SessionPlan, error) {
-	return s.setSessionPlan(ctx, sessionID, steps, &revision)
-}
-
-func assignPlanIDs(steps, old []PlanStep) ([]PlanStep, error) {
+func assignPlanIDs(steps []PlanStep) ([]PlanStep, error) {
 	result := append([]PlanStep(nil), steps...)
-	used := map[string]bool{}
-	for _, step := range result {
-		if step.ID != "" {
-			used[step.ID] = true
-		}
-	}
 	for i := range result {
 		if result[i].ID != "" {
 			continue
-		}
-		// Preserve identity when a legacy caller updates an unchanged title.
-		for _, previous := range old {
-			if previous.Title == result[i].Title && !used[previous.ID] && previous.ID != "" {
-				result[i].ID = previous.ID
-				break
-			}
 		}
 		if result[i].ID == "" {
 			id, err := newID()
@@ -162,19 +136,18 @@ func assignPlanIDs(steps, old []PlanStep) ([]PlanStep, error) {
 			}
 			result[i].ID = id
 		}
-		used[result[i].ID] = true
 	}
 	return result, nil
 }
 
-func (s *Store) setSessionPlan(ctx context.Context, sessionID string, steps []PlanStep, expected *int) (SessionPlan, error) {
+func (s *Store) CompareAndSetSessionPlan(ctx context.Context, sessionID string, steps []PlanStep, expected int) (SessionPlan, error) {
 	var item SessionPlan
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		current, _, err := readSessionPlan(ctx, tx, sessionID)
 		if err != nil {
 			return err
 		}
-		if expected != nil && *expected != current.Revision {
+		if expected != current.Revision {
 			raw, _ := json.Marshal(current)
 			return fmt.Errorf("计划修订冲突；当前状态 %s", raw)
 		}
@@ -184,7 +157,7 @@ func (s *Store) setSessionPlan(ctx context.Context, sessionID string, steps []Pl
 				return err
 			}
 		}
-		steps, err = assignPlanIDs(steps, old)
+		steps, err = assignPlanIDs(steps)
 		if err != nil {
 			return err
 		}
@@ -193,7 +166,7 @@ func (s *Store) setSessionPlan(ctx context.Context, sessionID string, steps []Pl
 		}
 		// Started dependency tasks cannot disappear or change their execution
 		// contract in a replacement. Notes and status may still advance.
-		if expected != nil {
+		{
 			next := map[string]PlanStep{}
 			for _, step := range steps {
 				next[step.ID] = step

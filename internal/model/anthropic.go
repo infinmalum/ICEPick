@@ -58,6 +58,17 @@ func anthropicRequests(messages []Message, tools []Tool) (anthropic.MessageNewPa
 		case "assistant":
 			flush()
 			blocks := []anthropic.ContentBlockParamUnion{}
+			if len(message.ProviderState) > 0 {
+				for _, raw := range message.ProviderState {
+					var block anthropic.ContentBlockParamUnion
+					if err := json.Unmarshal(raw, &block); err != nil {
+						return params, err
+					}
+					blocks = append(blocks, block)
+				}
+				converted = append(converted, anthropic.NewAssistantMessage(blocks...))
+				continue
+			}
 			if message.Content != "" {
 				blocks = append(blocks, anthropic.NewTextBlock(message.Content))
 			}

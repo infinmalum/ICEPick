@@ -210,3 +210,11 @@ func TestWorkerShareHasPortableConfiguration(t *testing.T) {
 		t.Fatal("private data transported")
 	}
 }
+
+func delegateCall(id, worker, task, materials string) model.ToolCall {
+	call := model.ToolCall{ID: id, Type: "function"}
+	call.Function.Name = "local__delegate_task"
+	raw, _ := json.Marshal(delegateArgs{Worker: worker, Task: task, Materials: materials})
+	call.Function.Arguments = string(raw)
+	return call
+}

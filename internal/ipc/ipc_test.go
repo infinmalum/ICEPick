@@ -163,15 +163,15 @@ func TestProfilesRoundtrip(t *testing.T) {
 	if created.ID == "" || created.Data.ContextBudget != 8192 {
 		t.Fatalf("created: %+v", created)
 	}
-	var agent storage.Agent
-	if err := client.Call("agents.create", map[string]any{"name": "CLI Agent", "profileId": created.ID}, &agent); err != nil {
-		t.Fatalf("agents.create: %v", err)
+	var conversation storage.Conversation
+	if err := client.Call("conversations.create", map[string]any{"profileId": created.ID}, &conversation); err != nil {
+		t.Fatal(err)
 	}
-	if agent.Policy.ApprovalMode != "manual" {
-		t.Fatalf("new agent policy: %+v", agent.Policy)
+	if err := client.Call("profiles.delete", map[string]any{"id": created.ID}, nil); err != nil {
+		t.Fatal(err)
 	}
-	if err := client.Call("profiles.delete", map[string]any{"id": created.ID}, nil); err == nil || !strings.Contains(err.Error(), "仍被 Agent 引用") {
-		t.Fatalf("referenced profile delete accepted: %v", err)
+	if err := client.Call("conversations.get", map[string]any{"id": conversation.ID}, &conversation); err != nil || !conversation.ProfileArchived {
+		t.Fatalf("conversation must retain archived profile: %+v %v", conversation, err)
 	}
 }
 
@@ -179,6 +179,12 @@ func TestProfilesRoundtrip(t *testing.T) {
 // (CLI) approves and cancels, and both read identical durable state.
 func TestCrossClientApprovalAndCancel(t *testing.T) {
 	chat := &chatScript{steps: []func([]model.Message) (model.ChatResponse, error){
+		func([]model.Message) (model.ChatResponse, error) {
+			call := model.ToolCall{ID: "discover", Type: "function"}
+			call.Function.Name = "local__tool_search"
+			call.Function.Arguments = `{"query":"extsvc__ping"}`
+			return model.ChatResponse{Message: model.Message{Role: "assistant", ToolCalls: []model.ToolCall{call}}}, nil
+		},
 		func([]model.Message) (model.ChatResponse, error) {
 			return model.ChatResponse{Message: model.Message{Role: "assistant", ToolCalls: []model.ToolCall{externalCall()}}}, nil
 		},
@@ -191,13 +197,13 @@ func TestCrossClientApprovalAndCancel(t *testing.T) {
 	desktop := mustConnect(t, dataDir)
 	cliClient := mustConnect(t, dataDir)
 
-	var session storage.Session
-	if err := desktop.Call("sessions.create", map[string]any{"agentId": storage.DefaultAgentID}, &session); err != nil {
-		t.Fatalf("sessions.create: %v", err)
+	var session storage.Conversation
+	if err := desktop.Call("conversations.create", map[string]any{"profileId": storage.DefaultProfileID, "reuseSession": reuseDefaultConversation(t, svc)}, &session); err != nil {
+		t.Fatalf("conversations.create: %v", err)
 	}
 	var run storage.Run
-	if err := desktop.Call("tasks.start", map[string]any{"agentId": storage.DefaultAgentID, "sessionId": session.ID, "input": "ping 一下"}, &run); err != nil {
-		t.Fatalf("tasks.start: %v", err)
+	if err := desktop.Call("conversations.start", map[string]any{"id": session.ID, "input": "ping 一下"}, &run); err != nil {
+		t.Fatalf("conversations.start: %v", err)
 	}
 
 	// The CLI client sees the pending approval and approves it.
@@ -207,7 +213,7 @@ func TestCrossClientApprovalAndCancel(t *testing.T) {
 		if err := cliClient.Call("calls.list", map[string]any{"agentId": storage.DefaultAgentID, "sessionId": session.ID}, &calls); err != nil {
 			t.Fatalf("calls.list: %v", err)
 		}
-		if len(calls) == 1 && calls[0].State == storage.CallPending {
+		if len(calls) == 2 && calls[1].State == storage.CallPending {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -215,7 +221,7 @@ func TestCrossClientApprovalAndCancel(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if err := cliClient.Call("calls.approve", map[string]any{"agentId": storage.DefaultAgentID, "callId": calls[0].ID}, nil); err != nil {
+	if err := cliClient.Call("calls.approve", map[string]any{"agentId": storage.DefaultAgentID, "callId": calls[1].ID}, nil); err != nil {
 		t.Fatalf("calls.approve: %v", err)
 	}
 
@@ -262,7 +268,7 @@ func TestCrossClientApprovalAndCancel(t *testing.T) {
 		if err := client.Call("calls.list", map[string]any{"agentId": storage.DefaultAgentID, "sessionId": session.ID}, &unknown); err != nil {
 			t.Fatalf("calls.list after cancel: %v", err)
 		}
-		if len(unknown) != 1 || unknown[0].State != storage.CallExecutionUnknow {
+		if len(unknown) != 2 || unknown[1].State != storage.CallExecutionUnknow {
 			t.Fatalf("call state after cancel: %+v", unknown)
 		}
 	}
@@ -288,12 +294,12 @@ func TestEventsBroadcastToClients(t *testing.T) {
 		mu.Unlock()
 	})
 
-	var session storage.Session
-	if err := client.Call("sessions.create", map[string]any{"agentId": storage.DefaultAgentID}, &session); err != nil {
-		t.Fatalf("sessions.create: %v", err)
+	var session storage.Conversation
+	if err := client.Call("conversations.create", map[string]any{"profileId": storage.DefaultProfileID, "reuseSession": reuseDefaultConversation(t, svc)}, &session); err != nil {
+		t.Fatalf("conversations.create: %v", err)
 	}
-	if err := client.Call("tasks.start", map[string]any{"agentId": storage.DefaultAgentID, "sessionId": session.ID, "input": "你好"}, nil); err != nil {
-		t.Fatalf("tasks.start: %v", err)
+	if err := client.Call("conversations.start", map[string]any{"id": session.ID, "input": "你好"}, nil); err != nil {
+		t.Fatalf("conversations.start: %v", err)
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	for {
@@ -417,12 +423,12 @@ func TestProfileShareAndChildRunsOverIPC(t *testing.T) {
 	if imported.Profile.ID == storage.DefaultProfileID || imported.Profile.Revision != 1 {
 		t.Fatalf("imported profile: %+v", imported.Profile)
 	}
-	var agents []storage.Agent
-	if err := client.Call("agents.list", nil, &agents); err != nil {
+	var conversations []storage.Conversation
+	if err := client.Call("conversations.list", nil, &conversations); err != nil {
 		t.Fatal(err)
 	}
-	if len(agents) != 1 || agents[0].ID != storage.DefaultAgentID {
-		t.Fatalf("import must not create agents: %+v", agents)
+	if len(conversations) != 0 {
+		t.Fatalf("import must not create conversations: %+v", conversations)
 	}
 
 	// runs.children on a run-less id is refused; the tree surface exists.
@@ -433,4 +439,13 @@ func TestProfileShareAndChildRunsOverIPC(t *testing.T) {
 	if err := client.Call("approvals.pending", map[string]any{"agentId": storage.DefaultAgentID}, &pending); err != nil {
 		t.Fatalf("approvals.pending: %v", err)
 	}
+}
+
+func reuseDefaultConversation(t *testing.T, svc *app.Service) string {
+	t.Helper()
+	session, err := svc.CreateSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return session.ID
 }

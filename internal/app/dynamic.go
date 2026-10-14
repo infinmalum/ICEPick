@@ -202,7 +202,7 @@ func (s *Service) executeDynamic(ctx context.Context, root, session string, sour
 			call.Function.Name = "local__delegate_task"
 			raw, _ := json.Marshal(delegateArgs{TaskID: item.Spec.ID, TaskFingerprint: item.Fingerprint})
 			call.Function.Arguments = string(raw)
-			if _, _, err = s.store.AddAssistantMessage(ctx, session, root, "", []storage.MessageToolCall{{ID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments}}); err != nil {
+			if _, _, err = s.store.AddAssistantMessage(ctx, session, root, "", []storage.MessageToolCall{{ID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments}}, nil); err != nil {
 				return err
 			}
 			active[item.Spec.ID] = true

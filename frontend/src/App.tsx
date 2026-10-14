@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Events } from '@wailsio/runtime'
 import { StatusService, type AppStatus } from '../bindings/icepick'
-import type { TaskReview, TaskGraph, AgentPolicy, Conversation, LocalContext, ProfileTemplate, ProfileReference, ExfilGrant, Memory, Message, Profile, Run, SessionSummary, ToolCall } from '../bindings/icepick/internal/storage'
-import type { CredentialStatus, ExportResult, ImportPreview, MCPEndpointStatus, SessionPlanView } from '../bindings/icepick/internal/app'
+import type { SearchRequest, TaskReview, TaskGraph, AgentPolicy, Conversation, LocalContext, ProfileTemplate, ProfileReference, ExfilGrant, Memory, Message, Profile, Run, SessionSummary, ToolCall } from '../bindings/icepick/internal/storage'
+import type { SearchAvailability, CredentialStatus, ExportResult, ImportPreview, MCPEndpointStatus, SessionPlanView } from '../bindings/icepick/internal/app'
 
 const blankRootBudget = {autoRetry:false,maxSeconds:0,maxModelCalls:0,maxToolCalls:0,maxTokens:0,maxPlannerRounds:0,maxAttempts:0,maxRetries:0}
 
@@ -73,6 +73,9 @@ function App() {
   const [activeRun, setActiveRun] = useState<string | null>(null)
   const [prompt, setPrompt] = useState('')
   const [taskError, setTaskError] = useState('')
+ const [searchAvailability,setSearchAvailability]=useState<SearchAvailability|null>(null)
+ const [searchRecords,setSearchRecords]=useState<SearchRequest[]>([])
+ const [searchBusy,setSearchBusy]=useState(false)
   const [sending, setSending] = useState(false)
   const [loadingSession, setLoadingSession] = useState(false)
   const [modelDraft, setModelDraft] = useState<ModelDraft>({ provider: 'ollama', baseUrl: 'http://127.0.0.1:11434/v1', name: '' })
@@ -135,6 +138,7 @@ function App() {
   // can appear or change while a run compacts or updates the plan.
   function refreshSessionKnowledge(id: string) {
     const current = () => activeAgentID.current === agentID && activeSessionID.current === id
+    StatusService.ListConversationSearch(id).then(value=>{if(current())setSearchRecords(value??[])}).catch(()=>{})
     StatusService.GetSessionSummary(agentID, id).then(value => { if (current()) setSessionSummary(value) }).catch(() => { if (current()) setSessionSummary(null) })
     StatusService.GetSessionPlan(agentID, id).then(value => { if (current()) setSessionPlan(value) }).catch(() => { if (current()) setSessionPlan(null) })
   }
@@ -237,6 +241,36 @@ function App() {
     })
     return () => { off() }
   }, [activeRun])
+
+  useEffect(()=>{
+    setSearchAvailability(null);setSearchRecords([])
+    if(!selected)return
+    let cancelled=false
+    StatusService.ConversationSearchAvailability(selected).then(value=>{if(!cancelled)setSearchAvailability(value)}).catch(reason=>{if(!cancelled)setTaskError(String(reason))})
+    return ()=>{cancelled=true}
+  },[selected,activeConversation?.profileId,profiles,status?.model])
+
+  async function toggleSearch(enabled:boolean){
+    if(!selected||!activeConversation)return
+    const id=selected
+    setSearchBusy(true)
+    try{
+      const conversation=await StatusService.SetConversationOptions(id,{webSearch:enabled})
+      setSessions(current=>current.map(item=>item.id===id?conversation:item))
+      if(activeSessionID.current===id)setTaskError('')
+    }catch(reason){if(activeSessionID.current===id)setTaskError(String(reason))}finally{setSearchBusy(false)}
+  }
+
+  useEffect(()=>{
+    if(!selected)return
+    const off=Events.On('icepick:service-event',event=>{
+      const detail=(event.data as {type?:string;sessionId?:string})??{}
+      if(detail.type==='conversation.updated'&&detail.sessionId===selected){
+        StatusService.GetConversation(selected).then(conversation=>setSessions(current=>current.map(item=>item.id===conversation.id?conversation:item))).catch(()=>{})
+      }
+    })
+    return ()=>off()
+  },[selected])
 
   const pendingCalls = toolCalls.filter((item) => item.state === 'pending')
   const unknownCalls = toolCalls.filter((item) => item.state === 'execution_unknown')
@@ -627,7 +661,7 @@ function App() {
     setSending(true)
     setStreamText('')
     try {
-      const run = await StatusService.StartAgentTask(agentID, selected, prompt)
+      const run = await StatusService.StartConversationTask(selected, prompt)
       setPrompt('')
       setTaskError('')
       setRuns((current) => [run, ...current])
@@ -798,20 +832,39 @@ function App() {
                   <button type="button" className="secondary" onClick={() => openChildSession(child)}>查看子会话</button>
                 </div>
               ))}
-              <p className="hint">子任务使用目标配置快照与独立上下文：不写入其普通会话，不访问其长期记忆；权限与外发取父任务与旧委派目标授权的交集，审批取更严格者。</p>
+              <p className="hint">子任务使用冻结的 worker 配置与独立执行会话，不注入其他对话或长期记忆；权限与外发受本根任务上限及当前对话授权约束。</p>
             </div>}
             <div className="message-list" aria-live="polite">
               {messages.length === 0 && !streamText && <p className="hint">还没有消息。可以试试“现在几点？”来验证 MCP 时间工具。</p>}
-              {messages.map((item) => <div className={`message message-${item.role}`} key={item.id}><span className="message-role">{item.role === 'user' ? '你' : item.role === 'tool' ? 'MCP 工具' : 'ICEPick'}</span><p>{item.content}</p></div>)}
+              {messages.map((item) => <div className={`message message-${item.role}`} key={item.id}><span className="message-role">{item.role === 'user' ? '你' : item.role === 'tool' ? 'MCP 工具' : 'ICEPick'}</span><p>{item.content}</p>
+                {item.role==='assistant'&&searchRecords.filter(record=>record.runId===item.runId&&record.state==='completed'&&record.report.text===item.content).flatMap(record=>(record.report.citations??[]).map((citation,index)=><p className="hint" key={record.id+':'+index}>来源：<a href={citation.url} target="_blank" rel="noopener noreferrer">{citation.title||citation.url}</a></p>))}
+              </div>)}
               {streamText && <div className="message message-assistant streaming"><span className="message-role">ICEPick · 生成中</span><p>{streamText}</p></div>}
             </div>
+            {searchRecords.length>0 && <details className="search-records"><summary>联网搜索记录与来源（{searchRecords.length} 次请求）</summary>
+              {searchRecords.map(record=><div key={record.id}>
+                <p>{record.provider} · {record.state} · 未知来源 · 搜索次数 {record.report.calls??'未知'} · 预算计数 {record.report.budgetUnit==='grounded_request'?'宿主请求':'搜索调用'} · 独立费用 {record.report.cost??'未知'}</p>
+                {record.report.text&&<p>{record.report.text}</p>}
+                {(record.report.citations??[]).map((citation,index)=><p key={index}><a href={citation.url} target="_blank" rel="noopener noreferrer">{citation.title||citation.url}</a></p>)}
+                {(record.report.suggestions??[]).map((html,index)=><iframe key={'suggestion:'+index} title="Google 搜索建议" sandbox="allow-popups" referrerPolicy="no-referrer" style={{width:'100%',height:160,border:0}} srcDoc={'<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; base-uri \'none\'; form-action \'none\'">'+html} />)}
+                {(record.report.events??[]).map((event,index)=><p className="hint" key={index}>{event.type}{event.query?' · '+event.query:event.queries?.length?' · '+event.queries.join('；'):''}</p>)}
+                {record.error&&<p className="error">{record.error}</p>}
+              </div>)}
+            </details>}
             <form className="task-form" onSubmit={sendTask}>
               <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="给 ICEPick 一个任务…" rows={3} />
               <div className="model-actions">
-                <button type="submit" disabled={sending || loadingSession || !!activeRun || activeConversation?.kind === 'delegation' || activeConversation?.profileArchived || !status?.storageReady || !prompt.trim()}>发送任务</button>
+                <label><input type="checkbox" checked={activeConversation?.options?.webSearch??false} disabled={searchBusy||loadingSession||activeConversation?.kind==='delegation'} onChange={event=>toggleSearch(event.target.checked)} />联网搜索</label>
+                <button type="submit" disabled={searchBusy||sending || (activeConversation?.options?.webSearch&&searchAvailability?.available!==true) || loadingSession || !!activeRun || activeConversation?.kind === 'delegation' || activeConversation?.profileArchived || !status?.storageReady || !prompt.trim()}>发送任务</button>
                 {activeRun && <button type="button" className="secondary" onClick={cancelTask}>取消任务</button>}
               </div>
             </form>
+            {activeConversation?.options?.webSearch&&<p className="hint">{searchAvailability?.reason??'正在检查搜索能力…'}。允许按需搜索；仅影响后续任务，数据外发仍需授权。</p>}
+            {activeConversation?.options?.webSearch&&searchAvailability?.available===false&&<details className="search-configuration">
+              <summary>配置联网搜索</summary>
+              <p>可在模型设置中选择支持原生搜索的 OpenAI、Anthropic 或 Gemini 模型，或接入一个搜索 MCP。</p>
+              <p>搜索 MCP 配置文件：<code>{searchAvailability.configPath||'用户 XDG 配置目录的 ICEPick/config.json'}</code>。在对应服务项填写 <code>webSearchTools</code>，例如 <code>{'{"webSearchTools":["web_search"]}'}</code>，再在 Profile 中允许该服务和工具。修改配置文件后重启 ICEPick。</p>
+            </details>}
             {activeRun && <p className="hint">任务正在运行…</p>}
             {taskError && <p className="error">{taskError}</p>}
             {runs[0]?.status === 'failed' && taskGraph?.coordination?.state !== 'waiting' && <p className="error">任务失败：{runs[0].error}</p>}
@@ -851,7 +904,7 @@ function App() {
             <label className="checkbox-label"><input type="checkbox" checked={agentDraft.policy.memory} onChange={event => updatePolicy({ memory: event.target.checked })} />允许长期记忆（Profile 也须开启）</label>
             {!agentDraft.policy.permissions.unrestricted && <>
               <label>允许的工作区路径（每行一个）<textarea rows={2} value={(agentDraft.policy.permissions.workspacePaths ?? []).join('\n')} onChange={event => updatePermissions({ workspacePaths: event.target.value.split('\n').map(path => path.trim()).filter(Boolean) })} /></label>
-              <label>允许的命令（每行一个）<textarea rows={2} value={(agentDraft.policy.permissions.commands ?? []).join('\n')} onChange={event => updatePermissions({ commands: event.target.value.split('\n').map(cmd => cmd.trim()).filter(Boolean) })} /></label>
+              <label>允许的可执行文件（每行一个精确名称或绝对路径）<textarea rows={2} value={(agentDraft.policy.permissions.commands ?? []).join('\n')} onChange={event => updatePermissions({ commands: event.target.value.split('\n').map(cmd => cmd.trim()).filter(Boolean) })} /></label>
               <label>允许的网络目标（每行一个）<textarea rows={2} value={(agentDraft.policy.permissions.networkHosts ?? []).join('\n')} onChange={event => updatePermissions({ networkHosts: event.target.value.split('\n').map(host => host.trim()).filter(Boolean) })} /></label>
             </>}
             <button type="submit" disabled={agentBusy}>保存本机权限</button>
@@ -951,7 +1004,7 @@ function App() {
                 const current = profileDraft.data.execution.workerSources ?? []; let n = 1; while (current.some(source => source.name === `worker${n}`)) n++
                 setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, execution: { ...profileDraft.data.execution, workerSources: [...current, { name: `worker${n}`, profileId: '', configuration: null }] } } })
               }}>＋ 添加 worker</button>
-              <p className="hint">当前委派按调用顺序同步执行。旧委派目标继续保留原本机授权；新的 worker 来源不需要创建持久 Agent。</p>
+              <p className="hint">direct 中委派按调用顺序同步执行；dynamic 由 planner 与宿主调度。worker 来源只提供配置，权限使用当前对话授权。</p>
             </details>
             <div className="model-actions"><button type="submit" disabled={profileBusy}>保存 Profile</button></div>
           </form>
@@ -1100,7 +1153,7 @@ function App() {
 
 
 
-        <p className="next-step">内置工具：local__current_time、local__read_file、local__load_skill、local__memory_save、local__update_plan、local__task_plan、local__delegate_task，以及同根任务的 worker 过程检索与观察工具。工具调用受权限网关与审批约束；委派每次需确认；远端模型发送前会检查数据外发授权；长会话超预算时自动压缩旧轮次并保留原文。</p>
+        <p className="next-step">内置工具：local__current_time、local__read_file、local__write_file、local__edit_file、local__exec、local__tool_search、local__load_skill、local__memory_save、local__update_plan、local__task_plan、local__delegate_task，以及同根任务的 worker 过程检索与观察工具。工具调用受权限网关与审批约束；委派每次需确认；远端模型发送前会检查数据外发授权；长会话超预算时自动压缩旧轮次并保留原文。</p>
       </main>
     </div>
   )

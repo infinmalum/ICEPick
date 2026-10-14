@@ -34,7 +34,7 @@ func TestToolCallLifecycle(t *testing.T) {
 	message, calls, err := store.AddAssistantMessage(ctx, session.ID, run.ID, "", []MessageToolCall{
 		{ID: "call-1", Name: "local__current_time", Arguments: "{}"},
 		{ID: "call-2", Name: "local__current_time", Arguments: "{}"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestToolCallLifecycle(t *testing.T) {
 
 	// Duplicate or empty model call IDs are rejected before anything is
 	// dispatched.
-	if _, _, err := store.AddAssistantMessage(ctx, session.ID, run.ID, "", []MessageToolCall{{ID: "call-1", Name: "x", Arguments: "{}"}, {ID: "call-1", Name: "x", Arguments: "{}"}}); err == nil {
+	if _, _, err := store.AddAssistantMessage(ctx, session.ID, run.ID, "", []MessageToolCall{{ID: "call-1", Name: "x", Arguments: "{}"}, {ID: "call-1", Name: "x", Arguments: "{}"}}, nil); err == nil {
 		t.Fatal("duplicate call ID accepted")
 	}
 
@@ -122,7 +122,7 @@ func TestFinishRunSweepsNonTerminalCalls(t *testing.T) {
 	_, calls, err := store.AddAssistantMessage(ctx, session.ID, run.ID, "", []MessageToolCall{
 		{ID: "call-1", Name: "local__current_time", Arguments: "{}"},
 		{ID: "call-2", Name: "local__current_time", Arguments: "{}"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestRecoverInterruptedConvergesArtifacts(t *testing.T) {
 	_, calls, err := store.AddAssistantMessage(ctx, session.ID, run.ID, "", []MessageToolCall{
 		{ID: "call-1", Name: "local__current_time", Arguments: "{}"},
 		{ID: "call-2", Name: "local__current_time", Arguments: "{}"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestApprovalLifecycle(t *testing.T) {
 		{ID: "call-1", Name: "local__read_file", Arguments: `{"path":"/tmp/a.txt"}`},
 		{ID: "call-2", Name: "local__read_file", Arguments: `{"path":"/tmp/b.txt"}`},
 		{ID: "call-3", Name: "local__read_file", Arguments: `{"path":"/tmp/c.txt"}`},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

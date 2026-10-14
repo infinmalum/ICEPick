@@ -54,7 +54,7 @@ func TestSessionDataScopes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.AddAssistantMessage(ctx, session.ID, run.ID, "", []MessageToolCall{{ID: "c1", Name: "local__read_file", Arguments: "{}"}}); err != nil {
+	if _, _, err := store.AddAssistantMessage(ctx, session.ID, run.ID, "", []MessageToolCall{{ID: "c1", Name: "local__read_file", Arguments: "{}"}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	calls, _ := store.ListSessionToolCalls(ctx, session.ID)
@@ -76,7 +76,7 @@ func TestSessionDataScopes(t *testing.T) {
 	}
 	// A failed result contributes no scope: only content that actually
 	// entered the model context as a result counts.
-	if _, _, err := store.AddAssistantMessage(ctx, session.ID, run.ID, "", []MessageToolCall{{ID: "c2", Name: "local__read_file", Arguments: "{}"}}); err != nil {
+	if _, _, err := store.AddAssistantMessage(ctx, session.ID, run.ID, "", []MessageToolCall{{ID: "c2", Name: "local__read_file", Arguments: "{}"}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	calls, _ = store.ListSessionToolCalls(ctx, session.ID)

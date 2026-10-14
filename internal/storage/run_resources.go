@@ -19,24 +19,16 @@ type FrozenProfile struct {
 	Skills   []skills.Snapshot `json:"skills"`
 }
 
-type LegacyWorker struct {
-	ContextID string        `json:"contextId"`
-	Name      string        `json:"name"`
-	Profile   FrozenProfile `json:"profile"`
-	Policy    AgentPolicy   `json:"policy"`
-}
-
 type RunResources struct {
-	GrantsFrozen  bool                             `json:"grantsFrozen"`
+	Options       ConversationOptions              `json:"options"`
+	SearchTools   []string                         `json:"searchTools"`
 	Grants        map[string]map[string]ExfilGrant `json:"grants"`
 	RootContextID string                           `json:"rootContextId"`
-	Version       int                              `json:"version"`
 	Reviewer      FrozenProfile                    `json:"reviewer"`
 	Planner       FrozenProfile                    `json:"planner"`
 	Root          FrozenProfile                    `json:"root"`
 	RootPolicy    AgentPolicy                      `json:"rootPolicy"`
 	Workers       map[string]FrozenProfile         `json:"workers"`
-	Legacy        map[string]LegacyWorker          `json:"legacy"`
 }
 
 type SkillSnapshotter func(bool, []string) ([]skills.Snapshot, error)
@@ -59,7 +51,7 @@ func validateWorkerReferences(ctx context.Context, tx *sql.Tx, id string, data P
 func readFrozenProfile(ctx context.Context, tx *sql.Tx, id string) (FrozenProfile, error) {
 	var item FrozenProfile
 	var raw string
-	err := tx.QueryRowContext(ctx, `SELECT id,name,revision,config FROM resolved_profiles WHERE id=? AND archived_at IS NULL`, id).Scan(&item.ID, &item.Name, &item.Revision, &raw)
+	err := tx.QueryRowContext(ctx, `SELECT id,name,revision,config FROM profiles WHERE id=? AND archived_at IS NULL`, id).Scan(&item.ID, &item.Name, &item.Revision, &raw)
 	if err == nil {
 		err = json.Unmarshal([]byte(raw), &item.Data)
 	}
@@ -134,7 +126,7 @@ func intersectStrings(a, b []string) []string {
 }
 
 func captureRunResources(ctx context.Context, tx *sql.Tx, root FrozenProfile, contextID string, policy AgentPolicy, defaultModel config.Model, snapshot SkillSnapshotter) (RunResources, error) {
-	resources := RunResources{Version: 1, RootContextID: contextID, RootPolicy: policy, Workers: map[string]FrozenProfile{}, Legacy: map[string]LegacyWorker{}}
+	resources := RunResources{RootContextID: contextID, RootPolicy: policy, Workers: map[string]FrozenProfile{}}
 	rawRoot := root.Data
 	// Bound retained content while capturing, before allocating the final JSON.
 	snapshotBytes := 0
@@ -146,7 +138,7 @@ func captureRunResources(ctx context.Context, tx *sql.Tx, root FrozenProfile, co
 			snapshotBytes += len(skill.Content) + len(skill.Description)
 		}
 		if snapshotBytes > 16<<20 {
-			return errors.New("任务依赖快照超过 16 MiB，请收窄 Skills 或委派目标")
+			return errors.New("任务依赖快照超过 16 MiB，请收窄 Skills 或 worker 配置")
 		}
 		return nil
 	}
@@ -206,64 +198,8 @@ func captureRunResources(ctx context.Context, tx *sql.Tx, root FrozenProfile, co
 		}
 		resources.Workers[slot.Name] = item
 	}
-	// Keep legacy identities separate, even when they reference one Profile.
-	// The closure freezes all reachable legacy configuration without removing
-	// the live allowlist/grant checks at dispatch time.
-	var queue []string
-	if main.Delegation.Enabled && main.AllowsTool("local__delegate_task") {
-		queue = append(queue, policy.DelegationTargets...)
-	}
-	if main.Delegation.Enabled && main.AllowsTool("local__delegate_task") && rawRoot.Delegation.Selection == DelegationPinnedSelection && rawRoot.Delegation.TargetAgentID != "" {
-		queue = append(queue, rawRoot.Delegation.TargetAgentID)
-	}
-	for len(queue) > 0 {
-		id := queue[0]
-		queue = queue[1:]
-		if _, ok := resources.Legacy[id]; ok {
-			continue
-		}
-		if len(resources.Legacy) >= 64 {
-			return resources, errors.New("旧委派依赖超过 64 个，请收窄目标")
-		}
-		var legacy LegacyWorker
-		var profileID, rawPolicy string
-		if err := tx.QueryRowContext(ctx, `SELECT id,name,profile_id,policy FROM agents WHERE id=?`, id).Scan(&legacy.ContextID, &legacy.Name, &profileID, &rawPolicy); err != nil {
-			return resources, err
-		}
-		if err := json.Unmarshal([]byte(rawPolicy), &legacy.Policy); err != nil {
-			return resources, err
-		}
-		if id == contextID {
-			legacy.Profile = FrozenProfile{ID: root.ID, Name: root.Name, Revision: root.Revision, Data: rawRoot}
-		} else {
-			legacy.Profile, err = readFrozenProfile(ctx, tx, profileID)
-		}
-		if err != nil {
-			return resources, err
-		}
-		legacy.Profile.Data, err = legacy.Profile.Data.ResolveComponent("worker")
-		if err != nil {
-			return resources, err
-		}
-		if legacy.Profile.Data.Model.Provider == "" {
-			legacy.Profile.Data.Model = defaultModel
-		}
-		if err := captureSkills(&legacy.Profile); err != nil {
-			return resources, err
-		}
-		resources.Legacy[id] = legacy
-		if legacy.Profile.Data.Delegation.Enabled {
-			queue = append(queue, legacy.Policy.DelegationTargets...)
-		}
-	}
-	resources.GrantsFrozen = true
 	resources.Grants = map[string]map[string]ExfilGrant{}
 	actors := []string{contextID}
-	for id := range resources.Legacy {
-		if id != contextID {
-			actors = append(actors, id)
-		}
-	}
 	for _, id := range actors {
 		resources.Grants[id] = map[string]ExfilGrant{}
 		rows, err := tx.QueryContext(ctx, `SELECT agent_id,destination,scopes,created_at FROM exfil_grants WHERE agent_id=?`, id)
@@ -289,7 +225,7 @@ func captureRunResources(ctx context.Context, tx *sql.Tx, root FrozenProfile, co
 		return resources, err
 	}
 	if len(encoded) > 16<<20 {
-		return resources, errors.New("任务依赖快照超过 16 MiB，请收窄 Skills 或委派目标")
+		return resources, errors.New("任务依赖快照超过 16 MiB，请收窄 Skills 或 worker 配置")
 	}
 	return resources, nil
 }

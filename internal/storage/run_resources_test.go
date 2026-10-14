@@ -28,7 +28,7 @@ func TestResourcesSurviveSourceArchiveAndRefreshNextRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := "old content"
-	opts := CreateRunOptions{CaptureResources: true, SnapshotSkills: func(bool, []string) ([]skills.Snapshot, error) {
+	opts := CreateRunOptions{SnapshotSkills: func(bool, []string) ([]skills.Snapshot, error) {
 		return []skills.Snapshot{{Name: "note", Content: body}}, nil
 	}}
 	run, _, err := s.CreateRunWithOptions(ctx, c.ID, opts)

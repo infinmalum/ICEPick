@@ -8,122 +8,15 @@ import (
 	"strings"
 	"time"
 
-	"icepick/internal/app"
 	"icepick/internal/ipc"
 	"icepick/internal/storage"
 )
 
-func cmdSessions(client *ipc.Client, args []string) int {
-	if len(args) == 0 {
-		return usage("sessions 需要子命令 list|create|show")
-	}
-	switch args[0] {
-	case "list":
-		parsed, err := parseCLI(args[1:])
-		if err != nil {
-			return 2
-		}
-		agentID := parsed.value("agent")
-		if agentID == "" {
-			agentID = storage.DefaultAgentID
-		}
-		var sessions []storage.Session
-		if err := client.Call("sessions.list", map[string]any{"agentId": agentID}, &sessions); err != nil {
-			return fail("sessions.list", err)
-		}
-		rows := [][]string{{"ID", "标题", "创建时间"}}
-		for _, s := range sessions {
-			rows = append(rows, []string{s.ID, s.Title, s.CreatedAt})
-		}
-		printTable(rows)
-		return 0
-	case "create":
-		parsed, err := parseCLI(args[1:])
-		if err != nil {
-			return 2
-		}
-		agentID := parsed.value("agent")
-		if agentID == "" {
-			agentID = storage.DefaultAgentID
-		}
-		var session storage.Session
-		if err := client.Call("sessions.create", map[string]any{"agentId": agentID}, &session); err != nil {
-			return fail("sessions.create", err)
-		}
-		fmt.Printf("已创建会话 %s（%s）\n", session.ID, session.Title)
-		return 0
-	case "show":
-		parsed, err := parseCLI(args[1:], "calls")
-		if err != nil || parsed.arg(0) == "" {
-			return usage("用法: sessions show <sessionID> [--agent <agentID>] [--calls]")
-		}
-		agentID := parsed.value("agent")
-		if agentID == "" {
-			agentID = storage.DefaultAgentID
-		}
-		sessionID := parsed.arg(0)
-		var messages []storage.Message
-		if err := client.Call("sessions.messages", map[string]any{"agentId": agentID, "sessionId": sessionID}, &messages); err != nil {
-			return fail("sessions.messages", err)
-		}
-		// The compaction summary and the resumable plan are part of what a
-		// session carries; show them before the raw transcript.
-		var summary storage.SessionSummary
-		if err := client.Call("summaries.get", map[string]any{"agentId": agentID, "sessionId": sessionID}, &summary); err == nil {
-			fmt.Printf("--- 压缩摘要（覆盖至 #%d，范围 %s）---\n%s\n", summary.CoversSeq, summary.Scope, summary.Summary)
-		}
-		var plan app.SessionPlanView
-		if err := client.Call("plans.get", map[string]any{"agentId": agentID, "sessionId": sessionID}, &plan); err == nil {
-			fmt.Printf("--- 当前计划（修订 %d）---\n", plan.Revision)
-			for _, step := range plan.Steps {
-				note := ""
-				if step.Note != "" {
-					note = "（" + step.Note + "）"
-				}
-				fmt.Printf("%s %s%s\n", map[string]string{storage.PlanPending: "[ ]", storage.PlanInProgress: "[~]", storage.PlanDone: "[x]"}[step.Status], step.Title, note)
-				fmt.Printf("  ID: %s", step.ID)
-				if len(step.DependsOn) > 0 {
-					fmt.Printf(" · 前置：%s", strings.Join(step.DependsOn, ", "))
-				}
-				if step.Acceptance != "" {
-					fmt.Printf(" · 验收：%s", step.Acceptance)
-				}
-				fmt.Println()
-			}
-		}
-		for _, message := range messages {
-			switch message.Role {
-			case storage.RoleUser:
-				fmt.Printf("[你] %s\n", message.Content)
-			case storage.RoleAssistant:
-				fmt.Printf("[ICEPick] %s\n", message.Content)
-			default:
-				fmt.Printf("[%s] %s\n", message.Role, message.Content)
-			}
-		}
-		if parsed.flags["calls"] {
-			var calls []storage.ToolCall
-			if err := client.Call("calls.list", map[string]any{"agentId": agentID, "sessionId": sessionID}, &calls); err != nil {
-				return fail("calls.list", err)
-			}
-			fmt.Println("--- 工具调用 ---")
-			for _, call := range calls {
-				fmt.Printf("%s %s [%s] %s\n", call.ID, call.ToolName, call.State, call.Result)
-			}
-		}
-		return 0
-	default:
-		return usage(fmt.Sprintf("未知 sessions 子命令 %q", args[0]))
-	}
-}
-
 func cmdTasks(client *ipc.Client, args []string) int {
 	if len(args) == 0 {
-		return usage("tasks 需要子命令 start|status|review|cancel")
+		return usage("tasks 需要子命令 status|review|cancel")
 	}
 	switch args[0] {
-	case "start":
-		return startTask(client, args[1:])
 	case "review":
 		parsed, err := parseCLI(args[1:])
 		if err != nil || parsed.arg(0) == "" || parsed.arg(1) == "" {
@@ -188,34 +81,6 @@ func cmdTasks(client *ipc.Client, args []string) int {
 	default:
 		return usage(fmt.Sprintf("未知 tasks 子命令 %q", args[0]))
 	}
-}
-
-func startTask(client *ipc.Client, args []string) int {
-	parsed, err := parseCLI(args, "wait")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
-	}
-	if len(parsed.positional) < 3 {
-		return usage("用法: tasks start <agentID> <sessionID> <任务内容…> [--wait]")
-	}
-	agentID := parsed.arg(0)
-	sessionID := parsed.arg(1)
-	input := joinArgs(parsed.positional[2:])
-	var run storage.Run
-	if err := client.Call("tasks.start", map[string]any{"agentId": agentID, "sessionId": sessionID, "input": input}, &run); err != nil {
-		return fail("tasks.start", err)
-	}
-	fmt.Printf("任务已启动：run %s\n", run.ID)
-	if !parsed.flags["wait"] {
-		fmt.Println("提示：用 tasks status 跟踪进度，或加 --wait 跟随到结束。")
-		return 0
-	}
-	var prompt approvalPrompter
-	if interactiveTerminal() {
-		prompt = terminalPrompter()
-	}
-	return waitTask(client, agentID, sessionID, run.ID, prompt, os.Stdout)
 }
 
 func joinArgs(parts []string) string {

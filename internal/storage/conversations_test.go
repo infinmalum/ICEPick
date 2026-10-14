@@ -2,8 +2,7 @@ package storage
 
 import (
 	"context"
-	"encoding/json"
-	"path/filepath"
+
 	"testing"
 )
 
@@ -100,84 +99,6 @@ func TestConversationIsolationSelectionAndArchive(t *testing.T) {
 	current, _ := s.GetConversation(ctx, a.ID)
 	if current.ProfileID != q.ID {
 		t.Fatal("selection changed sibling conversation")
-	}
-}
-
-func TestV12MigrationKeepsLegacyContextsAndPolicies(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "legacy.db")
-	s, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	a, err := s.CreateAgent(ctx, "legacy A", DefaultProfileID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := s.CreateAgent(ctx, "legacy B", DefaultProfileID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	a.Policy = AgentPolicy{ApprovalMode: "manual", Permissions: PermissionScope{WorkspacePaths: []string{"/project-a"}}, DelegationTargets: []string{b.ID}}
-	a, err = s.UpdateAgentLocal(ctx, a.ID, a.Name, a.Policy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	session, err := s.CreateAgentSession(ctx, a.ID, "legacy history")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.AddMessage(ctx, session.ID, "", RoleUser, "keep history"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.AddAgentMemory(ctx, a.ID, "keep memory", "user", session.ID, ScopePersonal); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SetExfilGrant(ctx, ExfilGrant{AgentID: a.ID, Destination: "https://example.com", Scopes: []string{ScopePersonal}}); err != nil {
-		t.Fatal(err)
-	}
-	downgradeToV11(t, s)
-	if err := s.Close(); err != nil {
-		t.Fatal(err)
-	}
-	s, err = Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	if s.BackupPath() == "" {
-		t.Fatal("missing pre-migration backup")
-	}
-	contextA, err := s.GetLocalContext(ctx, a.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	before, _ := json.Marshal(a.Policy)
-	after, _ := json.Marshal(contextA.Policy)
-	if string(before) != string(after) {
-		t.Fatalf("migration changed policy: %s / %s", before, after)
-	}
-	if _, err := s.GetLocalContext(ctx, b.ID); err != nil {
-		t.Fatal("merged second context", err)
-	}
-	conversation, err := s.GetConversation(ctx, session.ID)
-	if err != nil || conversation.ContextID != a.ID {
-		t.Fatalf("history identity: %+v %v", conversation, err)
-	}
-	memories, err := s.ListAgentMemories(ctx, a.ID, 50)
-	if err != nil || len(memories) != 1 {
-		t.Fatal("lost memories", err)
-	}
-	grants, err := s.ListExfilGrants(ctx, a.ID)
-	if err != nil || len(grants) != 1 {
-		t.Fatal("lost grants", err)
-	}
-	p, err := s.GetProfile(ctx, DefaultProfileID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.Data.SchemaVersion != ProfileSchemaVersion || p.Data.Execution.Workflow != "direct" {
-		t.Fatalf("missing schema: %+v", p.Data)
 	}
 }
 

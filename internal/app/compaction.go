@@ -45,7 +45,7 @@ func (c sessionCompactor) Summarize(ctx context.Context, source config.Model, ol
 	if err != nil {
 		return "", err
 	}
-	answer, chatErr := c.chat.Chat(ctx, source, messages, nil)
+	answer, chatErr := c.chat.Chat(context.WithValue(ctx, suppressSearchKey{}, true), source, messages, nil)
 	if err := c.svc.store.CompleteModelStep(ctx, step.ID, chatErr); err != nil {
 		return "", err
 	}
@@ -133,6 +133,15 @@ func (t bookkeepingTools) Definitions(ctx context.Context) ([]model.Tool, error)
 	if err != nil {
 		return nil, err
 	}
+	return t.definitionsWith(ctx, definitions)
+}
+
+func (t bookkeepingTools) definitionsWith(ctx context.Context, definitions []model.Tool) ([]model.Tool, error) {
+	for _, d := range basicDefinitions() {
+		if t.profile.AllowsTool(d.Function.Name) {
+			definitions = append(definitions, d)
+		}
+	}
 	if t.profile.ResourcesFrozen && len(t.profile.FrozenSkills) > 0 && t.profile.AllowsTool("local__load_skill") {
 		found := false
 		for _, d := range definitions {
@@ -191,6 +200,8 @@ func (t bookkeepingTools) Definitions(ctx context.Context) ([]model.Tool, error)
 
 func (t bookkeepingTools) Call(ctx context.Context, name, arguments string) (string, error) {
 	switch name {
+	case "local__write_file", "local__edit_file", "local__exec":
+		return t.basicCall(ctx, name, arguments)
 	case "local__search_worker_traces", "local__list_worker_traces", "local__get_worker_trace", "local__record_observation":
 		return t.traceCall(ctx, name, arguments)
 	case "local__load_skill":

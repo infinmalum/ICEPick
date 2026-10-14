@@ -242,7 +242,7 @@ func claimTaskInTx(ctx context.Context, tx *sql.Tx, root string, spec TaskSpec, 
 		limit = DefaultDelegationConcurrency
 	}
 	var active int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM runs WHERE parent_run_id=? AND status='running' AND id<>? AND id NOT IN(SELECT run_id FROM run_components)`, root, runID).Scan(&active); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM runs WHERE parent_run_id=? AND status='running' AND id<>? AND component='worker'`, root, runID).Scan(&active); err != nil {
 		return err
 	}
 	if active >= limit {

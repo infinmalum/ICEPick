@@ -6,28 +6,30 @@ ICEPick 是一个本地优先、领域无关的 Agent 宿主。它使用 Go 和 
 
 目标是让用户通过 **Profile** 定义完整场景，选择主执行、规划、worker、审查、配置改进等内置 Agent 组件，组合模型、指令、工具、Skills 和执行流程。运行实例由宿主创建，用户无需维护另一套 Agent 列表。计划按实际能力提供“日常助手”“研究分析”“写作编辑”“开发协作”四个经真实验收的场景 Profile 和空白创建入口。审查和复盘在当前场景中调用，无需切换 Profile；Profile/Skills 改进经过候选、验证、发布和回退流程。
 
-R1–R2 两批增量已接入：桌面以 Profile 为入口，运行状态和授权由本机上下文自动管理，旧 Agent 表和命令保留兼容。已提供日常助手、写作编辑的可编辑模板副本与空白入口，标记为待真实模型验收。R3 已接入独立 planner、自动依赖调度和只读 worker 并行；研究分析与开发协作提供试验配置，需材料或工具依赖。独立审查、固定流程和配置改进仍待交付。实现范围、兼容迁移与后续阶段见[设计文档](docs/architecture.md)和[实施计划](IMPLEMENTATION_PLAN.md)；P4/P5 编号对应[历史实施记录](docs/history/implementation-v1.md)。
+R1–R2 两批增量已接入：桌面以 Profile 为入口，运行状态和授权由本机上下文自动管理，用户通过对话选择配置，不需要管理 Agent。已提供日常助手、写作编辑的可编辑模板副本与空白入口，标记为待真实模型验收。R3 已接入独立 planner、自动依赖调度和只读 worker 并行；研究分析与开发协作提供试验配置，需材料或工具依赖。R4 已接入独立审查门槛和历史结果单次复核；有限返工、固定流程和配置改进仍待交付。实现范围与后续阶段见[设计文档](docs/architecture.md)和[实施计划](IMPLEMENTATION_PLAN.md)；P4/P5 编号对应[历史实施记录](docs/history/implementation-v1.md)。
 
 ## 当前功能
 
+文件覆盖需预期内容，精确编辑要求唯一匹配；本地命令返回退出码、输出、超时及截断标记。工作区及可执行文件由本机权限控制，命令执行仍需审批，未提供完整沙箱。MCP 工具先通过 `local__tool_search` 搜索加载，下一轮调用，保留 schema 指纹及实际调用记录。
+
 - 直接选择 Profile 开始对话，无需创建 Agent；新对话默认隔离上下文，可显式沿用已有对话的记忆与权限。Profile 切换按对话保存，保留历史和授权，在途 Run 使用旧快照。
 - main/worker 组件支持独立提示词、模型和工具子集；worker 来源可选当前或其他 Profile 的配置，运行固定修订、模型与所选 SKILL.md 内容；支持 direct 与 dynamic 流程。出厂模板可创建、编辑和按配置组恢复，删除本地 Profile 不删除程序模板、历史或授权。
-- Profile schemaVersion=1、事务修订记录和归档删除；v5 分享包含流程、planner、预算及独立 worker 配置，兼容读取 v1/v2/v3/v4 包，不携带本机授权和出厂绑定。
+- Profile schemaVersion=1、事务修订记录和归档删除；v6 分享包含流程、planner、预算及独立 worker 配置，只读取当前格式，不携带本机授权和出厂绑定。
 - 按 Agent 隔离会话、消息和任务记录；支持多轮对话、工具调用、流式输出与取消任务。
-- 统一接入 MCP 服务和 Agent Skills，由 Profile 选择启用范围，与 Agent 授权取交集执行。
+- 统一接入 MCP 服务和 Agent Skills，由 Profile 选择启用范围，与对话本机授权取交集执行。
 - 工具执行统一经权限网关：effect/sensitivity 分类、全人工/半自动/全自动三模式审批（绑定调用与参数哈希）、工作区硬边界、MCP 指纹变化暂停自动执行、每轮模型发送前的数据外发授权检查（桌面端可管理外发授权与远端凭据）。
 - 上下文压缩（P4）：会话超过 Profile 上下文预算时自动把最旧的完整轮次归纳为摘要（保留当前任务与未闭合工具调用，原文不删），摘要继承数据范围并继续受外发检查约束；会话视图可查看摘要与覆盖区间。
-- 逐 Agent 长期记忆（P4）：记忆按 `agent_id` 隔离，Profile 偏好与 Agent 授权同时开启才生效；运行开始时注入（来源与范围标注，范围计入外发检查），模型可经 `local__memory_save`（需审批）写入；桌面记忆面板与 `icepick memory` 命令提供查看/编辑/添加/删除/导出。
-- 任务计划：模型经 `local__update_plan` 维护带稳定 ID、依赖、验收条件与材料出处的计划；宿主校验依赖和修订，防止并发覆盖及已开始任务被重写。桌面/CLI 显示计划，重启后恢复；清除保留修订历史。状态由模型记录，尚未接入自动调度与独立验收。
+- 按本机上下文隔离的长期记忆（P4）：记忆按 `agent_id` 隔离，Profile 偏好与本机上下文授权同时开启才生效；运行开始时注入（来源与范围标注，范围计入外发检查），模型可经 `local__memory_save`（需审批）写入；桌面记忆面板与 `icepick memory` 命令提供查看/编辑/添加/删除/导出。
+- 任务计划：模型经 `local__update_plan` 维护带稳定 ID、依赖、验收条件与材料出处的计划；宿主校验依赖和修订，防止并发覆盖及已开始任务被重写。桌面/CLI 显示计划，重启后恢复；清除保留修订历史。此处会话待办状态由模型记录；根任务的 dynamic 自动调度与独立审查使用另一套实际执行状态。
 - 动态协作：Profile 选择 dynamic 后，planner 按关键事件生成/修订依赖计划，宿主审批、领取并调度，main 整理交付。只读任务并行，写入和未知副作用串行；waiting/blocked/failed/complete 状态明确。根预算覆盖所有组件与重试，模型用量未知时保留预留并标记；安全自动重试需显式开启。重启保留游标与尝试，进入阻塞，不盲目重放。
-- 本次任务执行计划：启用规划、委派和 worker 槽位后，main 可声明依赖任务，经审批按 ID 与条件指纹执行。宿主原子领取并关联子 Run、执行尝试和前置交付文本；状态由实际执行推进，未执行任务不能标记完成，中断和未知结果不会自动重跑。桌面与 `tasks status` 可查看完整计划和尝试；dynamic 已支持 planner 与受控只读并行；独立审查仍未提供。
-- 本机委派（P5）：Profile 开启后，模型经 `local__delegate_task` 把明确描述的子任务委派给允许列表中的其他 Agent（也可指定固定目标）。子任务有独立上下文与运行记录（`parent_run_id` 任务树），权限与外发取父任务与目标 Agent 的交集、审批取更严格者，取消父任务级联取消子任务；子任务不访问目标的会话与长期记忆。
-- Profile 分享包 v5（兼容 v1/v2/v3/v4）：可明确选择包含 worker 来源，展平为独立配置；一键导出 zip（配置清单、人格/提示词独立文件、MCP 依赖引用、标准 Skills 目录），不含授权、会话、记忆、密钥与绝对路径；导入先预览缺失依赖与建议，确认后创建新 Profile（不自动安装资源、不创建/切换 Agent、不授权）。桌面端与 `icepick profiles export/import` 均可使用。
+- 本次任务执行计划：启用规划、委派和 worker 槽位后，main 可声明依赖任务，经审批按 ID 与条件指纹执行。宿主原子领取并关联子 Run、执行尝试和前置交付文本；状态由实际执行推进，未执行任务不能标记完成，中断和未知结果不会自动重跑。桌面与 `tasks status` 可查看完整计划和尝试；dynamic 已支持 planner 与受控只读并行；可配置独立 reviewer 审查。
+- 本机委派：Profile 配置 worker 槽位后，main 经 `local__delegate_task` 按槽位派发子任务；来源可为当前配置或其他 Profile 的 worker 投影。所有子任务使用当前对话的本机上下文与授权，冻结配置和资源上限，取消父任务会传播到子任务。
+- Profile 分享包 v6：可明确选择包含 worker 来源，展平为独立配置；一键导出 zip（配置清单、人格/提示词独立文件、MCP 依赖引用、标准 Skills 目录），不含授权、会话、记忆、密钥与绝对路径；导入先预览缺失依赖与建议，确认后创建新 Profile（不自动安装资源、不创建/切换 Agent、不授权）。桌面端与 `icepick profiles export/import` 均可使用。
 - CLI/IPC：桌面端或 `icepick serve` 构成每数据目录唯一宿主；`icepick` 命令行经本机 IPC 驱动与桌面相同的服务契约。
 
-当前内置工具包含只读工具与记忆/计划/委派簿记工具；外部 MCP 工具已可经权限网关和审批调用，统一按 external/unknown 处理。尚无通用内置写入、命令和网络工具，Jev、A2A 也未实现。默认 Agent 的一般资源策略为范围不限、半自动审批，远端外发另行授权；长期记忆与委派需在 Profile 偏好与 Agent 授权（记忆授权 / 委派允许列表）中同时开启。新 worker 使用对话本机授权，配置来源不提供权限或记忆。会话 Plan 保留待办语义；direct 支持 main 同步委派，dynamic 使用 planner 和宿主调度。动态交付物带消息引用、SHA256 与真实工具证据；worker 可按本根任务交换过程与观察，继承数据外发范围。Profile 可选择 off/on_demand/required 独立审查；required 未通过不能完成，结论绑定目标、交付文本及工具证据指纹。必要检查需指定工具成功执行并返回 JSON `{"passed":true}`，无法确认时为 inconclusive。桌面可单次复核结果；CLI `tasks review <sessionID> <runID>` 发起复核、`tasks status` 查看结论；旧任务终态保留。reviewer 当前只读取已有证据，自动返工与专用检查调度尚未实现；worker 的 succeeded/unreviewed 仍不等同于审查通过。
+当前内置 read_file/write_file/edit_file/exec、tool_search，以及 Skill/记忆/计划/委派和过程检索工具；外部 MCP 工具已可经权限网关和审批调用，统一按 external/unknown 处理。已提供通用文件写入/精确编辑和本机命令执行；OpenAI、Anthropic 和 Gemini 原生联网搜索已接入；Jev、A2A 尚未实现。新对话默认半自动审批、一般资源需显式授权，远端外发另行授权；长期记忆与委派需在 Profile 偏好与本机上下文授权（记忆授权 / 委派允许列表）中同时开启。新 worker 使用对话本机授权，配置来源不提供权限或记忆。会话 Plan 保留待办语义；direct 支持 main 同步委派，dynamic 使用 planner 和宿主调度。动态交付物带消息引用、SHA256 与真实工具证据；worker 可按本根任务交换过程与观察，继承数据外发范围。Profile 可选择 off/on_demand/required 独立审查；required 未通过不能完成，结论绑定目标、交付文本及工具证据指纹。必要检查需指定工具成功执行并返回 JSON `{"passed":true}`，无法确认时为 inconclusive。桌面可单次复核结果；CLI `tasks review <sessionID> <runID>` 发起复核、`tasks status` 查看结论；旧任务终态保留。reviewer 当前只读取已有证据，自动返工与专用检查调度尚未实现；worker 的 succeeded/unreviewed 仍不等同于审查通过。
 
-升级到数据库 v17 会保留原 ID、会话、记忆、运行快照和 grant；contexts 视图逐个承接旧 Agent 身份，不合并共享 Profile 的数据。新增对话级 Profile、组件配置、修订记录、归档状态、计划依赖/修订历史与根任务/执行尝试；启动迁移前自动备份，旧程序不能直接写入 v17 数据库。旧全局外发授权保留供核对，但需按 Agent 重新授权；旧历史来源不全时按 unknown 处理。外部 MCP 改为任务首次使用所选服务时启动。
+开发阶段不承诺旧数据或旧接口兼容。当前数据库格式为 v20、分享包格式为 v6；直接创建当前结构，遇到其他版本明确拒绝，不迁移、不自动删除数据。需要试用新版时使用新的数据目录。此政策持续到项目开始有实际用户并由维护者明确通知。MCP 服务在任务首次发现所选服务工具时启动。
 
 ## 运行
 
@@ -45,7 +47,7 @@ wails3 build
 
 产物在 `bin/icepick`。目前只验证了 Linux 构建。依赖使用 Go/npm 的用户级持久缓存；若需自定义缓存，应放在本项目 `.cache/`，不要放在系统临时目录。
 
-无需模型或密钥也可启动；界面会显示“模型未连接”。要运行任务，先在“模型服务”选择提供方并保存模型 ID：本机 Ollama/LM Studio 确保服务已连接；远端 OpenAI/Anthropic/Gemini 需在“远端凭据”面板保存 API 密钥（保存在数据目录内的 0600 文件，不会回显），并按需在当前 Agent 的“数据外发授权”面板允许该端点。本机模型调用支持流式输出，界面会实时显示生成文本。
+无需模型或密钥也可启动；界面会显示“模型未连接”。要运行任务，先在“模型服务”选择提供方并保存模型 ID：本机 Ollama/LM Studio 确保服务已连接；远端 OpenAI/Anthropic/Gemini 需在“远端凭据”面板保存 API 密钥（保存在数据目录内的 0600 文件，不会回显），并按需在当前对话的“数据外发授权”面板允许该端点。本机模型调用支持流式输出，界面会实时显示生成文本。
 
 配置文件保存在用户 XDG 配置目录的 `ICEPick/config.json`；未创建时默认使用 Ollama 的 `http://127.0.0.1:11434/v1`。本机模型地址必须指向本机 HTTP 服务。数据库 `icepick.db`、日志 `icepick.log`、凭据 `credentials.json` 与 IPC 套接字位于用户 XDG 数据目录的 `ICEPick/` 下。
 
@@ -63,10 +65,7 @@ bin/icepick conversations create --profile <profileID>   # 新对话，自动隔
 bin/icepick conversations start <conversationID> "任务内容" --wait
 bin/icepick conversations permissions <conversationID> --mode semi --workspace <项目路径>
 bin/icepick conversations select <conversationID> --profile <profileID>
-bin/icepick conversations show <conversationID>   # 查看历史、摘要与计划
-bin/icepick agents list      # 旧身份兼容入口
-bin/icepick sessions create <agentID>          # 新建会话
-bin/icepick tasks start <agentID> <sessionID> "任务内容" --wait   # 执行任务（--wait 跟随并处理审批）
+bin/icepick conversations show <conversationID>   # 查看对话历史
 bin/icepick tasks status <runID> --agent <agentID>   # 任务状态与委派子任务树
 bin/icepick approvals list   # 待审批与结果未知调用（含委派子会话）
 bin/icepick memory list <agentID>   # 长期记忆（add/edit/delete/export）
@@ -108,10 +107,21 @@ go test ./...
 ## 文档
 
 - [设计文档](docs/architecture.md)：以 Profile 为入口的新目标架构与可自定义能力。
-- [实施计划](IMPLEMENTATION_PLAN.md)：新阶段、兼容迁移与验收标准。
+- [实施计划](IMPLEMENTATION_PLAN.md)：新阶段与验收标准。
 - [历史实施记录](docs/history/implementation-v1.md)：现有 P0–P8 基线及未完成的真实验收。
 - [MCP 与 Skills](docs/mcp-and-skills.md)：当前接入方式。
 
 ## 许可证
 
 本项目采用 GNU Affero General Public License v3.0（`AGPL-3.0-only`），完整条款见 [LICENSE](LICENSE)。第三方依赖与保留版权声明的构建脚本遵循各自许可证。
+
+
+## 对话联网搜索
+
+在对话输入框旁开启“联网搜索”，模型可按需搜索；开关属于对话，发送时冻结到任务，不改变在途任务。CLI 使用 `icepick conversations search <对话ID> on`、`off` 或 `records` 查看记录。
+
+原生搜索接入 [OpenAI Responses](https://developers.openai.com/api/docs/guides/tools-web-search)、[Anthropic Messages](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool) 和 [Gemini Interactions](https://ai.google.dev/gemini-api/docs/google-search)，支持流式返回、引用和普通函数工具共存。Anthropic 使用 web_search_20260318 且明确 allowed_callers=direct，不启用云端代码过滤。Gemini 3/4 文本模型使用新版官方 SDK 的 Interactions API，以 store=false 及完整协议步骤在宿主保存会话；搜索关闭后继续使用该协议保持签名和函数结果。未知模型、Gemini 2.x 和专用图像/音频模型不猜测混合搜索能力，可选择已配置 MCP。账户、模型和自定义端点的实际支持在请求时验证；请求错误不会静默换服务或重试。搜索查询及网页结果需要 unknown 外发范围，其他会话材料继续遵循实际范围；开启开关不新增外发授权。即便服务商通过本机网关接入，原生搜索仍需向该端点授权查询材料范围。组件工具白名单限制原生搜索时使用 `local__web_search` 这一能力名称，它不会作为普通函数工具暴露给模型。planner、reviewer 和摘要器继续使用已有证据，只读 worker 不获得外部搜索能力。
+
+其他模型接口可使用已配置的搜索 MCP：在对应 `mcpServers` 项添加 `"webSearchTools": ["真实搜索工具名"]`，并在 Profile 选择该服务/工具。开启时提供登记的真实 schema，调用仍需权限和审批；关闭时不提供这些专用搜索工具。没有可用路径时显示原因，不自动安装搜索服务。普通命令和其他 MCP 的联网行为仍由原权限机制控制。
+
+搜索记录保存实际事件、来源链接及能取得的用量；网页材料属于未知来源。OpenAI 和 Anthropic 每请求最多预留 3 次搜索，共享根工具预算，完整响应释放未用预留。Gemini 没有服务商内部搜索次数的硬上限参数，按每个宿主搜索请求预留并消耗 1 个预算单位，内部次数与独立费用未报告时明确显示未知；不会把查询条数当作实际调用/账单次数。中断保留未知结果与预留，不自动重试或重放。Google 搜索建议保存并在隔离、禁脚本的 iframe 中呈现；不把服务商 HTML 放进宿主页。真实服务及稳定场景验收仍待完成。

@@ -42,7 +42,6 @@ func (g toolGate) effectiveProfile(ctx context.Context) (storage.AgentProfile, e
 	}
 	p := *g.snapshot
 	p.Policy = restrictPolicy(g.snapshot.Policy, a.Policy)
-	p.Policy.DelegationTargets = intersectLists(g.snapshot.Policy.DelegationTargets, a.Policy.DelegationTargets)
 	if g.runID != "" {
 		policy, err := g.svc.restrictRunPolicy(ctx, g.runID, p)
 		if err != nil {
@@ -150,12 +149,53 @@ func (g toolGate) hardLimits(ctx context.Context, profile storage.AgentProfile, 
 		}
 	}
 
-	if g.snapshot != nil && req.Tool == "local__read_file" && !g.snapshot.Policy.Permissions.Unrestricted {
+	if req.Tool == "local__write_file" {
+		var args mcptools.WriteArgs
+		if err := decodeRequiredOperation(req.Arguments, &args, "path", "content"); err != nil {
+			return err.Error()
+		}
+		if !filepath.IsAbs(args.Path) {
+			return "写入文件需绝对路径"
+		}
+	}
+	if req.Tool == "local__edit_file" {
+		var args mcptools.EditArgs
+		if err := decodeRequiredOperation(req.Arguments, &args, "path", "oldText", "newText"); err != nil {
+			return err.Error()
+		}
+		if !filepath.IsAbs(args.Path) || args.OldText == "" {
+			return "编辑文件需绝对路径与非空 oldText"
+		}
+	}
+	if g.snapshot != nil && (req.Tool == "local__read_file" || req.Tool == "local__write_file" || req.Tool == "local__edit_file") && !g.snapshot.Policy.Permissions.Unrestricted {
 		var args struct {
 			Path string `json:"path"`
 		}
 		if json.Unmarshal([]byte(req.Arguments), &args) != nil || !withinAny(args.Path, g.snapshot.Policy.Permissions.WorkspacePaths) {
 			return "路径超出任务开始时允许的工作区范围"
+		}
+	}
+	if req.Tool == "local__exec" {
+		var args mcptools.ExecArgs
+		if err := decodeRequiredOperation(req.Arguments, &args, "executable", "args", "cwd"); err != nil {
+			return "无效命令参数：" + err.Error()
+		}
+		if err := mcptools.ValidateExec(args); err != nil {
+			return err.Error()
+		}
+		if !profile.Policy.Permissions.Unrestricted {
+			if !withinAny(args.Cwd, profile.Policy.Permissions.WorkspacePaths) {
+				return "命令工作目录超出允许工作区"
+			}
+			found := false
+			for _, name := range profile.Policy.Permissions.Commands {
+				if name == args.Executable {
+					found = true
+				}
+			}
+			if !found {
+				return "命令不在允许列表中"
+			}
 		}
 	}
 	if !profile.AllowsTool(req.Tool) {
@@ -201,7 +241,7 @@ func (g toolGate) hardLimits(ctx context.Context, profile storage.AgentProfile, 
 			}
 		}
 	}
-	if req.Tool == "local__read_file" && !profile.Policy.Permissions.Unrestricted {
+	if (req.Tool == "local__read_file" || req.Tool == "local__write_file" || req.Tool == "local__edit_file") && !profile.Policy.Permissions.Unrestricted {
 		var args struct {
 			Path string `json:"path"`
 		}
@@ -247,14 +287,7 @@ func (g toolGate) delegateLimit(ctx context.Context, profile storage.AgentProfil
 	if selected {
 		return g.svc.workerLimit(ctx, profile, g.runID, name)
 	}
-	target, err := g.svc.resolveFrozenLegacy(ctx, profile, g.runID, args.Agent)
-	if err != nil {
-		return err.Error()
-	}
-	if !policyAllowsTarget(profile.Policy, target.ID) {
-		return fmt.Sprintf("目标 Agent %q 不在该 Agent 的委派允许列表中", target.Name)
-	}
-	return ""
+	return "Profile 未配置 worker 槽位"
 }
 
 func confirmReason(effect mcptools.Effect, sensitivity mcptools.Sensitivity) string {

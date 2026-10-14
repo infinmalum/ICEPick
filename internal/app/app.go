@@ -431,6 +431,19 @@ func (s *Service) StartAgentTask(agentID, sessionID, input string) (storage.Run,
 	if err != nil {
 		return storage.Run{}, err
 	}
+	conversation, err := s.store.GetConversation(context.Background(), sessionID)
+	if err != nil {
+		return storage.Run{}, err
+	}
+	if conversation.Options.WebSearch {
+		availability, err := s.ConversationSearchAvailability(sessionID)
+		if err != nil {
+			return storage.Run{}, err
+		}
+		if !availability.Available {
+			return storage.Run{}, errors.New(availability.Reason)
+		}
+	}
 	if session.Kind == storage.SessionKindDelegation {
 		return storage.Run{}, errors.New("子任务会话仅供查看与审批，不能作为普通对话重新执行")
 	}
@@ -459,7 +472,7 @@ func (s *Service) StartAgentTask(agentID, sessionID, input string) (storage.Run,
 	s.mu.RLock()
 	defaultModel := s.config.Model
 	s.mu.RUnlock()
-	item, runCtx, resolved, err := s.runs.StartPrepared(context.Background(), sessionID, defaultModel, s.skills.Snapshot)
+	item, runCtx, resolved, err := s.runs.StartPrepared(context.Background(), sessionID, defaultModel, s.skills.Snapshot, s.configuredSearchTools()...)
 	if err != nil {
 		return storage.Run{}, err
 	}
@@ -553,8 +566,8 @@ func (s *Service) executeTask(ctx context.Context, runID, sessionID string, sour
 		}
 		runTools = hub.ForServers(all, names)
 	}
-	runner := bookkeepingTools{inner: runTools, svc: s, profile: profile, sessionID: sessionID, runID: runID}
-	definitions, err := runner.Definitions(ctx)
+	runner := newDiscoveryTools(bookkeepingTools{inner: runTools, svc: s, profile: profile, sessionID: sessionID, runID: runID})
+	_, err = runner.Definitions(ctx)
 	if err != nil {
 		_ = s.runs.Finish(runID, "failed", err.Error())
 		return
@@ -563,12 +576,7 @@ func (s *Service) executeTask(ctx context.Context, runID, sessionID string, sour
 		_ = s.runs.Finish(runID, "failed", err.Error())
 		return
 	}
-	allowedTools := []string{}
-	for _, definition := range definitions {
-		if profile.AllowsTool(definition.Function.Name) {
-			allowedTools = append(allowedTools, definition.Function.Name)
-		}
-	}
+
 	guarded := guardedChat{svc: s, runID: runID, inner: s.chat, payloadCheck: func(c context.Context, m []model.Message, t []model.Tool) error {
 		return s.checkPayload(c, source, profile.AgentID, sessionID, m, t)
 	}, check: func(checkCtx context.Context) error {
@@ -580,12 +588,11 @@ func (s *Service) executeTask(ctx context.Context, runID, sessionID string, sour
 		return s.checkInitialGrant(checkCtx, sessionID, source, profile, initialGrant)
 	}}
 	engine := agent.Engine{
-		Model:        guarded,
-		Tools:        runner,
-		Recorder:     runRecorder{svc: s, runID: runID, sessionID: sessionID, classifier: s.classifierFor(profile)},
-		AllowedTools: allowedTools,
-		Gate:         toolGate{svc: s, agentID: profile.AgentID, snapshot: &profile, runID: runID},
-		Approver:     s,
+		Model:    guarded,
+		Tools:    runner,
+		Recorder: runRecorder{svc: s, runID: runID, sessionID: sessionID, classifier: s.classifierFor(profile)},
+		Gate:     toolGate{svc: s, agentID: profile.AgentID, snapshot: &profile, runID: runID},
+		Approver: s,
 		OnDelta: func(text string) error {
 			// Streamed fragments are broadcast live and merged in host
 			// memory; the durable message commit stays with Recorder.

@@ -28,27 +28,15 @@ type PermissionScope struct {
 
 // DelegationPolicy is the Profile-level switch for sub-Agent delegation; the
 // actual target list is bounded by each delegating Agent's own authorization.
-// Selection picks how the target is chosen: "model" lets the model pick from
-// the allowed list, "pinned" always uses TargetAgentID (a local identity that
-// share export strips). Zero MaxConcurrency/MaxSeconds mean the runtime
-// defaults.
+// Workers are selected from Profile slots. Zero concurrency/time use host defaults.
 type DelegationPolicy struct {
-	Enabled        bool   `json:"enabled"`
-	MaxDepth       int    `json:"maxDepth"`
-	MaxConcurrency int    `json:"maxConcurrency"`
-	MaxSeconds     int    `json:"maxSeconds"`
-	Selection      string `json:"selection"`
-	TargetAgentID  string `json:"targetAgentId,omitempty"`
+	Enabled        bool `json:"enabled"`
+	MaxDepth       int  `json:"maxDepth"`
+	MaxConcurrency int  `json:"maxConcurrency"`
+	MaxSeconds     int  `json:"maxSeconds"`
 }
 
 const (
-	// DelegationModelSelection lets the model choose a target from the
-	// agent's allowed list; the list bounds the choice.
-	DelegationModelSelection = "model"
-	// DelegationPinnedSelection delegates every call to one configured
-	// target Agent of this machine.
-	DelegationPinnedSelection = "pinned"
-
 	// DefaultDelegationConcurrency caps concurrent subtask runs per parent.
 	DefaultDelegationConcurrency = 2
 	// maxDelegationSeconds mirrors the engine's per-run timeout (10
@@ -99,9 +87,6 @@ type AgentPolicy struct {
 	// Memory authorizes this Agent to use long-term memory at all. It
 	// defaults to false: existing and new Agents opt in explicitly.
 	Memory bool `json:"memory"`
-	// DelegationTargets lists the Agents this one may delegate subtasks to.
-	// An empty list disables delegation regardless of the Profile switch.
-	DelegationTargets []string `json:"delegationTargets,omitempty"`
 }
 
 // Profile is one named, versioned combination. Editing bumps the revision and
@@ -182,11 +167,7 @@ func validateProfileData(d ProfileData) error {
 			return err
 		}
 	}
-	switch d.Delegation.Selection {
-	case "", DelegationModelSelection, DelegationPinnedSelection:
-	default:
-		return errors.New("无效的委派目标选择方式")
-	}
+
 	if d.Delegation.MaxDepth < 0 || d.Delegation.MaxDepth > MaxDelegationDepth {
 		return errors.New("上下文预算或委派深度无效")
 	}
@@ -216,13 +197,7 @@ func validatePolicy(p AgentPolicy) error {
 	if p.ApprovalMode != "manual" && p.ApprovalMode != "semi" && p.ApprovalMode != "automatic" {
 		return errors.New("无效的审批模式")
 	}
-	seen := map[string]bool{}
-	for _, target := range p.DelegationTargets {
-		if target == "" || seen[target] {
-			return errors.New("委派允许列表包含空项或重复项")
-		}
-		seen[target] = true
-	}
+
 	return nil
 }
 
@@ -279,7 +254,7 @@ func scanProfile(scanner interface{ Scan(...any) error }) (Profile, error) {
 }
 
 func (s *Store) ListProfiles(ctx context.Context) ([]Profile, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, config, revision, is_default, created_at, updated_at FROM resolved_profiles WHERE archived_at IS NULL ORDER BY CASE id WHEN 'default' THEN 0 ELSE 1 END, created_at, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, config, revision, is_default, created_at, updated_at FROM profiles WHERE archived_at IS NULL ORDER BY CASE id WHEN 'default' THEN 0 ELSE 1 END, created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -296,7 +271,7 @@ func (s *Store) ListProfiles(ctx context.Context) ([]Profile, error) {
 }
 
 func (s *Store) GetProfile(ctx context.Context, id string) (Profile, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, name, config, revision, is_default, created_at, updated_at FROM resolved_profiles WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, name, config, revision, is_default, created_at, updated_at FROM profiles WHERE id = ?`, id)
 	p, err := scanProfile(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Profile{}, errors.New("Profile 不存在")
@@ -328,7 +303,7 @@ func (s *Store) CreateProfile(ctx context.Context, name string, data ProfileData
 		if _, err := tx.ExecContext(ctx, `INSERT INTO profiles(id,name,revision,is_default,created_at,updated_at) VALUES(?,?,1,0,?,?)`, id, name, created, created); err != nil {
 			return err
 		}
-		if err := saveProfileComponents(ctx, tx, id, data); err != nil {
+		if err := saveProfileConfig(ctx, tx, id, data); err != nil {
 			return err
 		}
 		return saveProfileRevision(ctx, tx, id, 1, name, data)
@@ -374,7 +349,7 @@ func (s *Store) UpdateProfile(ctx context.Context, p Profile) (Profile, error) {
 		if n == 0 {
 			return errors.New("Profile 已被其他操作修改，请刷新后重试")
 		}
-		if err := saveProfileComponents(ctx, tx, p.ID, p.Data); err != nil {
+		if err := saveProfileConfig(ctx, tx, p.ID, p.Data); err != nil {
 			return err
 		}
 		return saveProfileRevision(ctx, tx, p.ID, p.Revision+1, strings.TrimSpace(p.Name), p.Data)
@@ -400,22 +375,8 @@ func (s *Store) RestoreDefaultProfileData(ctx context.Context, revision int) (Pr
 	return s.UpdateProfile(ctx, restored)
 }
 
-// DeleteProfile refuses to delete a Profile that any Agent still references;
-// the user must reassign those Agents first.
+// DeleteProfile archives the configuration while preserving existing history.
 func (s *Store) DeleteProfile(ctx context.Context, id string) error {
-	referencing, err := s.AgentsReferencingProfile(ctx, id)
-	if err != nil {
-		return err
-	}
-	if len(referencing) > 0 {
-		names := make([]string, 0, len(referencing))
-		for _, agent := range referencing {
-			names = append(names, agent.Name)
-		}
-		return fmt.Errorf("Profile 仍被 Agent 引用（%s），请先为这些 Agent 选择其他 Profile", strings.Join(names, "、"))
-	}
-	// Legacy clients keep their reference check, but deletion must also
-	// preserve conversations that explicitly selected this Profile.
 	return s.ArchiveProfile(ctx, id)
 }
 
@@ -432,7 +393,7 @@ func scanAgent(scanner interface{ Scan(...any) error }) (Agent, error) {
 }
 
 func (s *Store) ListAgents(ctx context.Context) ([]Agent, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, profile_id, policy, created_at, updated_at FROM agents ORDER BY CASE id WHEN 'default' THEN 0 ELSE 1 END, created_at, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, profile_id, policy, created_at, updated_at FROM contexts ORDER BY CASE id WHEN 'default' THEN 0 ELSE 1 END, created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -449,7 +410,7 @@ func (s *Store) ListAgents(ctx context.Context) ([]Agent, error) {
 }
 
 func (s *Store) GetAgent(ctx context.Context, id string) (Agent, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, name, profile_id, policy, created_at, updated_at FROM agents WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, name, profile_id, policy, created_at, updated_at FROM contexts WHERE id = ?`, id)
 	a, err := scanAgent(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Agent{}, errors.New("Agent 不存在")
@@ -460,7 +421,7 @@ func (s *Store) GetAgent(ctx context.Context, id string) (Agent, error) {
 // AgentsReferencingProfile lists the Agents whose current profile_id points
 // at the given Profile; the UI shows this reference relation.
 func (s *Store) AgentsReferencingProfile(ctx context.Context, profileID string) ([]Agent, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, profile_id, policy, created_at, updated_at FROM agents WHERE profile_id = ? ORDER BY created_at, id`, profileID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, profile_id, policy, created_at, updated_at FROM contexts WHERE profile_id = ? ORDER BY created_at, id`, profileID)
 	if err != nil {
 		return nil, err
 	}
@@ -497,7 +458,7 @@ func (s *Store) CreateAgent(ctx context.Context, name, profileID string) (Agent,
 		return Agent{}, err
 	}
 	created := now()
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO agents (id, name, profile_id, policy, created_at, updated_at) SELECT ?, ?, id, ?, ?, ? FROM profiles WHERE id = ?`,
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO contexts (id, name, profile_id, policy, created_at, updated_at) SELECT ?, ?, id, ?, ?, ? FROM profiles WHERE id = ?`,
 		id, name, string(policyJSON), created, created, profileID); err != nil {
 		return Agent{}, err
 	}
@@ -517,19 +478,12 @@ func (s *Store) UpdateAgentLocal(ctx context.Context, id, name string, policy Ag
 	if err := validatePolicy(policy); err != nil {
 		return Agent{}, err
 	}
-	// Every delegation target must exist on this machine: the allowlist is
-	// agent-local authorization over real instances, never free-form text.
-	for _, target := range policy.DelegationTargets {
-		if _, err := s.GetAgent(ctx, target); err != nil {
-			return Agent{}, fmt.Errorf("委派目标不存在: %w", err)
-		}
-	}
 	policyJSON, err := json.Marshal(policy)
 	if err != nil {
 		return Agent{}, err
 	}
 	if err := s.withTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE agents SET name=?,policy=?,updated_at=? WHERE id=?`, name, string(policyJSON), now(), old.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE contexts SET name=?,policy=?,updated_at=? WHERE id=?`, name, string(policyJSON), now(), old.ID); err != nil {
 			return err
 		}
 		return signalActorChange(ctx, tx, old.ID, "policy.changed")
@@ -550,7 +504,7 @@ func (s *Store) SwitchAgentProfile(ctx context.Context, agentID, profileID strin
 	if _, err := s.GetProfile(ctx, profileID); err != nil {
 		return Agent{}, err
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE agents SET profile_id=?, updated_at=? WHERE id=?`, profileID, now(), old.ID); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE contexts SET profile_id=?, updated_at=? WHERE id=?`, profileID, now(), old.ID); err != nil {
 		return Agent{}, err
 	}
 	return s.GetAgent(ctx, agentID)
@@ -567,39 +521,7 @@ func (s *Store) DeleteAgent(ctx context.Context, id string) error {
 	if sessions > 0 {
 		return errors.New("Agent 仍有会话历史，请先删除其会话")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, policy FROM agents`)
-	if err != nil {
-		return err
-	}
-	referencing := []string{}
-	for rows.Next() {
-		var otherID, policyJSON string
-		if err := rows.Scan(&otherID, &policyJSON); err != nil {
-			rows.Close()
-			return err
-		}
-		if otherID == id {
-			continue
-		}
-		var other AgentPolicy
-		if json.Unmarshal([]byte(policyJSON), &other) != nil {
-			continue
-		}
-		for _, target := range other.DelegationTargets {
-			if target == id {
-				referencing = append(referencing, otherID)
-				break
-			}
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if len(referencing) > 0 {
-		return fmt.Errorf("Agent 仍在 %s 的委派允许列表中，请先移除该委派目标", strings.Join(referencing, "、"))
-	}
-	result, err := s.db.ExecContext(ctx, `DELETE FROM agents WHERE id = ?`, id)
+	result, err := s.db.ExecContext(ctx, `DELETE FROM contexts WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
@@ -651,147 +573,4 @@ func (s *Store) AgentForSession(ctx context.Context, sessionID string) (AgentPro
 		return AgentProfile{}, err
 	}
 	return AgentProfile{AgentID: a.ID, AgentName: a.Name, ProfileID: profile.ID, ProfileName: profile.Name, ProfileData: profile.Data, Policy: a.Policy, ProfileRevision: profile.Revision}, nil
-}
-
-// legacyDefaultConfig renders the pre-v8 JSON record for the built-in
-// default so the v3/v5 migrations keep writing the shape the v8 split reads.
-func legacyDefaultConfig() string {
-	data, err := json.Marshal(legacyAgentProfile{
-		Description:   "通用助手；使用已接入的工具和 Skills",
-		SystemPrompt:  "你是 ICEPick 助手。使用可用工具完成用户任务；无法完成时如实说明。",
-		AllMCPServers: true,
-		AllSkills:     true,
-		Permissions:   PermissionScope{Unrestricted: true},
-		ApprovalMode:  "semi",
-		Delegation:    DelegationPolicy{Enabled: true, MaxDepth: 1},
-		ContextBudget: 8192,
-		MemoryEnabled: true,
-		PlanEnabled:   true,
-	})
-	if err != nil {
-		panic(err)
-	}
-	return string(data)
-}
-
-// migrateProfiles establishes the pre-v8 agent_profiles table (v3). Every
-// statement is a literal; the migration chain ends at v8, which splits this
-// table into profiles and agents.
-func (s *Store) migrateProfiles() error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(`CREATE TABLE agent_profiles (id TEXT PRIMARY KEY, name TEXT NOT NULL, config TEXT NOT NULL, revision INTEGER NOT NULL, preset TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
-		return fmt.Errorf("Agent 数据库迁移: %w", err)
-	}
-	if _, err := tx.Exec(`ALTER TABLE sessions ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'default'`); err != nil {
-		return fmt.Errorf("Agent 数据库迁移: %w", err)
-	}
-	if _, err := tx.Exec(`UPDATE sessions SET agent_id='default'`); err != nil {
-		return fmt.Errorf("Agent 数据库迁移: %w", err)
-	}
-	if _, err := tx.Exec(`CREATE INDEX sessions_agent_order ON sessions(agent_id, created_at, id)`); err != nil {
-		return fmt.Errorf("Agent 数据库迁移: %w", err)
-	}
-	if _, err := tx.Exec(`CREATE TRIGGER sessions_agent_insert BEFORE INSERT ON sessions WHEN NOT EXISTS (SELECT 1 FROM agent_profiles WHERE id = NEW.agent_id) BEGIN SELECT RAISE(ABORT, 'unknown agent'); END`); err != nil {
-		return fmt.Errorf("Agent 数据库迁移: %w", err)
-	}
-	if _, err := tx.Exec(`CREATE TRIGGER sessions_agent_update BEFORE UPDATE OF agent_id ON sessions WHEN NOT EXISTS (SELECT 1 FROM agent_profiles WHERE id = NEW.agent_id) BEGIN SELECT RAISE(ABORT, 'unknown agent'); END`); err != nil {
-		return fmt.Errorf("Agent 数据库迁移: %w", err)
-	}
-	if _, err := tx.Exec(`INSERT INTO agent_profiles (id,name,config,revision,preset,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`, DefaultProfileID, "默认 Agent", legacyDefaultConfig(), 1, DefaultProfileID, now(), now()); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`PRAGMA user_version = 3`); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-// migrateAgentRecords stamps existing messages and runs with their session's
-// agent ownership (v4).
-func (s *Store) migrateAgentRecords() error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(`ALTER TABLE messages ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'default'`); err != nil {
-		return fmt.Errorf("Agent 记录迁移: %w", err)
-	}
-	if _, err := tx.Exec(`ALTER TABLE runs ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'default'`); err != nil {
-		return fmt.Errorf("Agent 记录迁移: %w", err)
-	}
-	if _, err := tx.Exec(`ALTER TABLE runs ADD COLUMN profile_revision INTEGER NOT NULL DEFAULT 1`); err != nil {
-		return fmt.Errorf("Agent 记录迁移: %w", err)
-	}
-	if _, err := tx.Exec(`UPDATE messages SET agent_id=(SELECT agent_id FROM sessions WHERE sessions.id=messages.session_id)`); err != nil {
-		return fmt.Errorf("Agent 记录迁移: %w", err)
-	}
-	if _, err := tx.Exec(`UPDATE runs SET agent_id=(SELECT agent_id FROM sessions WHERE sessions.id=runs.session_id)`); err != nil {
-		return fmt.Errorf("Agent 记录迁移: %w", err)
-	}
-	if _, err := tx.Exec(`CREATE INDEX messages_agent_session_order ON messages(agent_id, session_id, created_at, id)`); err != nil {
-		return fmt.Errorf("Agent 记录迁移: %w", err)
-	}
-	if _, err := tx.Exec(`CREATE INDEX runs_agent_session_order ON runs(agent_id, session_id, created_at, id)`); err != nil {
-		return fmt.Errorf("Agent 记录迁移: %w", err)
-	}
-	if _, err := tx.Exec(`CREATE TRIGGER messages_agent_insert BEFORE INSERT ON messages WHEN NEW.agent_id != (SELECT agent_id FROM sessions WHERE id=NEW.session_id) BEGIN SELECT RAISE(ABORT, 'message agent mismatch'); END`); err != nil {
-		return fmt.Errorf("Agent 记录迁移: %w", err)
-	}
-	if _, err := tx.Exec(`CREATE TRIGGER messages_agent_update BEFORE UPDATE OF agent_id,session_id ON messages WHEN NEW.agent_id != (SELECT agent_id FROM sessions WHERE id=NEW.session_id) BEGIN SELECT RAISE(ABORT, 'message agent mismatch'); END`); err != nil {
-		return fmt.Errorf("Agent 记录迁移: %w", err)
-	}
-	if _, err := tx.Exec(`CREATE TRIGGER runs_agent_insert BEFORE INSERT ON runs WHEN NEW.agent_id != (SELECT agent_id FROM sessions WHERE id=NEW.session_id) BEGIN SELECT RAISE(ABORT, 'run agent mismatch'); END`); err != nil {
-		return fmt.Errorf("Agent 记录迁移: %w", err)
-	}
-	if _, err := tx.Exec(`CREATE TRIGGER runs_agent_update BEFORE UPDATE OF agent_id,session_id ON runs WHEN NEW.agent_id != (SELECT agent_id FROM sessions WHERE id=NEW.session_id) BEGIN SELECT RAISE(ABORT, 'run agent mismatch'); END`); err != nil {
-		return fmt.Errorf("Agent 记录迁移: %w", err)
-	}
-	if _, err := tx.Exec(`CREATE TRIGGER sessions_agent_reassign BEFORE UPDATE OF agent_id ON sessions WHEN EXISTS (SELECT 1 FROM messages WHERE session_id=OLD.id) OR EXISTS (SELECT 1 FROM runs WHERE session_id=OLD.id) BEGIN SELECT RAISE(ABORT, 'session with history cannot change agent'); END`); err != nil {
-		return fmt.Errorf("Agent 记录迁移: %w", err)
-	}
-	if _, err := tx.Exec(`PRAGMA user_version = 4`); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-// migrateSingleDefault removes the two early development presets (v5).
-// ICEPick has no released users yet, but existing local development
-// conversations remain.
-func (s *Store) migrateSingleDefault() error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(`INSERT OR IGNORE INTO agent_profiles (id,name,config,revision,preset,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`, DefaultProfileID, "默认 Agent", legacyDefaultConfig(), 1, DefaultProfileID, now(), now()); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DROP TRIGGER IF EXISTS sessions_agent_reassign`); err != nil {
-		return fmt.Errorf("默认 Agent 迁移: %w", err)
-	}
-	if _, err := tx.Exec(`UPDATE sessions SET agent_id='default' WHERE agent_id IN ('chat','work')`); err != nil {
-		return fmt.Errorf("默认 Agent 迁移: %w", err)
-	}
-	if _, err := tx.Exec(`UPDATE messages SET agent_id='default' WHERE agent_id IN ('chat','work')`); err != nil {
-		return fmt.Errorf("默认 Agent 迁移: %w", err)
-	}
-	if _, err := tx.Exec(`UPDATE runs SET agent_id='default' WHERE agent_id IN ('chat','work')`); err != nil {
-		return fmt.Errorf("默认 Agent 迁移: %w", err)
-	}
-	if _, err := tx.Exec(`DELETE FROM agent_profiles WHERE id IN ('chat','work')`); err != nil {
-		return fmt.Errorf("默认 Agent 迁移: %w", err)
-	}
-	if _, err := tx.Exec(`CREATE TRIGGER sessions_agent_reassign BEFORE UPDATE OF agent_id ON sessions WHEN EXISTS (SELECT 1 FROM messages WHERE session_id=OLD.id) OR EXISTS (SELECT 1 FROM runs WHERE session_id=OLD.id) BEGIN SELECT RAISE(ABORT, 'session with history cannot change agent'); END`); err != nil {
-		return fmt.Errorf("默认 Agent 迁移: %w", err)
-	}
-	if _, err := tx.Exec(`PRAGMA user_version = 5`); err != nil {
-		return err
-	}
-	return tx.Commit()
 }

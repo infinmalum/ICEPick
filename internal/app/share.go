@@ -24,15 +24,14 @@ import (
 // the same layout) that carries only the shareable combination — manifest,
 // profile references, the persona and prompt as standalone text files, and
 // the standard Skills directories. Local identity, machine policy, sessions,
-// memories, credentials and approvals never enter the package, and the
-// pinned delegation target is a local identity so it is stripped too.
+// memories, credentials and approvals never enter the package.
 //
 // Import creates a new Profile with a fresh ID; it never auto-installs
 // skills, never creates server configs, never creates or switches an Agent
 // and never activates authorization. The preview lists missing dependencies
 // and the recommendations the receiver must act on explicitly.
 
-const shareFormatVersion = 5
+const shareFormatVersion = 6
 
 // Package size caps: a share bundle is metadata plus text assets.
 const (
@@ -82,14 +81,12 @@ type shareMCPServer struct {
 	CommandAdjusted bool     `json:"commandAdjusted,omitempty"`
 }
 
-// shareDelegation keeps the capability declaration but drops TargetAgentID:
-// agent IDs are local identity and must not travel between machines.
+// shareDelegation carries the worker execution limits.
 type shareDelegation struct {
-	Enabled        bool   `json:"enabled"`
-	MaxDepth       int    `json:"maxDepth"`
-	MaxConcurrency int    `json:"maxConcurrency"`
-	MaxSeconds     int    `json:"maxSeconds"`
-	Selection      string `json:"selection"`
+	Enabled        bool `json:"enabled"`
+	MaxDepth       int  `json:"maxDepth"`
+	MaxConcurrency int  `json:"maxConcurrency"`
+	MaxSeconds     int  `json:"maxSeconds"`
 }
 
 type ExportResult struct {
@@ -167,7 +164,6 @@ func (s *Service) exportProfile(profileID string, includeWorkers bool) (ExportRe
 			MaxDepth:       profile.Data.Delegation.MaxDepth,
 			MaxConcurrency: profile.Data.Delegation.MaxConcurrency,
 			MaxSeconds:     profile.Data.Delegation.MaxSeconds,
-			Selection:      storage.DelegationModelSelection,
 		},
 		ContextBudget: profile.Data.ContextBudget,
 		MemoryEnabled: profile.Data.MemoryEnabled,
@@ -417,7 +413,7 @@ func parseSharePackage(files map[string][]byte) (*sharePackage, error) {
 	if err := json.Unmarshal(rawManifest, &manifest); err != nil {
 		return nil, fmt.Errorf("解析 manifest.json: %w", err)
 	}
-	if manifest.FormatVersion != 1 && manifest.FormatVersion != 2 && manifest.FormatVersion != 3 && manifest.FormatVersion != 4 && manifest.FormatVersion != shareFormatVersion {
+	if manifest.FormatVersion != shareFormatVersion {
 		return nil, fmt.Errorf("分享包版本不兼容（格式 %d，本程序支持 %d）", manifest.FormatVersion, shareFormatVersion)
 	}
 	rawProfile, ok := files[shareProfileFileName]
@@ -454,9 +450,7 @@ func parseSharePackage(files map[string][]byte) (*sharePackage, error) {
 	return pkg, nil
 }
 
-// toProfileData assembles the stored shape. The pinned delegation target is
-// never imported: selection falls back to "model" and the receiver configures
-// the allowlist on their own Agents.
+// toProfileData assembles the stored shape.
 func (pkg *sharePackage) toProfileData() (storage.ProfileData, error) {
 	data := storage.ProfileData{
 		SchemaVersion:     pkg.profile.SchemaVersion,
@@ -475,7 +469,6 @@ func (pkg *sharePackage) toProfileData() (storage.ProfileData, error) {
 			MaxDepth:       pkg.profile.Delegation.MaxDepth,
 			MaxConcurrency: pkg.profile.Delegation.MaxConcurrency,
 			MaxSeconds:     pkg.profile.Delegation.MaxSeconds,
-			Selection:      storage.DelegationModelSelection,
 		},
 		ContextBudget: pkg.profile.ContextBudget,
 		MemoryEnabled: pkg.profile.MemoryEnabled,
@@ -585,7 +578,7 @@ func (s *Service) buildImportPreview(pkg *sharePackage) ImportPreview {
 		preview.Warnings = append(preview.Warnings, "包内的记忆偏好不会自动生效：仍需接收方 Agent 的记忆授权，且记忆数据从不随包传输")
 	}
 	if data.Delegation.Enabled {
-		preview.Warnings = append(preview.Warnings, "worker 配置随 Profile 导入；旧委派不携带目标本机身份，使用旧委派时仍需配置本机允许列表")
+		preview.Warnings = append(preview.Warnings, "worker 配置随 Profile 导入；本机资源权限需在对话中授权")
 	}
 	preview.Warnings = append(preview.Warnings, "导入只创建 Profile，不安装资源、不授权本机权限；可在对话中选择此 Profile。")
 	for _, source := range data.Execution.WorkerSources {

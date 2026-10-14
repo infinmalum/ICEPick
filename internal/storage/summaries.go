@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,16 +13,17 @@ import (
 // records: a user message, an assistant turn, or one tool result of an
 // assistant turn. The order here is exactly the order the run sends to the
 // model, so summary coverage counted on entries maps 1:1 to prompt positions.
-// Legacy display-only records are excluded, like from every model send.
 type HistoryEntry struct {
-	MessageID string
-	Seq       int
-	Role      string // user, assistant, tool
-	Content   string
-	Calls     []MessageToolCall // assistant entries: the calls the model requested
-	CallID    string            // tool entries: the model-facing call id
-	CallIndex int               // tool entries: position of this result in the batch
-	CallTotal int               // assistant and tool entries: size of the call batch
+	RunID         string
+	ProviderState []json.RawMessage
+	MessageID     string
+	Seq           int
+	Role          string // user, assistant, tool
+	Content       string
+	Calls         []MessageToolCall // assistant entries: the calls the model requested
+	CallID        string            // tool entries: the model-facing call id
+	CallIndex     int               // tool entries: position of this result in the batch
+	CallTotal     int               // assistant and tool entries: size of the call batch
 }
 
 // HistoryEntries renders the ordered model-history units of a session from
@@ -43,16 +45,13 @@ func (s *Store) HistoryEntries(ctx context.Context, sessionID string) ([]History
 	}
 	entries := []HistoryEntry{}
 	for _, item := range messages {
-		if item.Legacy {
-			continue
-		}
 		switch item.Role {
 		case RoleUser:
 			entries = append(entries, HistoryEntry{MessageID: item.ID, Seq: item.Seq, Role: RoleUser, Content: item.Content})
 		case RoleAssistant:
 			entries = append(entries, HistoryEntry{
 				MessageID: item.ID, Seq: item.Seq, Role: RoleAssistant,
-				Content: item.Content, Calls: append([]MessageToolCall(nil), item.ToolCalls...),
+				RunID: item.RunID, ProviderState: item.ProviderState, Content: item.Content, Calls: append([]MessageToolCall(nil), item.ToolCalls...),
 				CallTotal: len(item.ToolCalls),
 			})
 			for i, call := range byMessage[item.ID] {
@@ -228,7 +227,7 @@ func (s *Store) SaveSessionSummaryCovering(ctx context.Context, sessionID string
 // certainty than its sources.
 func (s *Store) summaryScope(ctx context.Context, sessionID string, coversSeq int) (string, error) {
 	var textRecords int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE session_id = ? AND legacy = 0 AND role IN ('user','assistant') AND seq <= ?`, sessionID, coversSeq).Scan(&textRecords); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE session_id = ? AND role IN ('user','assistant') AND seq <= ?`, sessionID, coversSeq).Scan(&textRecords); err != nil {
 		return "", err
 	}
 	scope := ""

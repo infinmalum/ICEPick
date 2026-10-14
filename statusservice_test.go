@@ -99,17 +99,17 @@ func TestTaskPersistenceAndCancellation(t *testing.T) {
 		Store: store, Runs: runs, Tools: registry, Skills: catalog,
 		Chat: finishedModel{}, Config: config.Config{Model: source}, ConfigPath: filepath.Join(t.TempDir(), "config.json"),
 	})}
-	session, err := svc.CreateSession()
+	session, err := svc.CreateConversation(storage.DefaultProfileID, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := svc.StartTask(session.ID, "你好")
+	run, err := svc.StartConversationTask(session.ID, "你好")
 	if err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		got, err := svc.GetRun(storage.DefaultAgentID, run.ID)
+		got, err := svc.GetRun(session.ContextID, run.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -121,19 +121,19 @@ func TestTaskPersistenceAndCancellation(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	history, err := svc.ListMessages(storage.DefaultAgentID, session.ID)
+	history, err := svc.ListMessages(session.ContextID, session.ID)
 	if err != nil || len(history) != 2 || history[0].Role != "user" || history[1].Role != "assistant" {
 		t.Fatalf("history: %+v, %v", history, err)
 	}
 	// A second task must be startable after the first one finished and its
 	// result must persist alongside the first.
-	run2, err := svc.StartTask(session.ID, "再来一次")
+	run2, err := svc.StartConversationTask(session.ID, "再来一次")
 	if err != nil {
 		t.Fatal(err)
 	}
 	deadline = time.Now().Add(2 * time.Second)
 	for {
-		got, err := svc.GetRun(storage.DefaultAgentID, run2.ID)
+		got, err := svc.GetRun(session.ContextID, run2.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -145,7 +145,7 @@ func TestTaskPersistenceAndCancellation(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	history, err = svc.ListMessages(storage.DefaultAgentID, session.ID)
+	history, err = svc.ListMessages(session.ContextID, session.ID)
 	if err != nil || len(history) != 4 {
 		t.Fatalf("history after second task: %+v, %v", history, err)
 	}
@@ -162,11 +162,11 @@ func TestServiceRejectsOtherAgentSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := svc.CreateAgent("Other", profile.ID)
+	other, err := svc.CreateConversation(profile.ID, "", "Other")
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherSession, err := svc.CreateAgentSession(other.ID)
+	otherSession, err := svc.svc.GetConversation(other.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,13 +176,13 @@ func TestServiceRejectsOtherAgentSession(t *testing.T) {
 	if _, err := svc.ListRuns(storage.DefaultAgentID, otherSession.ID); err == nil {
 		t.Fatal("other Agent runs exposed")
 	}
-	if _, err := svc.StartAgentTask(storage.DefaultAgentID, otherSession.ID, "hello"); err == nil {
+	if _, err := svc.svc.StartAgentTask(storage.DefaultAgentID, otherSession.ID, "hello"); err == nil {
 		t.Fatal("other Agent task accepted")
 	}
 	if _, err := svc.ListToolCalls(storage.DefaultAgentID, otherSession.ID); err == nil {
 		t.Fatal("other Agent tool calls exposed")
 	}
-	if _, err := svc.ListMessages(other.ID, otherSession.ID); err != nil {
+	if _, err := svc.ListMessages(other.ContextID, otherSession.ID); err != nil {
 		t.Fatal(err)
 	}
 }
