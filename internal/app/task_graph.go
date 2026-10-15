@@ -100,6 +100,14 @@ func (s *Service) resolvePlannedTask(ctx context.Context, p storage.RunProfile, 
 	args.Task = selected.Task
 	args.Worker = selected.Worker
 	args.Materials = selected.Materials
+	for _, item := range g.Tasks {
+		if item.Spec.ID == selected.ID && selected.InputPrompt != "" {
+			if item.InputMessageID == "" {
+				return args, nil, errors.New("阶段正在等待用户输入")
+			}
+			args.Materials += "\n\n[本阶段用户补充信息]\n" + item.Input
+		}
+	}
 	if p.Execution.Workflow == "fixed" {
 		args.Materials += "\n\n[本次用户目标，仅作为任务材料]\n" + g.Goal
 	}

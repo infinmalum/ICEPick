@@ -55,6 +55,8 @@ CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT
 CREATE TABLE steps (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE, seq INTEGER NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('model','tool')), status TEXT NOT NULL CHECK(status IN ('pending','running','succeeded','failed','cancelled','paused')), error TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(run_id, seq));
 CREATE TABLE task_artifacts(id TEXT PRIMARY KEY,root_run_id TEXT NOT NULL REFERENCES task_roots(run_id) ON DELETE CASCADE,task_id TEXT NOT NULL,run_id TEXT NOT NULL UNIQUE REFERENCES runs(id) ON DELETE CASCADE,message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,sha256 TEXT NOT NULL,verification TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE task_attempts(id TEXT PRIMARY KEY,root_run_id TEXT NOT NULL,task_id TEXT NOT NULL,run_id TEXT NOT NULL UNIQUE REFERENCES runs(id) ON DELETE CASCADE,status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed','cancelled','interrupted','execution_unknown')),created_at TEXT NOT NULL,updated_at TEXT NOT NULL,FOREIGN KEY(root_run_id,task_id) REFERENCES task_items(root_run_id,id) ON DELETE CASCADE,UNIQUE(root_run_id,task_id));
+CREATE TABLE task_inputs(root_run_id TEXT NOT NULL REFERENCES task_roots(run_id) ON DELETE CASCADE,task_id TEXT NOT NULL,message_id TEXT NOT NULL UNIQUE REFERENCES messages(id),PRIMARY KEY(root_run_id,task_id),FOREIGN KEY(root_run_id,task_id) REFERENCES task_items(root_run_id,id));
+CREATE TABLE task_continuations(id TEXT PRIMARY KEY,root_run_id TEXT NOT NULL REFERENCES task_roots(run_id) ON DELETE CASCADE,previous_status TEXT NOT NULL,previous_error TEXT NOT NULL,task_id TEXT NOT NULL DEFAULT '',message_id TEXT REFERENCES messages(id),created_at TEXT NOT NULL);
 CREATE TABLE task_coordination(root_run_id TEXT PRIMARY KEY REFERENCES task_roots(run_id) ON DELETE CASCADE,event_seq INTEGER NOT NULL DEFAULT 1,planned_seq INTEGER NOT NULL DEFAULT 0,rounds INTEGER NOT NULL DEFAULT 0,state TEXT NOT NULL DEFAULT 'pending',reason TEXT NOT NULL DEFAULT '',updated_at TEXT NOT NULL);
 CREATE TABLE task_events(root_run_id TEXT NOT NULL REFERENCES task_roots(run_id) ON DELETE CASCADE,seq INTEGER NOT NULL,kind TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(root_run_id,seq));
 CREATE TABLE task_items(root_run_id TEXT NOT NULL REFERENCES task_roots(run_id) ON DELETE CASCADE,id TEXT NOT NULL,position INTEGER NOT NULL,spec TEXT NOT NULL CHECK(json_valid(spec)),state TEXT NOT NULL CHECK(state IN ('pending','running','succeeded','failed','cancelled','interrupted','execution_unknown')),PRIMARY KEY(root_run_id,id));
@@ -82,7 +84,7 @@ CREATE TRIGGER runs_parent_context BEFORE INSERT ON runs WHEN NEW.parent_run_id 
 CREATE TRIGGER runs_identity_immutable BEFORE UPDATE OF session_id,parent_run_id ON runs WHEN NEW.session_id IS NOT OLD.session_id OR NEW.parent_run_id IS NOT OLD.parent_run_id BEGIN SELECT RAISE(ABORT,'run ownership is immutable'); END;
 CREATE TRIGGER messages_run_session BEFORE INSERT ON messages WHEN NEW.run_id<>'' AND NOT EXISTS(SELECT 1 FROM runs WHERE id=NEW.run_id AND session_id=NEW.session_id) BEGIN SELECT RAISE(ABORT,'message run session mismatch'); END;
 CREATE TRIGGER messages_identity_immutable BEFORE UPDATE OF session_id,run_id ON messages WHEN NEW.session_id IS NOT OLD.session_id OR NEW.run_id IS NOT OLD.run_id BEGIN SELECT RAISE(ABORT,'message ownership is immutable'); END;
-PRAGMA user_version=25;`
+PRAGMA user_version=26;`
 
 func (s *Store) initialize() error {
 	var version int
@@ -104,10 +106,10 @@ func (s *Store) initialize() error {
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`INSERT INTO profiles(id,name,revision,is_default,created_at,updated_at,config) VALUES(?,?,1,1,?,?,?)`, DefaultProfileID, "默认配置", now(), now(), string(raw)); err != nil {
+		if _, err := tx.Exec(`INSERT INTO profiles(id,name,revision,is_default,created_at,updated_at,config) VALUES(?,?,1,1,?,?,?)`, DefaultProfileID, "日常助手", now(), now(), string(raw)); err != nil {
 			return err
 		}
-		if err := saveProfileRevision(context.Background(), tx, DefaultProfileID, 1, "默认配置", d); err != nil {
+		if err := saveProfileRevision(context.Background(), tx, DefaultProfileID, 1, "日常助手", d); err != nil {
 			return err
 		}
 		return nil

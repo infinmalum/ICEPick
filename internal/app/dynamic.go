@@ -48,6 +48,7 @@ func (s *Service) executeScheduled(ctx context.Context, root, session string, so
 	dispatched := map[string]bool{}
 	results := make(chan scheduledResult, 200)
 	sequence := 0
+	invocation := time.Now().UnixNano()
 	planningFailures := 0
 	validationError := ""
 	var dispatchError error
@@ -197,6 +198,9 @@ func (s *Service) executeScheduled(ctx context.Context, root, session string, so
 			if slots <= 0 {
 				break
 			}
+			if fixed && item.Spec.InputPrompt != "" && item.InputMessageID == "" {
+				continue
+			}
 			if active[item.Spec.ID] || dispatched[item.Fingerprint] {
 				continue
 			}
@@ -219,7 +223,7 @@ func (s *Service) executeScheduled(ctx context.Context, root, session string, so
 				continue
 			}
 			sequence++
-			call := model.ToolCall{ID: fmt.Sprintf("scheduled_%d_%s", sequence, item.Spec.ID), Type: "function"}
+			call := model.ToolCall{ID: fmt.Sprintf("scheduled_%d_%d_%s", invocation, sequence, item.Spec.ID), Type: "function"}
 			call.Function.Name = "local__delegate_task"
 			raw, _ := json.Marshal(delegateArgs{TaskID: item.Spec.ID, TaskFingerprint: item.Fingerprint})
 			call.Function.Arguments = string(raw)
@@ -250,6 +254,17 @@ func (s *Service) executeScheduled(ctx context.Context, root, session string, so
 			latest, err := s.store.GetTaskGraph(ctx, root)
 			if err != nil {
 				return err
+			}
+			if fixed {
+				if wait := storage.WaitingInput(latest); wait != nil {
+					if err := s.store.AcknowledgeCoordination(ctx, root, latest.Coordination.EventSeq, "waiting", wait.Spec.InputPrompt); err != nil {
+						return err
+					}
+					if _, err := s.store.AddMessage(ctx, session, root, storage.RoleAssistant, "阶段 "+wait.Spec.ID+" 等待补充信息："+wait.Spec.InputPrompt); err != nil {
+						return err
+					}
+					return errors.New("等待用户输入：" + wait.Spec.InputPrompt)
+				}
 			}
 			if !fixed && latest.Coordination.EventSeq > latest.Coordination.PlannedSeq {
 				continue

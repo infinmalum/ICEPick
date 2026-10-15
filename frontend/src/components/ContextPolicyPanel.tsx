@@ -1,3 +1,4 @@
+import { ErrorNotice } from "../shared/errors";
 import type { LocalContextState } from "../hooks/useLocalContext";
 import type { Workspace } from "../hooks/useWorkspace";
 type Props = {
@@ -120,7 +121,7 @@ export function ContextPolicyPanel(props: Props) {
             保存本机权限
           </button>
         </form>
-        {contextError && <p className="error">{contextError}</p>}
+        <ErrorNotice error={contextError} />
         <p className="hint">
           这些授权保存在本机，不进入 Profile
           分享包。显式沿用记忆与权限的对话共享此处设置。

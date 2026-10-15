@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"icepick/internal/config"
+	"icepick/internal/materials"
 	"icepick/internal/storage"
 )
 
@@ -75,6 +76,24 @@ func (r *Runs) start(ctx context.Context, sessionID string, opts storage.CreateR
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	r.active[item.ID] = cancel
 	return item, runCtx, resolved, nil
+}
+
+func (r *Runs) ContinueFixed(ctx context.Context, root, task, input string, files []materials.File) (context.Context, storage.RunProfile, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, active := r.active[root]; active {
+		return nil, storage.RunProfile{}, errors.New("任务执行尚未结束")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, storage.RunProfile{}, err
+	}
+	p, remaining, err := r.store.ContinueFixedRun(ctx, root, task, input, files)
+	if err != nil {
+		return nil, p, err
+	}
+	runCtx, cancel := context.WithTimeout(ctx, remaining)
+	r.active[root] = cancel
+	return runCtx, p, nil
 }
 
 func (r *Runs) Cancel(id string) error {

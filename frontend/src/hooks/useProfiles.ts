@@ -9,15 +9,18 @@ import type {
   ExportResult,
   ImportPreview,
 } from "../../bindings/icepick/internal/app";
+import { useDialog } from "../shared/dialogs";
 import { downloadBase64, bytesToBase64 } from "../shared/download";
 export function useProfiles(refreshConversations: () => Promise<void>) {
+  const dialog = useDialog();
+  const cached = useRef(new Map<string, Profile>());
   const [templates, setTemplates] = useState<ProfileTemplate[]>([]);
   const [restoreGroup, setRestoreGroup] = useState("");
   const [deleteReplacement, setDeleteReplacement] = useState("__own__");
   const [profileRefs, setProfileRefs] = useState<ProfileReference[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [profileEditID, setProfileEditID] = useState<string | null>(null);
-  const [profileDraft, setProfileDraft] = useState<Profile | null>(null);
+  const [profileEditID, chooseID] = useState<string | null>(null);
+  const [profileDraft, setDraft] = useState<Profile | null>(null);
   const [profileBusy, setProfileBusy] = useState(false);
   const [profileError, setProfileError] = useState("");
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(
@@ -28,7 +31,9 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
   const importInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     const target = profiles.find((item) => item.id === profileEditID) ?? null;
-    setProfileDraft(target ? structuredClone(target) : null);
+    setDraft(
+      target ? structuredClone(cached.current.get(target.id) ?? target) : null,
+    );
   }, [profileEditID, profiles]);
   useEffect(() => {
     let current = true;
@@ -43,6 +48,35 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
       current = false;
     };
   }, [profileEditID, profiles]);
+  const dirty =
+    !!profileDraft &&
+    JSON.stringify(profileDraft) !==
+      JSON.stringify(profiles.find((p) => p.id === profileDraft.id));
+  function setProfileDraft(value: Profile | null) {
+    if (value) {
+      if (
+        JSON.stringify(value) ===
+        JSON.stringify(profiles.find((p) => p.id === value.id))
+      )
+        cached.current.delete(value.id);
+      else cached.current.set(value.id, structuredClone(value));
+    }
+    setDraft(value);
+  }
+  async function setProfileEditID(id: string | null) {
+    if (id === profileEditID) return true;
+    if (
+      dirty &&
+      !(await dialog.confirm({
+        title: "保留未保存的修改？",
+        body: "当前助手的修改会留在本机草稿中，稍后切回来可继续编辑。",
+        confirm: "保留并切换",
+      }))
+    )
+      return false;
+    chooseID(id);
+    return true;
+  }
   function profileName(id: string) {
     return (
       profiles.find((item) => item.id === id)?.name ??
@@ -72,9 +106,10 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
     setProfileBusy(true);
     try {
       const saved = await StatusService.UpdateProfile(profileDraft);
+      cached.current.delete(saved.id);
       setProfileError("");
       await refreshProfiles();
-      setProfileDraft(saved);
+      setDraft(saved);
     } catch (reason) {
       setProfileError(String(reason));
     } finally {
@@ -84,7 +119,12 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
   async function createProfile(fromID = "") {
     let name = "";
     if (!fromID) {
-      name = window.prompt("新 Profile 名称（空白模板）", "") ?? "";
+      name =
+        (await dialog.ask({
+          title: "创建助手",
+          label: "助手名称",
+          confirm: "创建",
+        })) ?? "";
       if (!name.trim()) return;
     }
     setProfileBusy(true);
@@ -108,12 +148,15 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
       const own = deleteReplacement === "__own__";
       const replacement = own ? "" : deleteReplacement;
       const consequence = refs.length
-        ? `\n被引用的 worker：${refs.map((ref) => `${ref.name}（${(ref.workers ?? []).join("、")}）`).join("；")}。\n这些来源将${own ? "恢复为各自 Profile 的 worker 配置" : `替换为「${profileName(replacement)}」`}。`
+        ? `\n这些助手正在使用它：${refs.map((ref) => ref.name).join("、")}。删除后将${own ? "使用各自的执行配置" : `改用「${profileName(replacement)}」的执行配置`}。`
         : "";
       if (
-        !window.confirm(
-          `删除 Profile「${profileDraft.name}」？历史与在途任务保留，后续任务需选择可用配置。${consequence}`,
-        )
+        !(await dialog.confirm({
+          title: `删除助手「${profileDraft.name}」？`,
+          body: `历史记录会保留。正在进行的工作不受影响，后续对话需选择其他助手。${consequence}`,
+          confirm: "删除助手",
+          danger: true,
+        }))
       )
         return;
       if (refs.length)
@@ -137,6 +180,15 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
   }
   async function restoreProfileDefault() {
     if (!profileDraft) return;
+    if (
+      !(await dialog.confirm({
+        title: "恢复助手设置？",
+        body: "这会替换当前选中的配置内容和未保存的修改。已进行的工作会保留。",
+        confirm: "恢复设置",
+        danger: true,
+      }))
+    )
+      return;
     setProfileBusy(true);
     try {
       const restored = profileDraft.data.templateId
@@ -147,7 +199,8 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
           )
         : await StatusService.RestoreProfileDefault(profileDraft.revision);
       await refreshProfiles();
-      setProfileDraft(restored);
+      cached.current.delete(restored.id);
+      setDraft(restored);
       setProfileError("");
     } catch (reason) {
       setProfileError(String(reason));
@@ -157,6 +210,10 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
   }
   async function exportProfile() {
     if (!profileDraft) return;
+    if (dirty) {
+      setProfileError("请先保存修改，再导出助手。");
+      return;
+    }
     setProfileBusy(true);
     try {
       const saved = await StatusService.GetProfile(profileDraft.id);
@@ -167,10 +224,22 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
         ? await StatusService.ExportProfileIncludingWorkers(profileDraft.id)
         : await StatusService.ExportProfile(profileDraft.id);
       const reviewNotes = [
-        ...(refs.length ? [`分享包包含独立 worker 配置：${refs.map((source) => `${source.name} → ${profileName(source.profileId)}`).join("；")}。`] : []),
+        ...(refs.length
+          ? [
+              `分享包也包含协作工作设置：${refs.map((source) => `${source.name} → ${profileName(source.profileId)}`).join("；")}。`,
+            ]
+          : []),
         ...(result.reviewNotes ?? []),
       ];
-      if (reviewNotes.length && !window.confirm(reviewNotes.join("\n") + "\n已检查内容，继续保存分享包？")) return;
+      if (
+        reviewNotes.length &&
+        !(await dialog.confirm({
+          title: "导出前检查",
+          body: reviewNotes.join("\n"),
+          confirm: "已核对，导出",
+        }))
+      )
+        return;
       downloadBase64(result.data, result.filename, "application/zip");
       setProfileError("");
     } catch (reason) {
@@ -183,9 +252,10 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    const bytes = new Uint8Array(await file.arrayBuffer());
     setImportBusy(true);
     try {
+      if (file.size > 32 * 1024 * 1024) throw new Error("助手分享包最多32MiB");
+      const bytes = new Uint8Array(await file.arrayBuffer());
       const data = bytesToBase64(bytes);
       setImportPreview(await StatusService.PreviewProfileImport(data));
       setImportData(data);
@@ -235,6 +305,8 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
     profileEditID,
     setProfileEditID,
     profileDraft,
+    dirty,
+    reportError: async (reason: unknown) => setProfileError(String(reason)),
     setProfileDraft,
     profileBusy,
     profileError,

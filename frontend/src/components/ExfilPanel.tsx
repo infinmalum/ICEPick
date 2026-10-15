@@ -1,3 +1,4 @@
+import { ErrorNotice } from "../shared/errors";
 import type { Workspace } from "../hooks/useWorkspace";
 import type { LocalContextState } from "../hooks/useLocalContext";
 import { scopeLabels } from "../shared/config";
@@ -105,7 +106,7 @@ export function ExfilPanel(props: Props) {
             </button>
           </div>
         </form>
-        {grantError && <p className="error">{grantError}</p>}
+        <ErrorNotice error={grantError} />
       </section>
     )
   );

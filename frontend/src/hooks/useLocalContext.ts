@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useDialog } from "../shared/dialogs";
 import { StatusService } from "../../bindings/icepick";
 import type {
   ContextPolicy,
@@ -7,6 +8,11 @@ import type {
   Memory,
 } from "../../bindings/icepick/internal/storage";
 export function useLocalContext(contextID: string, selected: string | null) {
+  const dialog = useDialog();
+  useEffect(() => {
+    setGrantForm({ destination: "", scopes: [] });
+    setMemoryDraft("");
+  }, [contextID]);
   const activeContextID = useRef(contextID);
   activeContextID.current = contextID;
   const [contextDraft, setContextDraft] = useState<LocalContext | null>(null);
@@ -119,9 +125,12 @@ export function useLocalContext(contextID: string, selected: string | null) {
   }
   async function revokeGrant(destination: string) {
     if (
-      !window.confirm(
-        `撤销向 ${destination} 发送会话数据的授权？后续远端发送将被拒绝。`,
-      )
+      !(await dialog.confirm({
+        title: "停止向此服务发送内容？",
+        body: destination,
+        confirm: "撤销授权",
+        danger: true,
+      }))
     )
       return;
     setGrantBusy(true);
@@ -148,6 +157,7 @@ export function useLocalContext(contextID: string, selected: string | null) {
     try {
       await StatusService.AddMemory(contextID, memoryDraft);
       await refreshMemories(contextID);
+      if (activeContextID.current !== contextID) return;
       setMemoryDraft("");
       setMemoryError("");
     } catch (reason) {
@@ -166,6 +176,7 @@ export function useLocalContext(contextID: string, selected: string | null) {
         memoryEdit.content,
       );
       await refreshMemories(contextID);
+      if (activeContextID.current !== contextID) return;
       setMemoryEdit(null);
       setMemoryError("");
     } catch (reason) {
@@ -175,7 +186,15 @@ export function useLocalContext(contextID: string, selected: string | null) {
     }
   }
   async function deleteMemory(id: string) {
-    if (!window.confirm("删除这条记忆？删除后不可恢复。")) return;
+    if (
+      !(await dialog.confirm({
+        title: "删除这条记忆？",
+        body: "删除后，助手不再使用这条记忆。",
+        confirm: "删除",
+        danger: true,
+      }))
+    )
+      return;
     setMemoryBusy(true);
     try {
       await StatusService.DeleteMemory(contextID, id);

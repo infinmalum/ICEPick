@@ -14,12 +14,31 @@ export function ProfileExecution(props: Props) {
   return (
     <>
       <details>
-        <summary>高级：执行组件</summary>
+        <summary>执行组件与调度（开发者）</summary>
         <p className="hint">
           direct 按工具调用顺序执行；dynamic 由 planner 生成计划，宿主按依赖调度
-          worker；fixed 按预设阶段执行，无需 planner。独立审查可按需调用或设为交付门槛。
+          worker；fixed 按预设阶段执行，无需
+          planner。独立审查可按需调用或设为交付门槛。
         </p>
-        <label className="checkbox-label"><input type="checkbox" checked={profileDraft.data.execution.improverEnabled} onChange={(e) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, execution: { ...profileDraft.data.execution, improverEnabled: e.target.checked } } })} />允许显式生成配置草案</label>
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={profileDraft.data.execution.improverEnabled}
+            onChange={(e) =>
+              setProfileDraft({
+                ...profileDraft,
+                data: {
+                  ...profileDraft.data,
+                  execution: {
+                    ...profileDraft.data.execution,
+                    improverEnabled: e.target.checked,
+                  },
+                },
+              })
+            }
+          />
+          允许显式生成配置草案
+        </label>
         <label>
           执行流程
           <select
@@ -34,7 +53,9 @@ export function ProfileExecution(props: Props) {
                 ...profileDraft,
                 data: {
                   ...profileDraft.data,
-                  planEnabled: fixed ? false : dynamic || profileDraft.data.planEnabled,
+                  planEnabled: fixed
+                    ? false
+                    : dynamic || profileDraft.data.planEnabled,
                   delegation: {
                     ...profileDraft.data.delegation,
                     enabled: scheduled || profileDraft.data.delegation.enabled,
@@ -45,11 +66,28 @@ export function ProfileExecution(props: Props) {
                   execution: {
                     ...profileDraft.data.execution,
                     workflow: event.target.value,
-                    budget: { ...profileDraft.data.execution.budget, autoRetry: fixed ? false : profileDraft.data.execution.budget.autoRetry },
-                    stages: fixed && !(profileDraft.data.execution.stages ?? []).length ? [{ id: "stage1", worker, task: "处理本次用户提供的材料", accessMode: "read", dependsOn: [], acceptance: "给出具体结果" }] : profileDraft.data.execution.stages,
+                    budget: {
+                      ...profileDraft.data.execution.budget,
+                      autoRetry: fixed
+                        ? false
+                        : profileDraft.data.execution.budget.autoRetry,
+                    },
+                    stages:
+                      fixed &&
+                      !(profileDraft.data.execution.stages ?? []).length
+                        ? [
+                            {
+                              id: "stage1",
+                              worker,
+                              task: "处理本次用户提供的材料",
+                              accessMode: "read",
+                              dependsOn: [],
+                              acceptance: "给出具体结果",
+                            },
+                          ]
+                        : profileDraft.data.execution.stages,
                     workerSources:
-                      scheduled &&
-                      !workers.length
+                      scheduled && !workers.length
                         ? [
                             {
                               name: "worker1",
@@ -204,135 +242,142 @@ export function ProfileExecution(props: Props) {
           审查依据交付物和已有工具记录。必要检查需由执行组件完成并返回 JSON
           passed:true；未执行或结果未知时无法判定。直接与动态流程的必需审查最多返工两轮，共享任务预算；固定流程首版审查失败即停止，不自动改写阶段；按需审查只给出结论。
         </p>
-        {(["main", "planner", "worker", "reviewer", "improver"] as const).map((role) => {
-          const component = profileDraft.data.execution[role] ?? {
-            systemPrompt: "",
-            restrictTools: false,
-            allowedTools: [],
-            model: null,
-          };
-          const update = (patch: Partial<typeof component>) =>
-            setProfileDraft({
-              ...profileDraft,
-              data: {
-                ...profileDraft.data,
-                execution: {
-                  ...profileDraft.data.execution,
-                  [role]: { ...component, ...patch },
+        {(["main", "planner", "worker", "reviewer", "improver"] as const).map(
+          (role) => {
+            const component = profileDraft.data.execution[role] ?? {
+              systemPrompt: "",
+              restrictTools: false,
+              allowedTools: [],
+              model: null,
+            };
+            const update = (patch: Partial<typeof component>) =>
+              setProfileDraft({
+                ...profileDraft,
+                data: {
+                  ...profileDraft.data,
+                  execution: {
+                    ...profileDraft.data.execution,
+                    [role]: { ...component, ...patch },
+                  },
                 },
-              },
-            });
-          return (
-            <div key={role} className="model-form">
-              <strong>
-                {role === "main"
-                  ? "主执行"
-                  : role === "planner"
-                    ? "规划（仅生成计划）"
-                    : role === "reviewer"
-                      ? "独立审查（无工具）"
-                      : role === "improver" ? "配置草案（无工具，仅手动采用）" : "子任务执行"}
-              </strong>
-              <label>
-                组件提示词（留空使用公共提示词）
-                <textarea
-                  rows={3}
-                  value={component.systemPrompt}
-                  onChange={(event) =>
-                    update({ systemPrompt: event.target.value })
-                  }
-                />
-              </label>
-              <label>
-                组件模型
-                <select
-                  value={component.model?.provider ?? ""}
-                  onChange={(event) =>
-                    update({
-                      model: event.target.value
-                        ? {
-                            provider: event.target.value,
-                            baseUrl: providerDefaults[event.target.value] ?? "",
-                            name: "",
-                          }
-                        : null,
-                    })
-                  }
-                >
-                  <option value="">使用 Profile 公共模型</option>
-                  {Object.entries(providerLabels).map(([id, name]) => (
-                    <option key={id} value={id}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {component.model && (
-                <>
-                  <label>
-                    模型地址
-                    <input
-                      value={component.model.baseUrl}
-                      onChange={(event) =>
-                        update({
-                          model: {
-                            ...component.model!,
-                            baseUrl: event.target.value,
-                          },
-                        })
-                      }
-                    />
-                  </label>
-                  <label>
-                    模型 ID
-                    <input
-                      value={component.model.name}
-                      onChange={(event) =>
-                        update({
-                          model: {
-                            ...component.model!,
-                            name: event.target.value,
-                          },
-                        })
-                      }
-                    />
-                  </label>
-                </>
-              )}
-              {role !== "planner" && role !== "reviewer" && role !== "improver" && (
-                <>
-                  <label className="checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={component.restrictTools}
-                      onChange={(event) =>
-                        update({ restrictTools: event.target.checked })
-                      }
-                    />
-                    限制为公共能力中的工具子集
-                  </label>
-                  {component.restrictTools && (
+              });
+            return (
+              <div key={role} className="model-form">
+                <strong>
+                  {role === "main"
+                    ? "主执行"
+                    : role === "planner"
+                      ? "规划（仅生成计划）"
+                      : role === "reviewer"
+                        ? "独立审查（无工具）"
+                        : role === "improver"
+                          ? "配置草案（无工具，仅手动采用）"
+                          : "子任务执行"}
+                </strong>
+                <label>
+                  组件提示词（留空使用公共提示词）
+                  <textarea
+                    rows={3}
+                    value={component.systemPrompt}
+                    onChange={(event) =>
+                      update({ systemPrompt: event.target.value })
+                    }
+                  />
+                </label>
+                <label>
+                  组件模型
+                  <select
+                    value={component.model?.provider ?? ""}
+                    onChange={(event) =>
+                      update({
+                        model: event.target.value
+                          ? {
+                              provider: event.target.value,
+                              baseUrl:
+                                providerDefaults[event.target.value] ?? "",
+                              name: "",
+                            }
+                          : null,
+                      })
+                    }
+                  >
+                    <option value="">使用 Profile 公共模型</option>
+                    {Object.entries(providerLabels).map(([id, name]) => (
+                      <option key={id} value={id}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {component.model && (
+                  <>
                     <label>
-                      允许的工具（每行一个，空列表表示不允许工具）
-                      <textarea
-                        rows={2}
-                        value={(component.allowedTools ?? []).join("\n")}
+                      模型地址
+                      <input
+                        value={component.model.baseUrl}
                         onChange={(event) =>
                           update({
-                            allowedTools: event.target.value
-                              .split("\n")
-                              .map((name) => name.trim())
-                              .filter(Boolean),
+                            model: {
+                              ...component.model!,
+                              baseUrl: event.target.value,
+                            },
                           })
                         }
                       />
                     </label>
+                    <label>
+                      模型 ID
+                      <input
+                        value={component.model.name}
+                        onChange={(event) =>
+                          update({
+                            model: {
+                              ...component.model!,
+                              name: event.target.value,
+                            },
+                          })
+                        }
+                      />
+                    </label>
+                  </>
+                )}
+                {role !== "planner" &&
+                  role !== "reviewer" &&
+                  role !== "improver" && (
+                    <>
+                      <label className="checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={component.restrictTools}
+                          onChange={(event) =>
+                            update({ restrictTools: event.target.checked })
+                          }
+                        />
+                        限制为公共能力中的工具子集
+                      </label>
+                      {component.restrictTools && (
+                        <label>
+                          允许的工具（每行一个，空列表表示不允许工具）
+                          <textarea
+                            rows={2}
+                            value={(component.allowedTools ?? []).join("\n")}
+                            onChange={(event) =>
+                              update({
+                                allowedTools: event.target.value
+                                  .split("\n")
+                                  .map((name) => name.trim())
+                                  .filter(Boolean),
+                              })
+                            }
+                          />
+                        </label>
+                      )}
+                    </>
                   )}
-                </>
-              )}
-            </div>
-          );
-        })}
+              </div>
+            );
+          },
+        )}
         <label className="checkbox-label">
           <input
             type="checkbox"

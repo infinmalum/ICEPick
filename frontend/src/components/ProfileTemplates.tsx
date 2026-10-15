@@ -1,68 +1,40 @@
 import type { Profiles } from "../hooks/useProfiles";
-type Props = {
-  profileState: Pick<
-    Profiles,
-    | "createProfile"
-    | "createTemplate"
-    | "profileBusy"
-    | "profileDraft"
-    | "profileError"
-    | "templates"
-  >;
+const descriptions: Record<string, string> = {
+  daily: "解答问题、整理信息，处理日常事务。",
+  writing: "起草文章、润色表达，按你的语气改写。",
+  research: "比较资料、整理来源，形成研究报告。",
+  development: "理解代码、修改项目并检查结果。",
 };
-export function ProfileTemplates(props: Props) {
-  const {
-    createProfile,
-    createTemplate,
-    profileBusy,
-    profileDraft,
-    profileError,
-    templates,
-  } = props.profileState;
+export function ProfileTemplates({
+  profileState: p,
+}: {
+  profileState: Profiles;
+}) {
   return (
     <section className="session-card">
-      <div className="card-title">场景模板</div>
-      <p className="hint">
-        模板由程序提供，删除本地 Profile
-        后仍可重建。研究与开发为动态流程试验配置，包含必需独立审查；所有模板均待真实模型验收。
-      </p>
-      <div className="model-actions">
-        {templates.map((item) => (
+      <h2>选择适合你的助手</h2>
+      <div className="template-grid">
+        {p.templates.map((t) => (
           <button
-            key={item.id}
-            type="button"
-            className="secondary"
-            disabled={profileBusy}
-            onClick={() => createTemplate(item.id)}
+            key={t.id}
+            className="template-card"
+            disabled={p.profileBusy}
+            onClick={() => p.createTemplate(t.id)}
           >
-            ＋ {item.name}
+            <strong>{t.name.replace("（试验）", "")}</strong>
+            <span>{descriptions[t.id] ?? t.data.description}</span>
+            {["research", "development"].includes(t.id) && (
+              <small>试用 · 处理文件或执行操作前会请求授权</small>
+            )}
           </button>
         ))}
-        <button
-          type="button"
-          className="secondary"
-          disabled={profileBusy}
-          onClick={() => createProfile("")}
-        >
-          ＋ 空白 Profile
-        </button>
       </div>
-      {templates.map((item) => (
-        <details key={item.id}>
-          <summary>{item.name}：使用说明</summary>
-          <p className="hint">输入：{item.guide.input}</p>
-          <p className="hint">交付：{item.guide.output}</p>
-          <p className="hint">准备：{item.guide.requirements}</p>
-          <p className="hint">示例：{item.guide.example}</p>
-          <p className="hint">{item.validation}</p>
-        </details>
-      ))}
-      {!profileDraft && (
-        <p className="hint">
-          请创建或选择 Profile；研究与开发模板需要提供实际材料或配置工具依赖。
-        </p>
-      )}
-      {!profileDraft && profileError && <p className="error">{profileError}</p>}
+      <button className="secondary" onClick={() => p.createProfile("")}>
+        ＋ 从空白创建
+      </button>
+      <p className="hint">
+        你可以编辑、复制或分享自己的助手。实际表现取决于所连接的模型。
+      </p>
     </section>
   );
 }

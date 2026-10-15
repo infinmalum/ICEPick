@@ -77,10 +77,18 @@ type TaskReview struct {
 	CreatedAt     string       `json:"createdAt"`
 }
 
+type StageInput struct {
+	TaskID    string `json:"taskId"`
+	Prompt    string `json:"prompt"`
+	MessageID string `json:"messageId"`
+	Content   string `json:"content"`
+}
+
 // Snapshot includes original records, never model-invented evidence. The binding
 // covers goal, immutable execution contract, delivered message, artifacts and
 // complete tool evidence, including resolution of previously unknown effects.
 type ReviewSnapshot struct {
+	Inputs      []StageInput     `json:"inputs,omitempty"`
 	Attachments []materials.File `json:"attachments,omitempty"`
 	Binding     string           `json:"binding"`
 	ChecksAfter string           `json:"checksAfter,omitempty"`
@@ -117,22 +125,36 @@ func reviewSnapshotInTx(ctx context.Context, tx *sql.Tx, root string) (ReviewSna
 			return out, err
 		}
 	}
-	var filesRaw string
-	err = tx.QueryRowContext(ctx, `SELECT f.payload FROM message_files f JOIN messages m ON m.id=f.message_id WHERE m.run_id=? AND m.role='user' ORDER BY m.seq LIMIT 1`, root).Scan(&filesRaw)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	fileRows, err := tx.QueryContext(ctx, `SELECT f.payload FROM message_files f JOIN messages m ON m.id=f.message_id WHERE m.run_id=? AND m.role='user' ORDER BY m.seq`, root)
+	if err != nil {
 		return out, err
 	}
-	if filesRaw != "" {
-		if err = json.Unmarshal([]byte(filesRaw), &out.Attachments); err != nil {
+	for fileRows.Next() {
+		var raw string
+		if err = fileRows.Scan(&raw); err != nil {
+			fileRows.Close()
 			return out, err
 		}
-		for i, f := range out.Attachments {
-			out.Attachments[i] = f.Metadata()
+		var files []materials.File
+		if err = json.Unmarshal([]byte(raw), &files); err != nil {
+			fileRows.Close()
+			return out, err
 		}
+		for _, f := range files {
+			out.Attachments = append(out.Attachments, f.Metadata())
+		}
+	}
+	err = fileRows.Err()
+	fileRows.Close()
+	if err != nil {
+		return out, err
 	}
 	out.Tasks = []TaskSpec{}
 	for _, task := range g.Tasks {
 		out.Tasks = append(out.Tasks, task.Spec)
+		if task.InputMessageID != "" {
+			out.Inputs = append(out.Inputs, StageInput{TaskID: task.Spec.ID, Prompt: task.Spec.InputPrompt, MessageID: task.InputMessageID, Content: task.Input})
+		}
 	}
 	// Final assistant messages with no tool calls are the delivery candidate.
 	rows, err := tx.QueryContext(ctx, `SELECT id,session_id,(SELECT context_id FROM sessions WHERE id=messages.session_id),run_id,seq,role,content,tool_calls,created_at FROM messages WHERE run_id=? AND role='assistant' AND NOT EXISTS(SELECT 1 FROM tool_calls WHERE message_id=messages.id) ORDER BY seq DESC LIMIT 1`, root)
@@ -169,13 +191,14 @@ func reviewSnapshotInTx(ctx context.Context, tx *sql.Tx, root string) (ReviewSna
 	}
 	payload, err := json.Marshal(struct {
 		Profile     string
+		Inputs      []StageInput
 		Attachments []materials.File
 		Goal        string
 		Tasks       []TaskSpec
 		Delivery    Message
 		Artifacts   []Artifact
 		Calls       []ToolCall
-	}{raw, out.Attachments, out.Goal, out.Tasks, out.Delivery, out.Artifacts, out.Calls})
+	}{raw, out.Inputs, out.Attachments, out.Goal, out.Tasks, out.Delivery, out.Artifacts, out.Calls})
 	if err != nil {
 		return out, err
 	}

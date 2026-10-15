@@ -17,6 +17,8 @@ import type {
   SessionPlanView,
 } from "../../bindings/icepick/internal/app";
 import type { Workspace } from "./useWorkspace";
+import { useDialog } from "../shared/dialogs";
+import { useSendConsent } from "../shared/consent";
 export function useConversation(
   workspace: Workspace,
   profiles: Profile[],
@@ -30,7 +32,51 @@ export function useConversation(
     openConversation,
     refreshConversations,
   } = workspace;
+  const dialog = useDialog();
+  const ensureConsent = useSendConsent();
+  const draftCache = useRef(
+    new Map<string, { prompt: string; attachments: File[] }>(),
+  );
   const [messages, setMessages] = useState<Message[]>([]);
+  const [hasEarlier, setHasEarlier] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const earliestLoaded = useRef(0);
+  async function fetchMessages(id: string) {
+    const page = await StatusService.ListChatMessages(id, 0, 80);
+    if (activeSessionID.current === id && earliestLoaded.current === 0) {
+      earliestLoaded.current = page.beforeSeq;
+      setHasEarlier(page.hasMore);
+    }
+    return page.messages ?? [];
+  }
+  function mergeMessages(next: Message[]) {
+    setMessages((current) =>
+      next.length
+        ? [...current.filter((m) => m.seq < next[0].seq), ...next]
+        : current,
+    );
+  }
+  async function loadEarlier() {
+    if (!selected || loadingEarlier) return;
+    const id = selected;
+    setLoadingEarlier(true);
+    try {
+      const page = await StatusService.ListChatMessages(
+        id,
+        earliestLoaded.current,
+        80,
+      );
+      if (activeSessionID.current === id) {
+        setMessages((current) => [...(page.messages ?? []), ...current]);
+        earliestLoaded.current = page.beforeSeq;
+        setHasEarlier(page.hasMore);
+      }
+    } catch (e) {
+      setTaskError(String(e));
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -38,10 +84,28 @@ export function useConversation(
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
   useEffect(() => {
-    setAttachments([]);
-    setPrompt("");
+    const draft = selected ? draftCache.current.get(selected) : null;
+    let text = "";
+    try {
+      text = selected
+        ? (sessionStorage.getItem("icepick.draft." + selected) ?? "")
+        : "";
+    } catch {}
+    setPrompt(draft?.prompt ?? text);
+    setAttachments(draft?.attachments ?? []);
   }, [selected]);
-  function addAttachments(files: FileList | null) {
+  function updateDraft(text: string, files: File[]) {
+    if (!selected) return;
+    draftCache.current.set(selected, { prompt: text, attachments: files });
+    try {
+      sessionStorage.setItem("icepick.draft." + selected, text);
+    } catch {}
+  }
+  function changePrompt(value: string) {
+    setPrompt(value);
+    updateDraft(value, attachments);
+  }
+  function addAttachments(files: FileList | File[] | null) {
     if (!files) return;
     const next = [...attachments, ...Array.from(files)];
     if (
@@ -53,10 +117,13 @@ export function useConversation(
       return;
     }
     setAttachments(next);
+    updateDraft(prompt, next);
     setTaskError("");
   }
   function removeAttachment(index: number) {
-    setAttachments((current) => current.filter((_, i) => i !== index));
+    const next = attachments.filter((_, i) => i !== index);
+    setAttachments(next);
+    updateDraft(prompt, next);
   }
   const [taskError, setTaskError] = useState("");
   const [searchAvailability, setSearchAvailability] =
@@ -114,6 +181,8 @@ export function useConversation(
     let cancelled = false;
     setStreamText("");
     setMessages([]);
+    earliestLoaded.current = 0;
+    setHasEarlier(false);
     setRuns([]);
     setToolCalls([]);
     setChildRuns([]);
@@ -125,9 +194,9 @@ export function useConversation(
     setReviews([]);
     setRetrospectives([]);
     Promise.all([
-      StatusService.ListMessages(selected),
+      fetchMessages(selected),
       StatusService.ListRuns(selected),
-      StatusService.ListToolCalls(selected),
+      StatusService.PendingApprovals(contextID),
     ])
       .then(([history, previousRuns, calls]) => {
         if (cancelled) return;
@@ -162,16 +231,19 @@ export function useConversation(
         if (!cancelled) setStreamText(value ?? "");
       })
       .catch(() => {});
+    let querying = false;
     const timer = window.setInterval(async () => {
+      if (querying) return;
+      querying = true;
       try {
         const [run, history, calls, pending] = await Promise.all([
           StatusService.GetRun(activeRun),
-          StatusService.ListMessages(selected),
-          StatusService.ListToolCalls(selected),
+          fetchMessages(selected),
+          StatusService.PendingApprovals(contextID),
           StatusService.PendingStreamText(activeRun),
         ]);
         if (cancelled) return;
-        setMessages(history ?? []);
+        mergeMessages(history ?? []);
         setToolCalls(calls ?? []);
         setStreamText(pending ?? "");
         setRuns((current) => [
@@ -183,8 +255,10 @@ export function useConversation(
         if (run.status !== "running") setActiveRun(null);
       } catch (reason) {
         if (!cancelled) setTaskError(String(reason));
+      } finally {
+        querying = false;
       }
-    }, 800);
+    }, 1000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -277,7 +351,7 @@ export function useConversation(
   async function refreshCalls() {
     if (!selected) return;
     try {
-      setToolCalls((await StatusService.ListToolCalls(selected)) ?? []);
+      setToolCalls((await StatusService.PendingApprovals(contextID)) ?? []);
     } catch (reason) {
       setTaskError(String(reason));
     }
@@ -295,8 +369,13 @@ export function useConversation(
     }
   }
   async function denyCall(call: ToolCall) {
-    const note =
-      window.prompt(`拒绝 ${call.toolName} 的原因（可留空）`, "") ?? "";
+    const note = await dialog.ask({
+      title: "拒绝这次操作",
+      body: "助手会收到你的决定，并尝试其他可行方法。",
+      label: "原因（可选）",
+      confirm: "拒绝操作",
+    });
+    if (note === null) return;
     setApprovalBusy(true);
     try {
       await StatusService.DenyToolCall(call.id, note);
@@ -309,15 +388,24 @@ export function useConversation(
     }
   }
   async function resolveUnknown(call: ToolCall, asSuccess: boolean) {
-    const note =
-      window.prompt(
-        `处置依据（必填）：说明你核实到的 ${call.toolName} 的实际情况`,
-        "",
-      ) ?? "";
-    if (!note.trim()) return;
+    const note = await dialog.ask({
+      title: asSuccess ? "记录已核实的结果" : "记录未完成的操作",
+      body: "只记录你已实际核实的情况。无法确认时选择“暂不确定”，助手将保持暂停，不会重做可能已经生效的操作。",
+      label: "你核对到了什么？",
+      confirm: "记录核对结论",
+      cancel: "暂不确定",
+    });
+    if (!note?.trim()) return;
     let result = "";
     if (asSuccess) {
-      result = window.prompt("经核对的实际结果（必填）", "") ?? "";
+      result =
+        (await dialog.ask({
+          title: "保存实际结果",
+          body: "填写实际看到的结果，供助手继续判断。不要猜测工具输出。",
+          label: "实际结果",
+          confirm: "保存",
+          cancel: "暂不确定",
+        })) ?? "";
       if (!result.trim()) return;
     }
     setApprovalBusy(true);
@@ -400,11 +488,46 @@ export function useConversation(
   }
   async function sendTask(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!selected || (!prompt.trim() && !attachments.length) || sending) return;
+    await submitTask(false);
+  }
+  async function resumeTask() {
+    await submitTask(true);
+  }
+  async function submitTask(continuation: boolean) {
+    if (
+      !selected ||
+      (!continuation && !prompt.trim() && !attachments.length) ||
+      sending
+    )
+      return;
     const sessionID = selected;
     setSending(true);
     setStreamText("");
     try {
+      if (
+        !continuation &&
+        activeConversation?.options?.webSearch &&
+        searchAvailability?.available !== true
+      ) {
+        if (
+          !(await dialog.confirm({
+            title: "当前模型暂不支持联网",
+            body: "可以关闭联网，继续普通聊天；也可以到模型设置选择支持联网的模型。",
+            confirm: "关闭联网并发送",
+            cancel: "返回修改",
+          }))
+        )
+          return;
+        await StatusService.SetConversationOptions(sessionID, {
+          webSearch: false,
+        });
+        await refreshConversations();
+      }
+      if (
+        !continuation &&
+        !(await ensureConsent(sessionID, attachments.length > 0))
+      )
+        return;
       const uploads = await Promise.all(
         attachments.map(
           (file) =>
@@ -421,19 +544,30 @@ export function useConversation(
             }),
         ),
       );
-      const run = await StatusService.StartConversationTask(
-        sessionID,
-        prompt,
-        uploads,
-      );
+      const run = continuation
+        ? await StatusService.ContinueConversationTask(
+            runs[0].id,
+            taskGraph?.waitingTaskId ?? "",
+            prompt,
+            uploads,
+          )
+        : await StatusService.StartConversationTask(sessionID, prompt, uploads);
+      draftCache.current.delete(sessionID);
+      try {
+        sessionStorage.removeItem("icepick.draft." + sessionID);
+      } catch {}
       if (activeSessionID.current !== sessionID) return;
       setAttachments([]);
       setPrompt("");
       setTaskError("");
-      setRuns((current) => [run, ...current]);
+      setRuns((current) => [
+        run,
+        ...current.filter((item) => item.id !== run.id),
+      ]);
       setActiveRun(run.id);
-      const history = await StatusService.ListMessages(sessionID);
-      if (activeSessionID.current === sessionID) setMessages(history ?? []);
+      await refreshConversations();
+      const history = await fetchMessages(sessionID);
+      if (activeSessionID.current === sessionID) mergeMessages(history ?? []);
     } catch (reason) {
       if (activeSessionID.current === sessionID) setTaskError(String(reason));
     } finally {
@@ -461,7 +595,10 @@ export function useConversation(
         retrospectives[0]?.rootRunId ?? reviews[0]?.rootRunId ?? runs[0].id;
       const run = await start(sessionID, target);
       if (activeSessionID.current !== sessionID) return;
-      setRuns((current) => [run, ...current]);
+      setRuns((current) => [
+        run,
+        ...current.filter((item) => item.id !== run.id),
+      ]);
       setActiveRun(run.id);
     } catch (reason) {
       setTaskError(String(reason));
@@ -474,11 +611,14 @@ export function useConversation(
     addAttachments,
     removeAttachment,
     messages,
+    hasEarlier,
+    loadingEarlier,
+    loadEarlier,
     approvalBusy,
     runs,
     activeRun,
     prompt,
-    setPrompt,
+    setPrompt: changePrompt,
     taskError,
     searchAvailability,
     searchRecords,
@@ -502,6 +642,7 @@ export function useConversation(
     clearPlan,
     openChildSession,
     sendTask,
+    resumeTask,
     cancelTask,
     reviewResult: () => inspectResult(false),
     retrospectResult: () => inspectResult(true),

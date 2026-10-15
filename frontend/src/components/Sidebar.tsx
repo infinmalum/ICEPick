@@ -1,103 +1,110 @@
 import type { Workspace } from "../hooks/useWorkspace";
-import type { RuntimeSettings } from "../hooks/useRuntimeSettings";
-import type { Profiles } from "../hooks/useProfiles";
-type Props = {
-  workspace: Pick<
-    Workspace,
-    | "activeConversation"
-    | "creating"
-    | "openConversation"
-    | "reuseContext"
-    | "selected"
-    | "sessions"
-    | "setReuseContext"
-  >;
-  runtime: Pick<RuntimeSettings, "mcpServers" | "status">;
-  profileState: Pick<
-    Profiles,
-    "profileEditID" | "profiles" | "setProfileEditID"
-  >;
+type Page = "chat" | "assistants" | "settings";
+export function Sidebar({
+  workspace: w,
+  page,
+  setPage,
+  createSession,
+}: {
+  workspace: Workspace;
+  page: Page;
+  setPage: (p: Page) => void;
   createSession: () => Promise<void>;
-};
-export function Sidebar(props: Props) {
-  const {
-    activeConversation,
-    creating,
-    openConversation,
-    reuseContext,
-    selected,
-    sessions,
-    setReuseContext,
-  } = props.workspace;
-  const { mcpServers, status } = props.runtime;
-  const { profileEditID, profiles, setProfileEditID } = props.profileState;
-  const { createSession } = props;
+}) {
   return (
     <aside className="sidebar">
-      <div className="brand">
-        <span className="brand-mark">◈</span> ICEPick
-      </div>
-      <div className="sidebar-label">工作区</div>
-      <div className="sidebar-item active">概览</div>
-      <div className="sidebar-label sessions-label">Profiles</div>
-      {profiles.map((item) => (
-        <button
-          key={item.id}
-          className={`sidebar-item session-item ${profileEditID === item.id ? "selected" : ""}`}
-          onClick={() => setProfileEditID(item.id)}
-        >
-          {item.name}
-        </button>
-      ))}
-      <div className="sidebar-label sessions-label">对话</div>
+      <a
+        className="brand"
+        href="#"
+        onClick={(e) => {
+          e.preventDefault();
+          setPage("chat");
+        }}
+      >
+        <span>✳</span> ICEPick
+      </a>
       <button
         className="new-session"
         onClick={createSession}
-        disabled={creating || !profileEditID || !status?.storageReady}
+        disabled={w.creating}
       >
-        ＋ 使用所选 Profile 开始对话
+        {w.creating ? "正在创建…" : "＋ 新对话"}
       </button>
-      {selected && activeConversation?.kind !== "delegation" && (
-        <label className="checkbox-label">
-          <input
-            type="checkbox"
-            checked={reuseContext}
-            onChange={(event) => setReuseContext(event.target.checked)}
-          />
-          新对话沿用当前记忆与权限
-        </label>
-      )}
-      {sessions.map((session) => (
+      <label className="conversation-search">
+        <span className="sr-only">搜索对话</span>
+        <input
+          placeholder="搜索对话"
+          value={w.query}
+          onChange={(e) => w.setQuery(e.target.value)}
+        />
+      </label>
+      <nav className="session-navigation" aria-label="对话列表">
+        {w.sessions
+          .filter(
+            (s) =>
+              s.kind === "normal" &&
+              s.title.toLowerCase().includes(w.query.toLowerCase()),
+          )
+          .map((s) => (
+            <div
+              className={`session-row ${page === "chat" && w.selected === s.id ? "selected" : ""}`}
+              key={s.id}
+            >
+              <button
+                className="session-link"
+                onClick={() => {
+                  w.openConversation(s);
+                  setPage("chat");
+                }}
+                title={s.title}
+              >
+                {s.title}
+              </button>
+              <details className="conversation-menu">
+                <summary aria-label={`管理对话 ${s.title}`}>⋯</summary>
+                <div>
+                  <button
+                    onClick={(e) => {
+                      e.currentTarget
+                        .closest("details")
+                        ?.removeAttribute("open");
+                      void w.renameConversation(s);
+                    }}
+                  >
+                    重命名
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.currentTarget
+                        .closest("details")
+                        ?.removeAttribute("open");
+                      void w.deleteConversation(s);
+                    }}
+                  >
+                    删除对话
+                  </button>
+                </div>
+              </details>
+            </div>
+          ))}
+        {w.query && !w.sessions.some((s) => s.title.includes(w.query)) && (
+          <p className="hint">没有找到匹配的对话</p>
+        )}
+      </nav>
+      <div className="sidebar-bottom">
         <button
-          key={session.id}
-          className={`sidebar-item session-item ${selected === session.id ? "selected" : ""}`}
-          onClick={() => openConversation(session)}
+          className={page === "assistants" ? "selected" : ""}
+          onClick={() => setPage("assistants")}
         >
-          {session.title}
-          <span className="context-profile-hint">
-            {" "}
-            · {session.profileName}
-            {session.profileArchived ? "（已删除）" : ""}
-          </span>
+          ◇ 助手
         </button>
-      ))}
-      <div className="sidebar-label sessions-label">MCP 服务</div>
-      {mcpServers.map((server) => (
-        <div
-          key={server.name}
-          className="sidebar-item muted"
-          title={
-            server.changed
-              ? `${server.command}${(server.args ?? []).join(" ")}\n指纹变化：二进制 ${server.binarySha256.slice(0, 12)}… schema ${server.schemaSha256.slice(0, 12)}…\n自动执行已暂停，需要重新确认`
-              : `${server.command}${(server.args ?? []).join(" ")}\n版本 ${server.version || "未知"} · 二进制 ${server.binarySha256.slice(0, 12)}… · schema ${server.schemaSha256.slice(0, 12)}…`
-          }
+        <button
+          className={page === "settings" ? "selected" : ""}
+          onClick={() => setPage("settings")}
         >
-          MCP · {server.name}
-          {server.changed ? " ⚠" : ""}
-        </div>
-      ))}
-      <div className="sidebar-spacer" />
-      <div className="sidebar-foot">本地 Agent 宿主</div>
+          ⚙ 设置
+        </button>
+      </div>
     </aside>
   );
 }

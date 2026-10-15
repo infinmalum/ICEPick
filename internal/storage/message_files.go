@@ -26,13 +26,22 @@ func (s *Store) RunInputFiles(ctx context.Context, run string) ([]materials.File
 	if err != nil {
 		return nil, err
 	}
-	var id string
-	err = s.db.QueryRowContext(ctx, `SELECT id FROM messages WHERE run_id=? AND role='user' ORDER BY seq LIMIT 1`, root).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
+	rows, err := s.db.QueryContext(ctx, `SELECT f.payload FROM messages m JOIN message_files f ON f.message_id=m.id WHERE m.run_id=? AND m.role='user' ORDER BY m.seq`, root)
 	if err != nil {
 		return nil, err
 	}
-	return s.MessageFiles(ctx, id)
+	defer rows.Close()
+	var files []materials.File
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var batch []materials.File
+		if err := json.Unmarshal([]byte(raw), &batch); err != nil {
+			return nil, err
+		}
+		files = append(files, batch...)
+	}
+	return files, rows.Err()
 }

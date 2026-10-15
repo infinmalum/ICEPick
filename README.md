@@ -1,12 +1,10 @@
 # ICEPick
 
-ICEPick 是一个本地优先、领域无关的 Agent 宿主。它使用 Go 和 Wails 3 构建桌面应用，同一二进制也提供命令行客户端。模型可接入本机 Ollama / LM Studio（无需密钥），或通过官方 Go SDK 接入 OpenAI、Anthropic 与 Gemini（凭据独立存储，发送前经数据外发授权检查）。
+ICEPick 是一个本地优先的 AI 助手应用。连接本机 Ollama / LM Studio，或填写 OpenAI、Anthropic、Gemini 的模型与密钥后，即可聊天、上传资料、读取网页和处理获准的文件。桌面 App 面向普通用户，默认不要求理解 Agent 配置。
 
-## 重新设计的方向（2026-10-12）
+从[桌面使用指南](docs/desktop.md)开始。聊天、助手管理、设置和任务详情各有独立入口；需要高度自定义时，可以编辑助手的工具、Skills、组件及工作流程。同一二进制也提供面向开发者的 CLI。
 
-目标是让用户通过 **Profile** 定义完整场景，选择主执行、规划、worker、审查、配置改进等内置 Agent 组件，组合模型、指令、工具、Skills 和执行流程。运行实例由宿主创建，用户无需维护另一套 Agent 列表。计划按实际能力提供“日常助手”“研究分析”“写作编辑”“开发协作”四个经真实验收的场景 Profile 和空白创建入口。审查和复盘在当前场景中调用，无需切换 Profile；Profile/Skills 改进经过候选、验证、发布和回退流程。
-
-R1–R2 两批增量已接入：桌面以 Profile 为入口，运行状态和授权由本机上下文自动管理，用户通过对话选择配置，不需要管理 Agent。已提供日常助手、写作编辑的可编辑模板副本与空白入口，标记为待真实模型验收。R3 已接入独立 planner、自动依赖调度和只读 worker 并行；研究分析与开发协作提供试验配置，需材料或工具依赖。R4 已接入独立审查门槛、最多两轮的有限返工和历史结果单次复核与独立过程复盘；R6a 已接入自然语言创建/改进 Profile 草案、手动编辑/采用/丢弃及撤销；Skill 草案、明确选择的任务证据及预期验收条件也已接入；固定流程与自动采用仍待交付。实现范围与后续阶段见[设计文档](docs/architecture.md)和[实施计划](IMPLEMENTATION_PLAN.md)。
+当前已实现直接执行、动态协作、审查与有限返工、配置改进草案，以及固定流程的依赖、输入等待和显式续跑。条件分支、固定流程返工与限定自动采用仍待完成。模板已通过模拟场景验证，真实模型与安装验收独立跟踪。架构与开发范围见[设计文档](docs/architecture.md)和[实施计划](IMPLEMENTATION_PLAN.md)。
 
 ## 当前功能
 
@@ -138,7 +136,7 @@ go test ./...
 
 搜索记录保存实际事件、来源链接及能取得的用量；网页材料属于未知来源。OpenAI 和 Anthropic 每请求最多预留 3 次搜索/网页读取，共享根工具预算，完整响应释放未用预留。Gemini 没有服务商内部搜索次数的硬上限参数，按每个宿主搜索请求预留并消耗 1 个预算单位，内部次数与独立费用未报告时明确显示未知；不会把查询条数当作实际调用/账单次数。中断保留未知结果与预留，不自动重试或重放。Google 搜索建议保存并在隔离、禁脚本的 iframe 中呈现；不把服务商 HTML 放进宿主页。真实服务及稳定场景验收仍待完成。
 
-当前数据库格式为 **v25**。Profile 定义工作方式，LocalContext 只拥有本机权限和私人状态，Conversation 明确选择 Profile，Run 固定执行配置。新建对话才创建 Context，宿主没有隐式默认 Context。消息、运行、计划和摘要的 Context 由 Session 推导，不重复保存归属列。任务查询、取消和工具审批只需资源 ID；CLI 使用 `tasks status <runID>`、`tasks cancel <runID>`、`approvals approve <callID>`，待审批列表可用 `approvals list --context <contextID>` 筛选。旧数据库格式明确拒绝，不迁移、不删除原文件。
+当前数据库格式为 **v26**。Profile 定义工作方式，LocalContext 只拥有本机权限和私人状态，Conversation 明确选择 Profile，Run 固定执行配置。新建对话才创建 Context，宿主没有隐式默认 Context。消息、运行、计划和摘要的 Context 由 Session 推导，不重复保存归属列。任务查询、取消和工具审批只需资源 ID；CLI 使用 `tasks status <runID>`、`tasks cancel <runID>`、`approvals approve <callID>`，待审批列表可用 `approvals list --context <contextID>` 筛选。旧数据库格式明确拒绝，不迁移、不删除原文件。
 
 ### 对话附件与网页材料
 

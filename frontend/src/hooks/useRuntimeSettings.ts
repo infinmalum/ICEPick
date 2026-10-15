@@ -18,6 +18,8 @@ export function useRuntimeSettings() {
   const [modelError, setModelError] = useState("");
   const [credStatus, setCredStatus] = useState<CredentialStatus[]>([]);
   const [credDraft, setCredDraft] = useState<Record<string, string>>({});
+  const [apiKey, setApiKey] = useState("");
+  const [connectedMessage, setConnectedMessage] = useState("");
   const [credBusy, setCredBusy] = useState(false);
   const [credError, setCredError] = useState("");
   async function refreshModel() {
@@ -25,7 +27,6 @@ export function useRuntimeSettings() {
     try {
       const value = await StatusService.GetStatus();
       setStatus(value);
-      setModelDraft(value.model);
       setModelError("");
     } catch (reason) {
       setModelError(String(reason));
@@ -36,12 +37,26 @@ export function useRuntimeSettings() {
   async function saveModel(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setModelBusy(true);
+    setConnectedMessage("");
     try {
+      if (apiKey.trim())
+        await StatusService.SaveCredential(modelDraft.provider, apiKey.trim());
+      setApiKey("");
       const value = await StatusService.SaveModelConfig(modelDraft);
       setStatus(value);
+      setCredStatus((await StatusService.ListCredentialStatus()) ?? []);
+      if (!value.modelConnected) {
+        setModelError(value.message);
+        return;
+      }
       setModelError("");
-    } catch (reason) {
-      setModelError(String(reason));
+      setConnectedMessage(
+        value.model.name
+          ? "模型已连接，可以开始聊天。"
+          : "服务已连接，请选择一个模型后保存。",
+      );
+    } catch (e) {
+      setModelError(String(e));
     } finally {
       setModelBusy(false);
     }
@@ -102,6 +117,9 @@ export function useRuntimeSettings() {
     credError,
     refreshModel,
     saveModel,
+    apiKey,
+    setApiKey,
+    connectedMessage,
     saveCredential,
     deleteCredential,
   };

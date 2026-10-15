@@ -1,130 +1,122 @@
 import type { RuntimeSettings } from "../hooks/useRuntimeSettings";
-import { providerDefaults, remoteProviders } from "../shared/config";
-type Props = {
-  runtime: Pick<
-    RuntimeSettings,
-    | "modelBusy"
-    | "modelDraft"
-    | "modelError"
-    | "refreshModel"
-    | "saveModel"
-    | "setModelDraft"
-    | "status"
-  >;
-};
-export function ModelSettings(props: Props) {
-  const {
-    modelBusy,
-    modelDraft,
-    modelError,
-    refreshModel,
-    saveModel,
-    setModelDraft,
-    status,
-  } = props.runtime;
+import {
+  providerDefaults,
+  remoteProviders,
+  providerLabels,
+} from "../shared/config";
+import { ErrorNotice } from "../shared/errors";
+export function ModelSettings({
+  runtime: r,
+  onConnected,
+}: {
+  runtime: RuntimeSettings;
+  onConnected?: () => void;
+}) {
+  const remote = remoteProviders.includes(
+    r.modelDraft.provider as (typeof remoteProviders)[number],
+  );
   return (
     <section className="session-card">
-      <div className="card-title">模型服务</div>
-      <form className="model-form" onSubmit={saveModel}>
+      <h2>连接模型</h2>
+      <p>
+        选择服务商，填写模型和密钥。你的密钥只保存在本机，不进入聊天或分享包。
+      </p>
+      <form className="model-form" onSubmit={r.saveModel}>
         <label>
-          提供方
+          模型服务
           <select
-            value={modelDraft.provider}
-            onChange={(event) =>
-              setModelDraft({
-                provider: event.target.value,
-                baseUrl: providerDefaults[event.target.value] ?? "",
+            value={r.modelDraft.provider}
+            onChange={(e) => {
+              r.setApiKey("");
+              r.setModelDraft({
+                provider: e.target.value,
+                baseUrl: providerDefaults[e.target.value],
                 name: "",
-              })
-            }
+              });
+            }}
           >
-            <option value="ollama">Ollama（本机）</option>
-            <option value="lmstudio">LM Studio（本机）</option>
-            <option value="openai">OpenAI（远端）</option>
-            <option value="anthropic">Anthropic（远端）</option>
-            <option value="gemini">Gemini（远端）</option>
+            {Object.entries(providerLabels).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
           </select>
         </label>
-        {remoteProviders.includes(
-          modelDraft.provider as (typeof remoteProviders)[number],
-        ) ? (
-          <>
-            <label>
-              API 地址（留空使用官方端点）
-              <input
-                value={modelDraft.baseUrl}
-                onChange={(event) =>
-                  setModelDraft((current) => ({
-                    ...current,
-                    baseUrl: event.target.value,
-                  }))
-                }
-                placeholder={providerDefaults[modelDraft.provider] ?? ""}
-                spellCheck={false}
-              />
-            </label>
-            <p className="hint">
-              远端发送受数据外发授权约束；请在下方凭据面板保存 API
-              密钥，并在外发授权面板允许该端点。
-            </p>
-          </>
-        ) : (
+        {remote && (
           <label>
-            本机地址
+            API 密钥
+            {r.credStatus.find((v) => v.provider === r.modelDraft.provider)
+              ?.configured && <small>已保存；留空继续使用</small>}
             <input
-              value={modelDraft.baseUrl}
-              onChange={(event) =>
-                setModelDraft((current) => ({
-                  ...current,
-                  baseUrl: event.target.value,
-                }))
-              }
-              spellCheck={false}
-              required
+              type="password"
+              autoComplete="off"
+              value={r.apiKey}
+              onChange={(e) => r.setApiKey(e.target.value)}
+              placeholder="输入服务商提供的 API Key"
             />
           </label>
         )}
         <label>
-          模型 ID（可稍后选择）
+          模型名称
           <input
-            value={modelDraft.name}
-            onChange={(event) =>
-              setModelDraft((current) => ({
-                ...current,
-                name: event.target.value,
-              }))
+            value={r.modelDraft.name}
+            onChange={(e) =>
+              r.setModelDraft({ ...r.modelDraft, name: e.target.value })
             }
-            list="local-models"
-            spellCheck={false}
+            list="available-models"
+            placeholder="输入模型名称，或连接后从列表选择"
+            autoComplete="off"
           />
-          <datalist id="local-models">
-            {status?.availableModels?.map((name) => (
-              <option key={name} value={name} />
+          <datalist id="available-models">
+            {r.status?.availableModels?.map((n) => (
+              <option key={n}>{n}</option>
             ))}
           </datalist>
         </label>
-        <div className="model-actions">
-          <button type="submit" disabled={modelBusy || !status?.storageReady}>
-            保存并检测
+        {!remote && (
+          <label>
+            本机服务地址
+            <input
+              value={r.modelDraft.baseUrl}
+              onChange={(e) =>
+                r.setModelDraft({ ...r.modelDraft, baseUrl: e.target.value })
+              }
+            />
+          </label>
+        )}
+        {remote && (
+          <details>
+            <summary>自定义服务地址</summary>
+            <label>
+              API 地址
+              <input
+                value={r.modelDraft.baseUrl}
+                onChange={(e) =>
+                  r.setModelDraft({ ...r.modelDraft, baseUrl: e.target.value })
+                }
+              />
+            </label>
+            <p>使用代理或兼容服务时填写。发送前会显示实际接收地址。</p>
+          </details>
+        )}
+        <div className="actions">
+          <button disabled={r.modelBusy || !r.status?.storageReady}>
+            {r.modelBusy ? "正在连接…" : "保存并连接"}
           </button>
           <button
             type="button"
             className="secondary"
-            onClick={refreshModel}
-            disabled={modelBusy}
+            disabled={r.modelBusy}
+            onClick={r.refreshModel}
           >
-            刷新连接
+            检测连接
           </button>
         </div>
       </form>
-      {modelError && <p className="error">{modelError}</p>}
-      {status?.modelConnected && (
-        <p className="hint">
-          可见模型：
-          {status.availableModels?.length
-            ? status.availableModels.join("、")
-            : "暂无"}
-        </p>
+      <ErrorNotice error={r.modelError} />
+      {r.connectedMessage && <p className="success">{r.connectedMessage}</p>}
+      {r.status?.runtimeReady && (
+        <button onClick={onConnected}>开始聊天 →</button>
       )}
     </section>
   );

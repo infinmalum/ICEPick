@@ -108,7 +108,7 @@ func (s *Store) GetConversation(ctx context.Context, id string) (Conversation, e
 }
 
 func (s *Store) ListConversations(ctx context.Context) ([]Conversation, error) {
-	rows, err := s.db.QueryContext(ctx, conversationSelect+` WHERE s.kind='normal' ORDER BY s.created_at DESC,s.id DESC`)
+	rows, err := s.db.QueryContext(ctx, conversationSelect+` WHERE s.kind='normal' ORDER BY COALESCE((SELECT MAX(created_at) FROM messages WHERE session_id=s.id),s.created_at) DESC,s.id DESC`)
 	if err != nil {
 		return nil, err
 	}

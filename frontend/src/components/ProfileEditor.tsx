@@ -1,3 +1,4 @@
+import { ErrorNotice } from "../shared/errors";
 import type { Profiles } from "../hooks/useProfiles";
 import { ProfileExecution } from "./ProfileExecution";
 import { providerDefaults, remoteProviders } from "../shared/config";
@@ -51,14 +52,14 @@ export function ProfileEditor(props: Props) {
     profileDraft && (
       <section className="session-card">
         <div className="card-title">
-          Profile「{profileDraft.name}」{" "}
-          <span className="revision">
+          助手「{profileDraft.name}」{" "}
+          <span className="revision" hidden>
             v{profileDraft.revision}
             {profileDraft.data.templateId ? " · 场景模板副本" : ""}
           </span>
         </div>
         <label className="model-form">
-          编辑目标
+          选择要编辑的助手
           <select
             value={profileEditID ?? ""}
             onChange={(event) => setProfileEditID(event.target.value)}
@@ -78,7 +79,7 @@ export function ProfileEditor(props: Props) {
             disabled={profileBusy}
             onClick={() => createProfile("")}
           >
-            ＋ 空白 Profile
+            ＋ 创建助手
           </button>
           <button
             type="button"
@@ -94,7 +95,7 @@ export function ProfileEditor(props: Props) {
             disabled={profileBusy}
             onClick={exportProfile}
           >
-            导出 Profile
+            导出助手
           </button>
           <button
             type="button"
@@ -102,7 +103,7 @@ export function ProfileEditor(props: Props) {
             disabled={profileBusy}
             onClick={() => importInputRef.current?.click()}
           >
-            导入 Profile…
+            导入助手…
           </button>
           <input
             ref={importInputRef}
@@ -113,12 +114,12 @@ export function ProfileEditor(props: Props) {
           />
           {profileRefs.length > 0 && (
             <label>
-              删除时替代引用
+              其他助手正在使用此配置，删除后改用
               <select
                 value={deleteReplacement}
                 onChange={(event) => setDeleteReplacement(event.target.value)}
               >
-                <option value="__own__">恢复引用者自身的 worker 配置</option>
+                <option value="__own__">各助手自己的执行配置</option>
                 {profiles
                   .filter((item) => item.id !== profileDraft.id)
                   .map((item) => (
@@ -159,10 +160,10 @@ export function ProfileEditor(props: Props) {
                         (
                           {
                             persona: "人格与说明",
-                            prompt: "提示词",
+                            prompt: "工作说明",
                             model: "模型",
-                            capabilities: "工具与 Skills",
-                            runtime: "运行偏好",
+                            capabilities: "工具与工作方法",
+                            runtime: "处理偏好",
                             execution: "组件设置",
                           } as Record<string, string>
                         )[group]
@@ -184,7 +185,7 @@ export function ProfileEditor(props: Props) {
         </div>
         <form className="model-form" onSubmit={saveProfile}>
           <label>
-            Profile 名称
+            助手名称
             <input
               value={profileDraft.name}
               onChange={(event) =>
@@ -209,7 +210,7 @@ export function ProfileEditor(props: Props) {
             />
           </label>
           <label>
-            系统提示词
+            希望助手怎么做
             <textarea
               rows={4}
               value={profileDraft.data.systemPrompt}
@@ -227,248 +228,269 @@ export function ProfileEditor(props: Props) {
           <label className="checkbox-label">
             <input
               type="checkbox"
-              checked={profileDraft.data.allMcpServers}
-              onChange={(event) =>
-                setProfileDraft({
-                  ...profileDraft,
-                  data: {
-                    ...profileDraft.data,
-                    allMcpServers: event.target.checked,
-                  },
-                })
-              }
-            />
-            启用全部已接入的 MCP 服务
-          </label>
-          {!profileDraft.data.allMcpServers && (
-            <label>
-              启用的 MCP 服务名（每行一个）
-              <textarea
-                rows={2}
-                value={(profileDraft.data.enabledMcpServers ?? []).join("\n")}
-                onChange={(event) =>
-                  setProfileDraft({
-                    ...profileDraft,
-                    data: {
-                      ...profileDraft.data,
-                      enabledMcpServers: event.target.value
-                        .split("\n")
-                        .map((name) => name.trim())
-                        .filter(Boolean),
-                    },
-                  })
-                }
-              />
-            </label>
-          )}
-          <label>
-            工具白名单（每行一个，留空表示启用服务的全部工具）
-            <textarea
-              rows={3}
-              value={(profileDraft.data.allowedTools ?? []).join("\n")}
-              onChange={(event) =>
-                setProfileDraft({
-                  ...profileDraft,
-                  data: {
-                    ...profileDraft.data,
-                    allowedTools: event.target.value
-                      .split("\n")
-                      .map((name) => name.trim())
-                      .filter(Boolean),
-                  },
-                })
-              }
-            />
-          </label>
-          <label className="checkbox-label">
-            <input
-              type="checkbox"
-              checked={profileDraft.data.allSkills}
-              onChange={(event) =>
-                setProfileDraft({
-                  ...profileDraft,
-                  data: {
-                    ...profileDraft.data,
-                    allSkills: event.target.checked,
-                  },
-                })
-              }
-            />
-            启用全部已安装的 Skills
-          </label>
-          {!profileDraft.data.allSkills && (
-            <label>
-              启用 Skills（每行一个名称）
-              <textarea
-                rows={2}
-                value={(profileDraft.data.enabledSkills ?? []).join("\n")}
-                onChange={(event) =>
-                  setProfileDraft({
-                    ...profileDraft,
-                    data: {
-                      ...profileDraft.data,
-                      enabledSkills: event.target.value
-                        .split("\n")
-                        .map((name) => name.trim())
-                        .filter(Boolean),
-                    },
-                  })
-                }
-              />
-            </label>
-          )}
-          <label>
-            模型来源
-            <select
-              value={profileDraft.data.model.provider || "default"}
-              onChange={(event) =>
-                setProfileDraft({
-                  ...profileDraft,
-                  data: {
-                    ...profileDraft.data,
-                    model:
-                      event.target.value === "default"
-                        ? { provider: "", baseUrl: "", name: "" }
-                        : {
-                            provider: event.target.value,
-                            baseUrl: providerDefaults[event.target.value] ?? "",
-                            name: "",
-                          },
-                  },
-                })
-              }
-            >
-              <option value="default">使用应用默认模型</option>
-              <option value="ollama">Ollama</option>
-              <option value="lmstudio">LM Studio</option>
-              <option value="openai">OpenAI</option>
-              <option value="anthropic">Anthropic</option>
-              <option value="gemini">Gemini</option>
-            </select>
-          </label>
-          {profileDraft.data.model.provider && (
-            <>
-              <label>
-                Profile 模型地址
-                {remoteProviders.includes(
-                  profileDraft.data.model
-                    .provider as (typeof remoteProviders)[number],
-                )
-                  ? "（留空使用官方端点）"
-                  : ""}
-                <input
-                  value={profileDraft.data.model.baseUrl}
-                  onChange={(event) =>
-                    setProfileDraft({
-                      ...profileDraft,
-                      data: {
-                        ...profileDraft.data,
-                        model: {
-                          ...profileDraft.data.model,
-                          baseUrl: event.target.value,
-                        },
-                      },
-                    })
-                  }
-                  placeholder={
-                    providerDefaults[profileDraft.data.model.provider] ?? ""
-                  }
-                />
-              </label>
-              <label>
-                Profile 模型 ID
-                <input
-                  value={profileDraft.data.model.name}
-                  onChange={(event) =>
-                    setProfileDraft({
-                      ...profileDraft,
-                      data: {
-                        ...profileDraft.data,
-                        model: {
-                          ...profileDraft.data.model,
-                          name: event.target.value,
-                        },
-                      },
-                    })
-                  }
-                />
-              </label>
-            </>
-          )}
-          <label>
-            人格
-            <textarea
-              value={profileDraft.data.persona}
-              onChange={(event) =>
-                setProfileDraft({
-                  ...profileDraft,
-                  data: { ...profileDraft.data, persona: event.target.value },
-                })
-              }
-            />
-          </label>
-          <label>
-            上下文预算（token）
-            <input
-              type="number"
-              min={1024}
-              max={1000000}
-              value={profileDraft.data.contextBudget}
-              onChange={(event) =>
-                setProfileDraft({
-                  ...profileDraft,
-                  data: {
-                    ...profileDraft.data,
-                    contextBudget: Number(event.target.value),
-                  },
-                })
-              }
-            />
-          </label>
-          <label className="checkbox-label">
-            <input
-              type="checkbox"
               checked={profileDraft.data.memoryEnabled}
-              onChange={(event) =>
+              onChange={(e) =>
                 setProfileDraft({
                   ...profileDraft,
                   data: {
                     ...profileDraft.data,
-                    memoryEnabled: event.target.checked,
+                    memoryEnabled: e.target.checked,
                   },
                 })
               }
             />
-            启用长期记忆（运行开始时检索，模型可用 local__memory_save 写入）
+            使用记忆（仍需在对话中允许）
           </label>
-          <label className="checkbox-label">
-            <input
-              type="checkbox"
-              checked={profileDraft.data.planEnabled}
-              onChange={(event) =>
-                setProfileDraft({
-                  ...profileDraft,
-                  data: {
-                    ...profileDraft.data,
-                    planEnabled: event.target.checked,
-                  },
-                })
-              }
-            />
-            启用任务规划（会话待办；配置 worker 后可声明本次执行计划）
-          </label>
-          <ProfileExecution profileState={props.profileState} />
+          <details className="developer-settings">
+            <summary>开发者设置 · 工具、模型与工作流程</summary>
+            <p className="hint">
+              这些设置面向需要自定义执行方式的用户。普通聊天无需修改。
+            </p>
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={profileDraft.data.allMcpServers}
+                onChange={(event) =>
+                  setProfileDraft({
+                    ...profileDraft,
+                    data: {
+                      ...profileDraft.data,
+                      allMcpServers: event.target.checked,
+                    },
+                  })
+                }
+              />
+              启用全部已接入的 MCP 服务
+            </label>
+            {!profileDraft.data.allMcpServers && (
+              <label>
+                启用的 MCP 服务名（每行一个）
+                <textarea
+                  rows={2}
+                  value={(profileDraft.data.enabledMcpServers ?? []).join("\n")}
+                  onChange={(event) =>
+                    setProfileDraft({
+                      ...profileDraft,
+                      data: {
+                        ...profileDraft.data,
+                        enabledMcpServers: event.target.value
+                          .split("\n")
+                          .map((name) => name.trim())
+                          .filter(Boolean),
+                      },
+                    })
+                  }
+                />
+              </label>
+            )}
+            <label>
+              工具白名单（每行一个，留空表示启用服务的全部工具）
+              <textarea
+                rows={3}
+                value={(profileDraft.data.allowedTools ?? []).join("\n")}
+                onChange={(event) =>
+                  setProfileDraft({
+                    ...profileDraft,
+                    data: {
+                      ...profileDraft.data,
+                      allowedTools: event.target.value
+                        .split("\n")
+                        .map((name) => name.trim())
+                        .filter(Boolean),
+                    },
+                  })
+                }
+              />
+            </label>
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={profileDraft.data.allSkills}
+                onChange={(event) =>
+                  setProfileDraft({
+                    ...profileDraft,
+                    data: {
+                      ...profileDraft.data,
+                      allSkills: event.target.checked,
+                    },
+                  })
+                }
+              />
+              启用全部已安装的 Skills
+            </label>
+            {!profileDraft.data.allSkills && (
+              <label>
+                启用 Skills（每行一个名称）
+                <textarea
+                  rows={2}
+                  value={(profileDraft.data.enabledSkills ?? []).join("\n")}
+                  onChange={(event) =>
+                    setProfileDraft({
+                      ...profileDraft,
+                      data: {
+                        ...profileDraft.data,
+                        enabledSkills: event.target.value
+                          .split("\n")
+                          .map((name) => name.trim())
+                          .filter(Boolean),
+                      },
+                    })
+                  }
+                />
+              </label>
+            )}
+            <label>
+              模型来源
+              <select
+                value={profileDraft.data.model.provider || "default"}
+                onChange={(event) =>
+                  setProfileDraft({
+                    ...profileDraft,
+                    data: {
+                      ...profileDraft.data,
+                      model:
+                        event.target.value === "default"
+                          ? { provider: "", baseUrl: "", name: "" }
+                          : {
+                              provider: event.target.value,
+                              baseUrl:
+                                providerDefaults[event.target.value] ?? "",
+                              name: "",
+                            },
+                    },
+                  })
+                }
+              >
+                <option value="default">使用应用默认模型</option>
+                <option value="ollama">Ollama</option>
+                <option value="lmstudio">LM Studio</option>
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="gemini">Gemini</option>
+              </select>
+            </label>
+            {profileDraft.data.model.provider && (
+              <>
+                <label>
+                  Profile 模型地址
+                  {remoteProviders.includes(
+                    profileDraft.data.model
+                      .provider as (typeof remoteProviders)[number],
+                  )
+                    ? "（留空使用官方端点）"
+                    : ""}
+                  <input
+                    value={profileDraft.data.model.baseUrl}
+                    onChange={(event) =>
+                      setProfileDraft({
+                        ...profileDraft,
+                        data: {
+                          ...profileDraft.data,
+                          model: {
+                            ...profileDraft.data.model,
+                            baseUrl: event.target.value,
+                          },
+                        },
+                      })
+                    }
+                    placeholder={
+                      providerDefaults[profileDraft.data.model.provider] ?? ""
+                    }
+                  />
+                </label>
+                <label>
+                  Profile 模型 ID
+                  <input
+                    value={profileDraft.data.model.name}
+                    onChange={(event) =>
+                      setProfileDraft({
+                        ...profileDraft,
+                        data: {
+                          ...profileDraft.data,
+                          model: {
+                            ...profileDraft.data.model,
+                            name: event.target.value,
+                          },
+                        },
+                      })
+                    }
+                  />
+                </label>
+              </>
+            )}
+            <label>
+              人格
+              <textarea
+                value={profileDraft.data.persona}
+                onChange={(event) =>
+                  setProfileDraft({
+                    ...profileDraft,
+                    data: { ...profileDraft.data, persona: event.target.value },
+                  })
+                }
+              />
+            </label>
+            <label>
+              上下文预算（token）
+              <input
+                type="number"
+                min={1024}
+                max={1000000}
+                value={profileDraft.data.contextBudget}
+                onChange={(event) =>
+                  setProfileDraft({
+                    ...profileDraft,
+                    data: {
+                      ...profileDraft.data,
+                      contextBudget: Number(event.target.value),
+                    },
+                  })
+                }
+              />
+            </label>
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={profileDraft.data.memoryEnabled}
+                onChange={(event) =>
+                  setProfileDraft({
+                    ...profileDraft,
+                    data: {
+                      ...profileDraft.data,
+                      memoryEnabled: event.target.checked,
+                    },
+                  })
+                }
+              />
+              启用长期记忆（运行开始时检索，模型可用 local__memory_save 写入）
+            </label>
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={profileDraft.data.planEnabled}
+                onChange={(event) =>
+                  setProfileDraft({
+                    ...profileDraft,
+                    data: {
+                      ...profileDraft.data,
+                      planEnabled: event.target.checked,
+                    },
+                  })
+                }
+              />
+              启用任务规划（会话待办；配置 worker 后可声明本次执行计划）
+            </label>
+            <ProfileExecution profileState={props.profileState} />
+          </details>
           <div className="model-actions">
             <button type="submit" disabled={profileBusy}>
-              保存 Profile
+              保存助手
             </button>
           </div>
         </form>
-        {profileError && <p className="error">{profileError}</p>}
+        <ErrorNotice error={profileError} />
         <p className="hint">
-          Profile
-          可复制分享；保存以新修订原子发布，仅影响后续任务。分享包只承载配置与
-          Skills 文件，不含授权、会话、记忆或密钥。
+          保存后用于后续工作。导出助手不包含聊天记录、记忆、权限或密钥。
         </p>
       </section>
     )

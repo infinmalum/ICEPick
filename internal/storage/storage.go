@@ -11,6 +11,8 @@ import (
 
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -20,7 +22,7 @@ import (
 
 // currentVersion is the schema version this binary writes. Opening a database
 // with a different version is refused; development releases do not migrate data.
-const currentVersion = 25
+const currentVersion = 26
 
 type Store struct {
 	db   *sql.DB
@@ -246,44 +248,56 @@ func (s *Store) AddMessage(ctx context.Context, sessionID, runID, role, content 
 	}
 	created := now()
 	item := Message{ID: id, SessionID: sessionID, RunID: runID, Role: role, Content: content, CreatedAt: created}
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
-		err := tx.QueryRowContext(ctx, `INSERT INTO messages (id, session_id, run_id, seq, role, content, tool_calls, created_at)
-			SELECT ?, id, ?, COALESCE((SELECT MAX(seq) FROM messages WHERE session_id = ?), 0) + 1, ?, ?, '', ? FROM sessions WHERE id = ?
-			RETURNING (SELECT context_id FROM sessions WHERE id=session_id), seq`,
-			item.ID, runID, sessionID, role, content, created, sessionID).
-			Scan(&item.ContextID, &item.Seq)
-		if err != nil {
-			return err
-		}
-		if len(files) > 0 {
-			if role != RoleUser {
-				return errors.New("仅用户消息可包含附件")
-			}
-			raw, e := json.Marshal(files)
-			if e != nil {
-				return e
-			}
-			if _, e = tx.ExecContext(ctx, `INSERT INTO message_files(message_id,payload) VALUES(?,?)`, item.ID, string(raw)); e != nil {
-				return e
-			}
-			for _, scope := range []string{ScopePersonal, ScopeUnknown} {
-				if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO session_context_scopes(session_id,scope) VALUES(?,?)`, sessionID, scope); err != nil {
-					return err
-				}
-			}
-			for _, f := range files {
-				item.Attachments = append(item.Attachments, f.Metadata())
-			}
-		}
-		if role == RoleUser {
-			_, err = tx.ExecContext(ctx, `UPDATE task_roots SET goal=? WHERE run_id=? AND goal=''`, content, runID)
-		}
-		return err
-	})
+	err = s.withTx(ctx, func(tx *sql.Tx) error { return addMessageInTx(ctx, tx, &item, files) })
 	if err != nil {
 		return Message{}, err
 	}
 	return item, nil
+}
+
+func addMessageInTx(ctx context.Context, tx *sql.Tx, item *Message, files []materials.File) error {
+	sessionID, runID, role, content, created := item.SessionID, item.RunID, item.Role, item.Content, item.CreatedAt
+	err := tx.QueryRowContext(ctx, `INSERT INTO messages (id, session_id, run_id, seq, role, content, tool_calls, created_at)
+			SELECT ?, id, ?, COALESCE((SELECT MAX(seq) FROM messages WHERE session_id = ?), 0) + 1, ?, ?, '', ? FROM sessions WHERE id = ?
+			RETURNING (SELECT context_id FROM sessions WHERE id=session_id), seq`,
+		item.ID, runID, sessionID, role, content, created, sessionID).
+		Scan(&item.ContextID, &item.Seq)
+	if err != nil {
+		return err
+	}
+	if len(files) > 0 {
+		if role != RoleUser {
+			return errors.New("仅用户消息可包含附件")
+		}
+		raw, e := json.Marshal(files)
+		if e != nil {
+			return e
+		}
+		if _, e = tx.ExecContext(ctx, `INSERT INTO message_files(message_id,payload) VALUES(?,?)`, item.ID, string(raw)); e != nil {
+			return e
+		}
+		for _, scope := range []string{ScopePersonal, ScopeUnknown} {
+			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO session_context_scopes(session_id,scope) VALUES(?,?)`, sessionID, scope); err != nil {
+				return err
+			}
+		}
+		for _, f := range files {
+			item.Attachments = append(item.Attachments, f.Metadata())
+		}
+	}
+	if role == RoleUser {
+		title := []rune(strings.Join(strings.Fields(content), " "))
+		if len(title) > 32 {
+			title = append(title[:32], '…')
+		}
+		if len(title) > 0 {
+			if _, err := tx.ExecContext(ctx, `UPDATE sessions SET title=? WHERE id=? AND kind='normal' AND title='新对话' AND (SELECT count(*) FROM messages WHERE session_id=? AND role='user')=1`, string(title), sessionID, sessionID); err != nil {
+				return err
+			}
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE task_roots SET goal=? WHERE run_id=? AND goal=''`, content, runID)
+	}
+	return err
 }
 
 // AddAssistantMessage persists an assistant message together with the tool
@@ -358,8 +372,34 @@ func (s *Store) AddAssistantMessage(ctx context.Context, sessionID, runID, conte
 	return item, rows, nil
 }
 
+const messageSelect = `SELECT id, session_id, (SELECT context_id FROM sessions WHERE id=messages.session_id), run_id, seq, role, content, tool_calls, created_at, provider_state, COALESCE((SELECT payload FROM message_files WHERE message_id=messages.id),'[]') FROM messages WHERE session_id = ?`
+
 func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]Message, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, (SELECT context_id FROM sessions WHERE id=messages.session_id), run_id, seq, role, content, tool_calls, created_at, provider_state, COALESCE((SELECT payload FROM message_files WHERE message_id=messages.id),'[]') FROM messages WHERE session_id = ? ORDER BY seq`, sessionID)
+	return s.listMessages(ctx, messageSelect+` ORDER BY seq`, sessionID)
+}
+
+func (s *Store) ChatMessages(ctx context.Context, sessionID string, before, limit int) ([]Message, error) {
+	if limit < 1 || limit > 101 || before < 0 {
+		return nil, errors.New("无效的消息分页")
+	}
+	query := messageSelect + ` AND role IN ('user','assistant') AND tool_calls IN ('','[]') AND (content<>'' OR EXISTS(SELECT 1 FROM message_files WHERE message_id=messages.id))`
+	args := []any{sessionID}
+	if before > 0 {
+		query += ` AND seq<?`
+		args = append(args, before)
+	}
+	query += ` ORDER BY seq DESC LIMIT ?`
+	args = append(args, limit)
+	items, err := s.listMessages(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	slices.Reverse(items)
+	return items, nil
+}
+
+func (s *Store) listMessages(ctx context.Context, query string, args ...any) ([]Message, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

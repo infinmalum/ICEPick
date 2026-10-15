@@ -220,6 +220,9 @@ func ReadyTasks(g TaskGraph) []TaskItem {
 func validateTaskContracts(ctx context.Context, tx *sql.Tx, g TaskGraph, r RunResources, specs []TaskSpec) error {
 	replacements := map[string]string{}
 	for _, spec := range specs {
+		if spec.InputPrompt != "" && r.Root.Data.Execution.Workflow != "fixed" {
+			return errors.New("用户输入阶段仅用于固定流程")
+		}
 		if spec.Replaces != "" {
 			if old, ok := replacements[spec.Replaces]; ok && old != spec.ID {
 				return errors.New("同一失败任务只能有一个后继重试")
@@ -273,6 +276,15 @@ func validateTaskContracts(ctx context.Context, tx *sql.Tx, g TaskGraph, r RunRe
 	return nil
 }
 func validateClaim(ctx context.Context, tx *sql.Tx, g TaskGraph, spec TaskSpec, run string) error {
+	if spec.InputPrompt != "" {
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM task_inputs WHERE root_run_id=? AND task_id=?`, g.RootRunID, spec.ID).Scan(&n); err != nil {
+			return err
+		}
+		if n != 1 {
+			return errors.New("阶段正在等待用户输入")
+		}
+	}
 	if len(g.Attempts) >= g.Budget.Limits.MaxAttempts {
 		return errors.New("根任务执行尝试预算耗尽")
 	}

@@ -15,20 +15,23 @@ import (
 // TaskSpec is a declared execution contract. Acceptance is a requested check,
 // not a review verdict. Dependency results remain in their original messages.
 type TaskSpec struct {
-	AccessMode string   `json:"accessMode,omitempty"`
-	Resources  []string `json:"resources,omitempty"`
-	Replaces   string   `json:"replaces,omitempty"`
-	ID         string   `json:"id"`
-	Worker     string   `json:"worker"`
-	Task       string   `json:"task"`
-	Materials  string   `json:"materials,omitempty"`
-	DependsOn  []string `json:"dependsOn,omitempty"`
-	Acceptance string   `json:"acceptance,omitempty"`
+	InputPrompt string   `json:"inputPrompt,omitempty"`
+	AccessMode  string   `json:"accessMode,omitempty"`
+	Resources   []string `json:"resources,omitempty"`
+	Replaces    string   `json:"replaces,omitempty"`
+	ID          string   `json:"id"`
+	Worker      string   `json:"worker"`
+	Task        string   `json:"task"`
+	Materials   string   `json:"materials,omitempty"`
+	DependsOn   []string `json:"dependsOn,omitempty"`
+	Acceptance  string   `json:"acceptance,omitempty"`
 }
 type TaskItem struct {
-	Spec        TaskSpec `json:"spec"`
-	Fingerprint string   `json:"fingerprint"`
-	State       string   `json:"state"`
+	InputMessageID string   `json:"inputMessageId,omitempty"`
+	Input          string   `json:"input,omitempty"`
+	Spec           TaskSpec `json:"spec"`
+	Fingerprint    string   `json:"fingerprint"`
+	State          string   `json:"state"`
 }
 type TaskAttempt struct {
 	Error     string `json:"error,omitempty"`
@@ -40,30 +43,34 @@ type TaskAttempt struct {
 	UpdatedAt string `json:"updatedAt"`
 }
 type TaskGraph struct {
-	RootRunID    string            `json:"rootRunId"`
-	Goal         string            `json:"goal"`
-	Revision     int               `json:"revision"`
-	RunStatus    string            `json:"runStatus"`
-	Coordination CoordinationState `json:"coordination"`
-	Budget       BudgetState       `json:"budget"`
-	Artifacts    []Artifact        `json:"artifacts"`
-	Tasks        []TaskItem        `json:"tasks"`
-	Attempts     []TaskAttempt     `json:"attempts"`
+	Workflow      string             `json:"workflow"`
+	WaitingTaskID string             `json:"waitingTaskId,omitempty"`
+	WaitingPrompt string             `json:"waitingPrompt,omitempty"`
+	RootRunID     string             `json:"rootRunId"`
+	Goal          string             `json:"goal"`
+	Revision      int                `json:"revision"`
+	RunStatus     string             `json:"runStatus"`
+	Coordination  CoordinationState  `json:"coordination"`
+	Continuations []TaskContinuation `json:"continuations"`
+	Budget        BudgetState        `json:"budget"`
+	Artifacts     []Artifact         `json:"artifacts"`
+	Tasks         []TaskItem         `json:"tasks"`
+	Attempts      []TaskAttempt      `json:"attempts"`
 }
 
 func taskGraphInTx(ctx context.Context, tx *sql.Tx, root string) (TaskGraph, error) {
 	g := TaskGraph{RootRunID: root, Tasks: []TaskItem{}, Attempts: []TaskAttempt{}}
-	if err := tx.QueryRowContext(ctx, `SELECT t.goal,t.revision,CASE WHEN r.status='failed' AND c.state IN ('waiting','blocked') THEN c.state ELSE r.status END FROM task_roots t JOIN runs r ON r.id=t.run_id JOIN task_coordination c ON c.root_run_id=t.run_id WHERE t.run_id=?`, root).Scan(&g.Goal, &g.Revision, &g.RunStatus); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT t.goal,t.revision,CASE WHEN r.status='failed' AND c.state IN ('waiting','blocked') THEN c.state ELSE r.status END,CASE WHEN json_valid(r.profile_snapshot) THEN COALESCE(json_extract(r.profile_snapshot,'$.execution.workflow'),'') ELSE '' END FROM task_roots t JOIN runs r ON r.id=t.run_id JOIN task_coordination c ON c.root_run_id=t.run_id WHERE t.run_id=?`, root).Scan(&g.Goal, &g.Revision, &g.RunStatus, &g.Workflow); err != nil {
 		return g, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT spec,state FROM task_items WHERE root_run_id=? ORDER BY position`, root)
+	rows, err := tx.QueryContext(ctx, `SELECT i.spec,i.state,COALESCE(m.id,''),COALESCE(m.content,'') FROM task_items i LEFT JOIN task_inputs u ON u.root_run_id=i.root_run_id AND u.task_id=i.id LEFT JOIN messages m ON m.id=u.message_id WHERE i.root_run_id=? ORDER BY i.position`, root)
 	if err != nil {
 		return g, err
 	}
 	for rows.Next() {
 		var raw string
 		var item TaskItem
-		if err := rows.Scan(&raw, &item.State); err != nil {
+		if err := rows.Scan(&raw, &item.State, &item.InputMessageID, &item.Input); err != nil {
 			rows.Close()
 			return g, err
 		}
@@ -101,6 +108,15 @@ func taskGraphInTx(ctx context.Context, tx *sql.Tx, root string) (TaskGraph, err
 	}
 	if err == nil {
 		g.Artifacts, err = artifactsInTx(ctx, tx, root)
+	}
+	if err == nil {
+		g.Continuations, err = continuationsInTx(ctx, tx, root)
+	}
+	if g.Workflow == "fixed" {
+		if wait := WaitingInput(g); wait != nil {
+			g.WaitingTaskID = wait.Spec.ID
+			g.WaitingPrompt = wait.Spec.InputPrompt
+		}
 	}
 	return g, err
 }
@@ -330,9 +346,25 @@ func settleTaskRoot(ctx context.Context, tx *sql.Tx, root string) error {
 		}
 	}
 
-	if _, err := tx.ExecContext(ctx, `UPDATE task_items SET state='cancelled' WHERE root_run_id=? AND state='pending'`, root); err != nil {
+	preserve := false
+	g, err := taskGraphInTx(ctx, tx, root)
+	if err != nil {
 		return err
 	}
+	if g.Workflow == "fixed" && (status == "interrupted" || (status == "failed" && g.Coordination.State == "waiting")) {
+		preserve = true
+		for _, item := range g.Tasks {
+			if item.State != "pending" && item.State != "succeeded" {
+				preserve = false
+			}
+		}
+	}
+	if !preserve {
+		if _, err := tx.ExecContext(ctx, `UPDATE task_items SET state='cancelled' WHERE root_run_id=? AND state='pending'`, root); err != nil {
+			return err
+		}
+	}
+
 	if _, err := tx.ExecContext(ctx, `UPDATE task_roots SET revision=revision+1 WHERE run_id=?`, root); err != nil {
 		return err
 	}
@@ -384,7 +416,7 @@ func recoverTaskAttempts(ctx context.Context, tx *sql.Tx) error {
 			return err
 		}
 	}
-	rows, err = tx.QueryContext(ctx, `SELECT run_id FROM task_roots t WHERE EXISTS(SELECT 1 FROM task_items WHERE root_run_id=t.run_id AND state='pending')`)
+	rows, err = tx.QueryContext(ctx, `SELECT t.run_id FROM task_roots t JOIN runs r ON r.id=t.run_id WHERE r.status='interrupted' AND EXISTS(SELECT 1 FROM task_items WHERE root_run_id=t.run_id AND state='pending') AND NOT EXISTS(SELECT 1 FROM task_events e WHERE e.root_run_id=t.run_id AND e.kind='root.interrupted' AND e.created_at>=r.updated_at)`)
 	if err != nil {
 		return err
 	}

@@ -14,7 +14,7 @@ import (
 
 func cmdTasks(client *ipc.Client, args []string) int {
 	if len(args) == 0 {
-		return usage("tasks 需要子命令 status|review|retrospect|cancel")
+		return usage("tasks 需要子命令 status|review|retrospect|continue|cancel")
 	}
 	switch args[0] {
 	case "review", "retrospect":
@@ -49,8 +49,14 @@ func cmdTasks(client *ipc.Client, args []string) int {
 		if err := client.Call("tasks.graph", map[string]any{"runId": parsed.arg(0)}, &graph); err == nil {
 			fmt.Printf("执行计划修订 %d · 调度 %s · 规划 %d 轮 · 事件 %d/%d\n", graph.Revision, graph.Coordination.State, graph.Coordination.Rounds, graph.Coordination.PlannedSeq, graph.Coordination.EventSeq)
 			fmt.Printf("根预算：模型 %d/%d 次 · 工具 %d/%d 次 · token %d · 用量未知 %d 次\n", graph.Budget.ModelCalls, graph.Budget.Limits.MaxModelCalls, graph.Budget.ToolCalls, graph.Budget.Limits.MaxToolCalls, graph.Budget.Tokens, graph.Budget.UnknownUsage)
+			if graph.WaitingTaskID != "" {
+				fmt.Printf("等待阶段 %s：%s\n", graph.WaitingTaskID, graph.WaitingPrompt)
+			}
 			for _, item := range graph.Tasks {
 				fmt.Printf("%s · %s · %s · %s\n", item.Spec.ID, item.Spec.Worker, item.State, item.Spec.Task)
+			}
+			for _, continuation := range graph.Continuations {
+				fmt.Printf("续跑 %s · 原状态 %s · 阶段 %s · %s\n", continuation.ID, continuation.PreviousStatus, continuation.TaskID, continuation.CreatedAt)
 			}
 			for _, attempt := range graph.Attempts {
 				fmt.Printf("尝试 %s · 任务 %s · %s · 运行 %s\n", attempt.ID, attempt.TaskID, attempt.Status, attempt.RunID)
@@ -81,6 +87,20 @@ func cmdTasks(client *ipc.Client, args []string) int {
 				}
 			}
 		}
+		return 0
+	case "continue":
+		parsed, err := parseCLI(args[1:])
+		if err == nil {
+			err = parsed.allowValues("stage", "input")
+		}
+		if err != nil || len(parsed.positional) != 1 {
+			return usage("用法: tasks continue <runID> [--stage <stageID> --input <补充信息>]")
+		}
+		var run storage.Run
+		if err := client.Call("tasks.continue", map[string]any{"runId": parsed.arg(0), "taskId": parsed.value("stage"), "input": parsed.value("input")}, &run); err != nil {
+			return fail("tasks.continue", err)
+		}
+		printRun(run)
 		return 0
 	case "cancel":
 		parsed, err := parseCLI(args[1:])

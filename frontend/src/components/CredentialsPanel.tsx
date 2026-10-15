@@ -1,3 +1,4 @@
+import { ErrorNotice } from "../shared/errors";
 import type { RuntimeSettings } from "../hooks/useRuntimeSettings";
 import { providerLabels } from "../shared/config";
 type Props = {
@@ -63,7 +64,7 @@ export function CredentialsPanel(props: Props) {
           </button>
         </div>
       ))}
-      {credError && <p className="error">{credError}</p>}
+      <ErrorNotice error={credError} />
     </section>
   );
 }

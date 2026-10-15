@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"icepick/internal/app"
+	"icepick/internal/materials"
 	"icepick/internal/storage"
 )
 
@@ -397,6 +398,17 @@ func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 			return s.svc.StartConversationRetrospective(params.SessionID, params.RunID)
 		}
 		return s.svc.StartConversationReview(params.SessionID, params.RunID)
+	case "tasks.continue":
+		var params struct {
+			RunID       string             `json:"runId"`
+			TaskID      string             `json:"taskId"`
+			Input       string             `json:"input"`
+			Attachments []materials.Upload `json:"attachments"`
+		}
+		if err := decodeParams(request.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.svc.ContinueConversationTask(params.RunID, params.TaskID, params.Input, params.Attachments...)
 	case "tasks.cancel":
 		var params struct {
 			RunID string `json:"runId"`

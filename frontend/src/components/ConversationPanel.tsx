@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import type { Workspace } from "../hooks/useWorkspace";
 import type { ConversationState } from "../hooks/useConversation";
 import type { Profiles } from "../hooks/useProfiles";
@@ -6,264 +7,327 @@ import { TaskProgress } from "./TaskProgress";
 import { ToolApprovals } from "./ToolApprovals";
 import { Transcript } from "./Transcript";
 import { SearchRecords } from "./SearchRecords";
-type Props = {
-  workspace: Pick<Workspace, "activeConversation" | "selected" | "sessions">;
-  conversation: Pick<
-    ConversationState,
-    | "attachments"
-    | "addAttachments"
-    | "removeAttachment"
-    | "activeRun"
-    | "approvalBusy"
-    | "approveCall"
-    | "cancelTask"
-    | "childRuns"
-    | "clearPlan"
-    | "denyCall"
-    | "loadingSession"
-    | "messages"
-    | "openChildSession"
-    | "pendingCalls"
-    | "prompt"
-    | "resolveUnknown"
-    | "reviewBusy"
-    | "reviewResult"
-    | "retrospectResult"
-    | "retrospectives"
-    | "reviews"
-    | "runs"
-    | "searchAvailability"
-    | "searchBusy"
-    | "searchRecords"
-    | "sendTask"
-    | "sending"
-    | "sessionPlan"
-    | "sessionSummary"
-    | "setPrompt"
-    | "streamText"
-    | "taskError"
-    | "taskGraph"
-    | "toggleSearch"
-    | "unknownCalls"
-  >;
-  profileState: Pick<Profiles, "profileName">;
-  runtime: Pick<RuntimeSettings, "status">;
-};
-export function ConversationPanel(props: Props) {
-  const { activeConversation, selected, sessions } = props.workspace;
-  const {
-    attachments,
-    addAttachments,
-    removeAttachment,
-    activeRun,
-    cancelTask,
-    childRuns,
-    loadingSession,
-    openChildSession,
-    prompt,
-    runs,
-    searchAvailability,
-    searchBusy,
-    sendTask,
-    sending,
-    setPrompt,
-    taskError,
-    taskGraph,
-    toggleSearch,
-  } = props.conversation;
-  const { profileName } = props.profileState;
-  const { status } = props.runtime;
+import { ConversationProfile } from "./ConversationProfile";
+import { ErrorNotice, stateLabel } from "../shared/errors";
+import { useDialog } from "../shared/dialogs";
+import { StatusService } from "../../bindings/icepick";
+function Thumb({ file }: { file: File }) {
+  const [url, setUrl] = useState("");
+  useEffect(() => {
+    if (!file.type.startsWith("image/")) return;
+    const next = URL.createObjectURL(file);
+    setUrl(next);
+    return () => URL.revokeObjectURL(next);
+  }, [file]);
+  return url ? (
+    <img className="attachment-thumb" src={url} alt={file.name} />
+  ) : (
+    <span aria-hidden>▤</span>
+  );
+}
+export function ConversationPanel({
+  workspace: w,
+  conversation: c,
+  profileState: p,
+  runtime: r,
+  openModel,
+  onImprove,
+}: {
+  workspace: Workspace;
+  conversation: ConversationState;
+  profileState: Profiles;
+  runtime: RuntimeSettings;
+  openModel: () => void;
+  onImprove?: () => void;
+}) {
+  const activeSession = useRef(w.selected);
+  activeSession.current = w.selected;
+  const dialog = useDialog();
+  const form = useRef<HTMLFormElement>(null);
+  const input = useRef<HTMLInputElement>(null);
+  const [folderBusy, setFolderBusy] = useState(false);
+  const [folderError, setFolderError] = useState("");
+  const [dragging, setDragging] = useState(false);
+  const run = c.runs[0];
+  const continuation =
+    !c.activeRun &&
+    c.taskGraph?.workflow === "fixed" &&
+    c.taskGraph.rootRunId === run?.id &&
+    ["waiting", "interrupted"].includes(run?.status ?? "") &&
+    (c.taskGraph.tasks ?? []).every((t) =>
+      ["pending", "succeeded"].includes(t.state),
+    );
+  const disabled =
+    c.sending ||
+    c.loadingSession ||
+    !!c.activeRun ||
+    w.activeConversation?.kind === "delegation" ||
+    !w.selected ||
+    !r.status?.storageReady ||
+    (!r.status.runtimeReady && !continuation) ||
+    (!continuation && w.activeConversation?.profileArchived) ||
+    (!c.prompt.trim() &&
+      !c.attachments.length &&
+      (!continuation || !!c.taskGraph?.waitingTaskId));
+  async function chooseFolder() {
+    if (!w.selected) return;
+    setFolderBusy(true);
+    try {
+      const session = w.selected;
+      const folder = await StatusService.PickFolder();
+      if (!folder) return;
+      if (
+        !(await dialog.confirm({
+          title: "允许访问这个文件夹？",
+          body: (
+            <>
+              {" "}
+              <p>{folder}</p>
+              <p>
+                本对话可在你批准具体操作后读取或修改其中的文件。助手仍需遵守现有权限限制。
+              </p>
+            </>
+          ),
+          confirm: "允许并添加到消息",
+        }))
+      )
+        return;
+      const context = await StatusService.GetLocalContext(w.contextID);
+      await StatusService.UpdateContextPolicy(context.id, {
+        ...context.policy,
+        permissions: {
+          ...context.policy.permissions,
+          workspacePaths: [
+            ...new Set([
+              ...(context.policy.permissions.workspacePaths ?? []),
+              folder,
+            ]),
+          ],
+        },
+      });
+      if (session === activeSession.current)
+        c.setPrompt(
+          c.prompt +
+            (c.prompt ? "\n" : "") +
+            "请查看这个文件夹：" +
+            JSON.stringify(folder),
+        );
+      setFolderError("");
+    } catch (e) {
+      setFolderError(String(e));
+    } finally {
+      setFolderBusy(false);
+    }
+  }
   return (
-    <section className="session-card">
-      <div className="card-title">
-        {selected
-          ? sessions.find((item) => item.id === selected)?.title
-          : "空会话"}
-      </div>
-      {!selected ? (
-        <p className="hint">先新建或选择会话。</p>
-      ) : (
-        <>
-          <TaskProgress conversation={props.conversation} />
-          <ToolApprovals conversation={props.conversation} />
-          {activeRun && runs[0] && (
-            <p className="hint profile-run-hint">
-              本次运行使用 Profile「{profileName(runs[0].profileId)}」快照 v
-              {runs[0].profileRevision}；后续运行将使用「
-              {activeConversation?.profileArchived
-                ? "请选择新 Profile"
-                : (activeConversation?.profileName ?? "…")}
-              」当前内容。
-            </p>
+    <section className="chat-page">
+      <header className="chat-header">
+        <ConversationProfile workspace={w} conversation={c} profileState={p} />
+        <button className="model-switch secondary" onClick={openModel}>
+          {r.status?.model.name || "连接模型"} ▾
+        </button>
+      </header>
+      <div className="chat-scroll">
+        <div className="chat-body">
+          <Transcript conversation={c} />
+          <ToolApprovals conversation={c} />
+          <SearchRecords conversation={c} />
+          <TaskProgress conversation={c} onImprove={onImprove} />
+          <ErrorNotice error={c.taskError || folderError} />
+          {run && ["failed", "blocked"].includes(run.status) && (
+            <ErrorNotice error={run.error} />
           )}
-          {(childRuns ?? []).length > 0 && (
-            <div className="task-tree">
-              <span className="card-title">子任务（任务树）</span>
-              {(childRuns ?? []).map((child) => (
-                <div className="tree-child" key={child.id}>
-                  <span className={`tree-state tree-${child.status}`}>
-                    {child.status}
-                  </span>
-                  <span>
-                    {profileName(child.profileId)} · 深度 {child.depth}
-                  </span>
-                  {child.error && (
-                    <span className="tree-error">{child.error}</span>
-                  )}
+        </div>
+      </div>
+      <div className="composer-wrap">
+        {c.loadingSession && <p className="hint">正在打开对话…</p>}
+        {!w.selected && w.loaded && (
+          <p className="hint">
+            点击“新对话”开始；如果未能创建，可查看上方错误后重试。
+          </p>
+        )}
+        {r.status?.storageReady && !r.status?.runtimeReady && (
+          <div className="setup-banner">
+            连接一个模型，就可以开始聊天。
+            <button onClick={openModel}>连接模型</button>
+          </div>
+        )}
+        {w.activeConversation?.profileArchived && (
+          <p className="hint">这个助手已删除，请在顶部选择另一个助手继续。</p>
+        )}
+        {continuation && (
+          <div className="waiting-banner">
+            <strong>
+              {c.taskGraph?.waitingPrompt || "此前工作已中断，可以继续"}
+            </strong>
+            <p>补充后会接着原来的进度处理。</p>
+          </div>
+        )}
+        <form
+          ref={form}
+          className={`composer ${dragging ? "dragging" : ""}`}
+          onSubmit={(e) => {
+            if (continuation) {
+              e.preventDefault();
+              void c.resumeTask();
+            } else void c.sendTask(e);
+          }}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragging(false);
+            if (!c.activeRun) c.addAttachments(e.dataTransfer.files);
+          }}
+        >
+          {!!c.attachments.length && (
+            <ul className="attachment-list draft-attachments">
+              {c.attachments.map((file, i) => (
+                <li key={i}>
+                  <Thumb file={file} />
+                  <span>{file.name}</span>
                   <button
                     type="button"
-                    className="secondary"
-                    onClick={() => openChildSession(child)}
+                    className="icon-button"
+                    aria-label={`移除 ${file.name}`}
+                    onClick={() => c.removeAttachment(i)}
                   >
-                    查看子会话
+                    ×
                   </button>
-                </div>
+                </li>
               ))}
-              <p className="hint">
-                子任务使用冻结的 worker
-                配置与独立执行会话，不注入其他对话或长期记忆；权限与外发受本根任务上限及当前对话授权约束。
-              </p>
-            </div>
+            </ul>
           )}
-          <Transcript conversation={props.conversation} />
-          <SearchRecords conversation={props.conversation} />
-          <form className="task-form" onSubmit={sendTask}>
-            <textarea
-              value={prompt}
-              disabled={sending}
-              onChange={(event) => setPrompt(event.target.value)}
-              placeholder="描述任务、粘贴网页 URL，或指定本地目录…"
-              rows={3}
+          <textarea
+            aria-label="发送消息"
+            value={c.prompt}
+            disabled={c.sending}
+            placeholder={
+              dragging ? "放开以上传文件" : "发消息，或粘贴网页链接…"
+            }
+            rows={3}
+            onChange={(e) => c.setPrompt(e.target.value)}
+            onPaste={(e) => {
+              const images = Array.from(e.clipboardData.files).filter((f) =>
+                f.type.startsWith("image/"),
+              );
+              if (images.length && !c.activeRun) {
+                e.preventDefault();
+                c.addAttachments(images);
+              }
+            }}
+            onKeyDown={(e) => {
+              if (
+                e.key === "Enter" &&
+                !e.shiftKey &&
+                !e.nativeEvent.isComposing &&
+                e.keyCode !== 229
+              ) {
+                e.preventDefault();
+                if (!disabled) form.current?.requestSubmit();
+              }
+            }}
+          />
+          <div className="composer-toolbar">
+            <input
+              hidden
+              ref={input}
+              aria-label="添加对话附件"
+              type="file"
+              multiple
+              accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.docx,.txt,.md,.csv,.json,.yaml,.yml,.xml,.html,.log,.py,.js,.ts,.go"
+              onChange={(e) => {
+                c.addAttachments(e.target.files);
+                e.target.value = "";
+              }}
             />
-            {attachments.length > 0 && (
-              <ul className="attachment-list" aria-label="待发送附件">
-                {attachments.map((file, index) => (
-                  <li key={index}>
-                    <span>
-                      {file.name} · {Math.ceil(file.size / 1024)} KiB
-                    </span>
-                    <button
-                      type="button"
-                      className="secondary"
-                      disabled={sending}
-                      onClick={() => removeAttachment(index)}
-                      aria-label={`移除 ${file.name}`}
-                    >
-                      移除
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-            <div className="model-actions">
-              <label className="attachment-picker">
-                添加附件
-                <input
-                  aria-label="添加对话附件"
-                  type="file"
-                  multiple
-                  accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.docx,.txt,.md,.csv,.json,.yaml,.yml,.xml,.html,.log,.py,.js,.ts,.go"
-                  disabled={
-                    sending ||
-                    loadingSession ||
-                    !!activeRun ||
-                    activeConversation?.kind === "delegation"
-                  }
-                  onChange={(event) => {
-                    addAttachments(event.target.files);
-                    event.target.value = "";
-                  }}
-                />
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={activeConversation?.options?.webSearch ?? false}
-                  disabled={
-                    searchBusy ||
-                    loadingSession ||
-                    activeConversation?.kind === "delegation"
-                  }
-                  onChange={(event) => toggleSearch(event.target.checked)}
-                />
-                联网搜索
-              </label>
-              <button
-                type="submit"
-                disabled={
-                  searchBusy ||
-                  sending ||
-                  (activeConversation?.options?.webSearch &&
-                    searchAvailability?.available !== true) ||
-                  loadingSession ||
-                  !!activeRun ||
-                  activeConversation?.kind === "delegation" ||
-                  activeConversation?.profileArchived ||
-                  !status?.storageReady ||
-                  (!prompt.trim() && attachments.length === 0)
-                }
-              >
-                发送任务
+            <button
+              type="button"
+              className="secondary"
+              disabled={!!c.activeRun || c.sending}
+              onClick={() => input.current?.click()}
+              title="添加图片、PDF、文档或文本"
+            >
+              ＋ 附件
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              disabled={folderBusy || !!c.activeRun || c.sending}
+              onClick={chooseFolder}
+            >
+              选择文件夹
+            </button>
+            <label className="search-toggle">
+              <input
+                type="checkbox"
+                checked={w.activeConversation?.options.webSearch ?? false}
+                disabled={c.searchBusy}
+                onChange={(e) => c.toggleSearch(e.target.checked)}
+              />
+              联网
+            </label>
+            <span className="toolbar-spacer" />
+            {c.activeRun ? (
+              <button type="button" onClick={c.cancelTask}>
+                停止
               </button>
-              {activeRun && (
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={cancelTask}
-                >
-                  取消任务
-                </button>
-              )}
-            </div>
-            <p className="hint">
-              支持图片、PDF、DOCX 和文本；最多8个，单个10MiB，总计20MiB；文本和
-              DOCX
-              提取正文限256KiB。目录路径可直接写入消息，读取受本机授权范围约束。
-            </p>
-          </form>
-          {activeConversation?.options?.webSearch && (
-            <p className="hint">
-              {searchAvailability?.reason ?? "正在检查搜索能力…"}
-              。粘贴 URL
-              后可按需读取指定网页；仅影响后续任务，数据外发仍需授权。
-            </p>
-          )}
-          {activeConversation?.options?.webSearch &&
-            searchAvailability?.available === false && (
-              <details className="search-configuration">
-                <summary>配置联网搜索</summary>
-                <p>
-                  可在模型设置中选择支持原生搜索的 OpenAI、Anthropic 或 Gemini
-                  模型，或接入一个搜索 MCP。
-                </p>
-                <p>
-                  搜索 MCP 配置文件：
-                  <code>
-                    {searchAvailability.configPath ||
-                      "用户 XDG 配置目录的 ICEPick/config.json"}
-                  </code>
-                  。在对应服务项填写 <code>webSearchTools</code>，例如{" "}
-                  <code>{'{"webSearchTools":["web_search"]}'}</code>，再在
-                  Profile 中允许该服务和工具。修改配置文件后重启 ICEPick。
-                </p>
-              </details>
+            ) : (
+              <button type="submit" disabled={disabled}>
+                {c.sending ? "发送中…" : continuation ? "继续处理" : "发送 ↑"}
+              </button>
             )}
-          {activeRun && <p className="hint">任务正在运行…</p>}
-          {taskError && <p className="error">{taskError}</p>}
-          {runs[0]?.status === "failed" &&
-            taskGraph?.coordination?.state !== "waiting" && (
-              <p className="error">任务失败：{runs[0].error}</p>
-            )}
-          {taskGraph?.coordination?.state === "waiting" && (
+          </div>
+        </form>
+        <div className="composer-caption">
+          <span>
+            {c.activeRun
+              ? stateLabel(run?.status ?? "running")
+              : "Enter 发送 · Shift+Enter 换行"}
+          </span>
+          <details>
+            <summary>附件帮助</summary>
+            <p>
+              支持图片、PDF、DOCX
+              和文本。最多8个，单个10MiB，总计20MiB；文本和文档提取正文最多256KiB。
+            </p>
+          </details>
+        </div>
+        {w.activeConversation?.options.webSearch &&
+          c.searchAvailability?.available === false && (
             <p className="hint">
-              等待补充信息；发送补充内容可继续对话，此前任务和执行记录会保留。
+              此模型暂不支持联网。发送时可选择关闭联网继续聊天，或
+              <button className="text-button" onClick={openModel}>
+                更换模型
+              </button>
+              。
             </p>
           )}
-          {runs[0]?.status === "cancelled" && (
-            <p className="hint">任务已取消。</p>
-          )}
-        </>
-      )}
+        {continuation && (
+          <button
+            className="text-button"
+            onClick={async () => {
+              if (
+                await dialog.confirm({
+                  title: "重新开始这项工作？",
+                  body: "这会从头执行，可能重复此前的文件修改。通常建议直接继续原任务。",
+                  confirm: "开始新任务",
+                })
+              ) {
+                const evt = {
+                  preventDefault() {},
+                } as React.FormEvent<HTMLFormElement>;
+                void c.sendTask(evt);
+              }
+            }}
+          >
+            从头开始新任务
+          </button>
+        )}
+      </div>
     </section>
   );
 }

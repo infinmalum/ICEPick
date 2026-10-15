@@ -35,7 +35,7 @@ func runDesktop() {
 
 	wails := application.New(application.Options{
 		Name:        "ICEPick",
-		Description: "Local desktop agent",
+		Description: "Your local AI assistant",
 		Services: []application.Service{
 			application.NewService(&StatusService{svc: h.Service}),
 		},

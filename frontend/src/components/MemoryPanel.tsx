@@ -1,3 +1,4 @@
+import { ErrorNotice } from "../shared/errors";
 import type { Workspace } from "../hooks/useWorkspace";
 import type { LocalContextState } from "../hooks/useLocalContext";
 import { scopeLabels } from "../shared/config";
@@ -40,14 +41,12 @@ export function MemoryPanel(props: Props) {
           长期记忆 · {activeConversation?.title ?? "未选择对话"}
         </div>
         <p className="hint">
-          记忆按本机上下文归属：切换 Profile 不清空、共享 Profile 不共享、复制
-          Profile
-          不携带。记忆会注入后续运行的提示词，其数据范围计入外发检查；关闭记忆只停止读写，内容保留到你手动删除。
+          ICEPick
+          会在你允许时使用这些记忆。你可以随时查看、修改或删除；关闭记忆不会自动删除已有内容。
         </p>
         {(memories ?? []).length === 0 && (
           <p className="hint">
-            还没有长期记忆。模型在获准运行中可调用 local__memory_save
-            保存，也可以在下方手动添加。
+            还没有记忆。你可以告诉助手希望它记住什么，或在下方添加。
           </p>
         )}
         {(memories ?? []).map((memory) => (
@@ -137,7 +136,7 @@ export function MemoryPanel(props: Props) {
             </button>
           </div>
         </form>
-        {memoryError && <p className="error">{memoryError}</p>}
+        <ErrorNotice error={memoryError} />
       </section>
     )
   );

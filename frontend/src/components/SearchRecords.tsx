@@ -1,66 +1,48 @@
 import type { ConversationState } from "../hooks/useConversation";
-type Props = {
+export function SearchRecords({
+  conversation: c,
+}: {
   conversation: Pick<ConversationState, "searchRecords">;
-};
-export function SearchRecords(props: Props) {
-  const { searchRecords } = props.conversation;
-  return (
-    <>
-      {searchRecords.length > 0 && (
-        <details className="search-records">
-          <summary>联网搜索记录与来源（{searchRecords.length} 次请求）</summary>
-          {searchRecords.map((record) => (
-            <div key={record.id}>
-              <p>
-                {record.provider} · {record.state} · 未知来源 · 搜索/读取次数{" "}
-                {record.report.calls ?? "未知"} · 预算计数{" "}
-                {record.report.budgetUnit === "grounded_request"
-                  ? "宿主请求"
-                  : "联网调用"}{" "}
-                · 独立费用 {record.report.cost ?? "未知"}
-              </p>
-              {record.report.text && <p>{record.report.text}</p>}
-              {(record.report.citations ?? []).map((citation, index) => (
-                <p key={index}>
-                  <a
-                    href={citation.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    {citation.title || citation.url}
-                  </a>
-                </p>
-              ))}
-              {(record.report.suggestions ?? []).map((html, index) => (
-                <iframe
-                  key={"suggestion:" + index}
-                  title="Google 搜索建议"
-                  sandbox="allow-popups"
-                  referrerPolicy="no-referrer"
-                  style={{ width: "100%", height: 160, border: 0 }}
-                  srcDoc={
-                    "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'\">" +
-                    html
-                  }
-                />
-              ))}
-              {(record.report.events ?? []).map((event, index) => (
-                <p className="hint" key={index}>
-                  {event.type}
-                  {event.url ? " · " + event.url : ""}
-                  {event.status ? " · " + event.status : ""}
-                  {event.query
-                    ? " · " + event.query
-                    : event.queries?.length
-                      ? " · " + event.queries.join("；")
-                      : ""}
-                </p>
-              ))}
-              {record.error && <p className="error">{record.error}</p>}
-            </div>
-          ))}
-        </details>
+}) {
+  const citations = [
+    ...new Map(
+      c.searchRecords
+        .flatMap((r) => r.report.citations ?? [])
+        .map((v) => [v.url, v]),
+    ).values(),
+  ];
+  return c.searchRecords.length > 0 ? (
+    <details className="sources">
+      <summary>
+        参考来源{citations.length ? ` · ${citations.length}` : ""}
+      </summary>
+      {citations.length ? (
+        citations.map((v) => (
+          <a key={v.url} href={v.url} target="_blank" rel="noopener noreferrer">
+            {v.title || v.url}
+          </a>
+        ))
+      ) : (
+        <p>本次未返回可列出的网页来源。</p>
       )}
-    </>
-  );
+      {c.searchRecords
+        .flatMap((r) => r.report.suggestions ?? [])
+        .map((html, i) => (
+          <iframe
+            key={i}
+            title="Google 搜索建议"
+            sandbox="allow-popups"
+            referrerPolicy="no-referrer"
+            srcDoc={
+              "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'\">" +
+              html
+            }
+          />
+        ))}
+      <details>
+        <summary>技术记录</summary>
+        <pre>{JSON.stringify(c.searchRecords, null, 2)}</pre>
+      </details>
+    </details>
+  ) : null;
 }

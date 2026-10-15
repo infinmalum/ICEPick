@@ -1,25 +1,55 @@
 import { useEffect, useState } from "react";
+import { useSendConsent } from "../shared/consent";
+import { useDialog } from "../shared/dialogs";
 import { StatusService } from "../../bindings/icepick";
-import type { ProfileDraft, ProfileProposal, Run } from "../../bindings/icepick/internal/storage";
+import type {
+  ProfileDraft,
+  ProfileProposal,
+  Run,
+} from "../../bindings/icepick/internal/storage";
 
-export function useProfileDrafts(sessionID: string | null, targetID: string | null, onApplied: (id: string) => Promise<void>) {
+export function useProfileDrafts(
+  sessionID: string | null,
+  targetID: string | null,
+  onApplied: (id: string) => Promise<void>,
+) {
+  const ensureConsent = useSendConsent();
+  const dialog = useDialog();
   const [drafts, setDrafts] = useState<ProfileDraft[]>([]);
   const [evidenceIDs, setEvidenceIDs] = useState("");
-  useEffect(() => { setEvidenceIDs(""); }, [sessionID]);
+  useEffect(() => {
+    setEvidenceIDs("");
+  }, [sessionID]);
   const [request, setRequest] = useState("");
   const [improve, setImprove] = useState(false);
-  const [selected, setSelected] = useState("");
+  const [selected, chooseSelected] = useState("");
   const [editor, setEditor] = useState("");
   const [run, setRun] = useState<Run | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const draft = drafts.find((item) => item.id === selected);
+  async function setSelected(id: string) {
+    if (
+      draft &&
+      editor !== JSON.stringify(draft.proposal, null, 2) &&
+      !(await dialog.confirm({
+        title: "放弃尚未保存的建议修改？",
+        body: "先保存修改可以继续保留它。",
+        confirm: "放弃并切换",
+        danger: true,
+      }))
+    )
+      return;
+    chooseSelected(id);
+  }
   async function refresh() {
     const items = await StatusService.ListProfileDrafts();
     setDrafts(items ?? []);
     return items ?? [];
   }
-  useEffect(() => { refresh().catch((e) => setError(String(e))); }, []);
+  useEffect(() => {
+    refresh().catch((e) => setError(String(e)));
+  }, []);
   useEffect(() => {
     setEditor(draft ? JSON.stringify(draft.proposal, null, 2) : "");
   }, [draft?.id, draft?.revision]);
@@ -37,46 +67,99 @@ export function useProfileDrafts(sessionID: string | null, targetID: string | nu
           const items = await StatusService.ListProfileDrafts();
           if (!current) return;
           setDrafts(items ?? []);
-          setSelected((items ?? []).find((item) => item.runId === next.id)?.id ?? "");
+          setSelected(
+            (items ?? []).find((item) => item.runId === next.id)?.id ?? "",
+          );
           setRun(next);
           if (next.status !== "completed") setError(next.error || next.status);
         }
-      } catch (e) { if (current) setError(String(e)); }
-      finally { querying = false; }
+      } catch (e) {
+        if (current) setError(String(e));
+      } finally {
+        querying = false;
+      }
     }, 700);
-    return () => { current = false; window.clearInterval(timer); };
+    return () => {
+      current = false;
+      window.clearInterval(timer);
+    };
   }, [run?.id, run?.status]);
   async function generate() {
     if (!sessionID) return;
-    setBusy(true); setError("");
-    try { setRun(await StatusService.StartProfileDraft(sessionID, improve ? targetID ?? "" : "", request, evidenceIDs.split(/[\s,]+/).filter(Boolean))); }
-    catch (e) { setError(String(e)); }
-    finally { setBusy(false); }
+    setBusy(true);
+    setError("");
+    try {
+      if (!(await ensureConsent(sessionID, false, "improver"))) return;
+      setRun(
+        await StatusService.StartProfileDraft(
+          sessionID,
+          improve ? (targetID ?? "") : "",
+          request,
+          evidenceIDs.split(/[\s,]+/).filter(Boolean),
+        ),
+      );
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
   }
   async function act(action: "save" | "apply" | "discard" | "revert") {
     if (!draft) return;
-    setBusy(true); setError("");
+    setBusy(true);
+    setError("");
     try {
       if (action === "save") {
         const proposal = JSON.parse(editor) as ProfileProposal;
-        await StatusService.EditProfileDraft(draft.id, draft.revision, proposal);
+        await StatusService.EditProfileDraft(
+          draft.id,
+          draft.revision,
+          proposal,
+        );
       } else if (action === "discard") {
         await StatusService.DiscardProfileDraft(draft.id, draft.revision);
       } else {
-        const profile = action === "apply"
-          ? await StatusService.ApplyProfileDraft(draft.id, draft.revision)
-          : await StatusService.RevertProfileDraft(draft.id, draft.revision);
+        const profile =
+          action === "apply"
+            ? await StatusService.ApplyProfileDraft(draft.id, draft.revision)
+            : await StatusService.RevertProfileDraft(draft.id, draft.revision);
         await onApplied(profile.id);
       }
       await refresh();
-    } catch (e) { setError(String(e)); }
-    finally { setBusy(false); }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
   }
   async function cancel() {
     if (!run) return;
-    try { await StatusService.CancelTask(run.id); }
-    catch (e) { setError(String(e)); }
+    try {
+      await StatusService.CancelTask(run.id);
+    } catch (e) {
+      setError(String(e));
+    }
   }
-  return { evidenceIDs,setEvidenceIDs,drafts, draft, request, setRequest, improve, setImprove, selected, setSelected, editor, setEditor, run, busy, error, generate, act, cancel, refresh };
+  return {
+    evidenceIDs,
+    setEvidenceIDs,
+    drafts,
+    draft,
+    request,
+    setRequest,
+    improve,
+    setImprove,
+    selected,
+    setSelected,
+    editor,
+    setEditor,
+    run,
+    busy,
+    error,
+    generate,
+    act,
+    cancel,
+    refresh,
+  };
 }
 export type ProfileDrafts = ReturnType<typeof useProfileDrafts>;

@@ -9,7 +9,7 @@ import (
 )
 
 // Fixed stages are configuration, never model-maintained plans. All stages are
-// required in this first version; conditions and waits are not implicit.
+// required; an explicit input prompt gates execution until the user answers.
 func validateFixedWorkflow(data ProfileData) error {
 	e := data.Execution
 	if len(e.Stages) == 0 && e.Workflow != "fixed" {
@@ -27,6 +27,9 @@ func validateFixedWorkflow(data ProfileData) error {
 	for _, stage := range e.Stages {
 		if !planID.MatchString(stage.ID) || strings.TrimSpace(stage.Task) == "" || len(stage.Task) > 10000 || len(stage.Materials) > 65536 {
 			return errors.New("固定阶段需要有效 ID、任务描述（最多 10000 字节）和材料（最多 65536 字节）")
+		}
+		if len(stage.InputPrompt) > 4000 || (stage.InputPrompt != "" && strings.TrimSpace(stage.InputPrompt) == "") {
+			return errors.New("阶段输入提示需为非空文本且不超过 4000 字节")
 		}
 		if !slots[stage.Worker] {
 			return errors.New("固定阶段必须引用已配置的 worker 槽位")

@@ -80,3 +80,23 @@ func (s *StatusService) StartConversationRetrospective(sessionID, target string)
 func (s *StatusService) ListTaskRetrospectives(runID string) ([]storage.TaskRetrospective, error) {
 	return s.svc.ListTaskRetrospectives(runID)
 }
+
+func (s *StatusService) ContinueConversationTask(runID, taskID, input string, uploads []materials.Upload) (storage.Run, error) {
+	return s.svc.ContinueConversationTask(runID, taskID, input, uploads...)
+}
+
+func (s *StatusService) RenameConversation(id, title string) (storage.Conversation, error) {
+	return s.svc.RenameConversation(id, title)
+}
+func (s *StatusService) DeleteConversation(id string) error { return s.svc.DeleteConversation(id) }
+func (s *StatusService) MessageAttachment(messageID string, index int) (materials.File, error) {
+	return s.svc.MessageAttachment(messageID, index)
+}
+
+func (s *StatusService) PreviewSend(sessionID string, attachments bool, role string) ([]app.SendConsent, error) {
+	return s.svc.PreviewSend(sessionID, attachments, role)
+}
+
+func (s *StatusService) ListChatMessages(sessionID string, before, limit int) (app.ChatMessagePage, error) {
+	return s.svc.ListChatMessages(sessionID, before, limit)
+}

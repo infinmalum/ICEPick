@@ -30,8 +30,8 @@ export const providerLabels: Record<string, string> = {
 };
 export const scopeLabels: Record<string, string> = {
   public: "公开内容",
-  workspace: "工作区文件",
-  personal: "个人输入",
+  workspace: "你允许访问的文件",
+  personal: "聊天内容",
   credential: "凭据",
-  unknown: "未知来源",
+  unknown: "来源尚未分类的资料",
 };
