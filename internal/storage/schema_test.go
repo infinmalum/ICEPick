@@ -10,7 +10,7 @@ import (
 )
 
 func TestUnsupportedDatabaseFormatLeavesDataIntact(t *testing.T) {
-	for _, version := range []int{21, currentVersion + 1} {
+	for _, version := range []int{currentVersion - 1, currentVersion + 1} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "data.db")
 			db, err := sql.Open("sqlite3", path)

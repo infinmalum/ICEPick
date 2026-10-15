@@ -30,7 +30,13 @@ func responseSearchParams(source config.Model, messages []Message, tools []Tool,
 				}
 				params.Input.OfInputItemList = append(params.Input.OfInputItemList, item)
 			}
-			if m.Content != "" {
+			if len(m.Files) > 0 {
+				var item responses.ResponseInputItemUnionParam
+				if err := json.Unmarshal(materialJSON(m, "responses"), &item); err != nil {
+					return params, err
+				}
+				params.Input.OfInputItemList = append(params.Input.OfInputItemList, item)
+			} else if m.Content != "" {
 				params.Input.OfInputItemList = append(params.Input.OfInputItemList, responses.ResponseInputItemParamOfMessage(m.Content, responses.EasyInputMessageRole(m.Role)))
 			}
 			for _, call := range m.ToolCalls {

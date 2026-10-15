@@ -42,11 +42,11 @@ func TestProfileCLI(t *testing.T) {
 		t.Fatalf("conversations: %+v %v", items, err)
 	}
 	c := items[0]
-	if code := dispatch(client, []string{"conversations", "permissions", c.ID, "--mode", "manual", "--workspace", "/project"}); code != 0 {
+	if code := dispatch(client, []string{"conversations", "permissions", c.ID, "--mode", "manual", "--workspace", "/project", "--command", "/bin/sh"}); code != 0 {
 		t.Fatal("permission update", code)
 	}
 	local, err := svc.GetLocalContext(c.ContextID)
-	if err != nil || local.Policy.ApprovalMode != "manual" || local.Policy.Permissions.Unrestricted {
+	if err != nil || local.Policy.ApprovalMode != "manual" || local.Policy.Permissions.Unrestricted || len(local.Policy.Permissions.Commands) != 1 || local.Policy.Permissions.Commands[0] != "/bin/sh" {
 		t.Fatal("permissions not applied", err)
 	}
 	if code := dispatch(client, []string{"conversations", "start", c.ID, "hello", "--wait"}); code != 0 {
@@ -85,5 +85,49 @@ func TestProfileCLI(t *testing.T) {
 	}
 	if code := dispatch(client, []string{"conversations", "show", c.ID}); code != 0 {
 		t.Fatal("archived history", code)
+	}
+}
+
+func TestTemplateGuidesAndWritingCLI(t *testing.T) {
+	client, svc := newCLIHost(t, conversationModel{}, time.Second)
+	for _, id := range []string{"daily", "writing", "research", "development"} {
+		if code := dispatch(client, []string{"templates", "show", id}); code != 0 {
+			t.Fatal(id, code)
+		}
+	}
+	if code := dispatch(client, []string{"templates", "show", "missing"}); code == 0 {
+		t.Fatal("missing template accepted")
+	}
+	if code := dispatch(client, []string{"templates", "create", "writing", "写作场景"}); code != 0 {
+		t.Fatal(code)
+	}
+	profiles, err := svc.ListProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p storage.Profile
+	for _, item := range profiles {
+		if item.Name == "写作场景" {
+			p = item
+		}
+	}
+	if code := dispatch(client, []string{"conversations", "create", "--profile", p.ID}); code != 0 {
+		t.Fatal(code)
+	}
+	items, err := svc.ListConversations()
+	if err != nil || len(items) != 1 {
+		t.Fatal(items, err)
+	}
+	guide, _ := storage.ProfileTemplateByID("writing")
+	if code := dispatch(client, []string{"conversations", "start", items[0].ID, guide.Guide.Example, "--wait"}); code != 0 {
+		t.Fatal(code)
+	}
+	runs, err := svc.ListRuns(items[0].ID)
+	if err != nil || len(runs) != 1 || runs[0].Status != "completed" {
+		t.Fatal(runs, err)
+	}
+	reviews, err := svc.ListTaskReviews(runs[0].ID)
+	if err != nil || len(reviews) != 0 {
+		t.Fatal("on demand scene reviewed automatically", reviews, err)
 	}
 }

@@ -15,11 +15,12 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 	"icepick/internal/config"
+	"icepick/internal/materials"
 )
 
 // currentVersion is the schema version this binary writes. Opening a database
 // with a different version is refused; development releases do not migrate data.
-const currentVersion = 22
+const currentVersion = 25
 
 type Store struct {
 	db   *sql.DB
@@ -43,6 +44,7 @@ type MessageToolCall struct {
 }
 
 type Message struct {
+	Attachments   []materials.File  `json:"attachments,omitempty"`
 	ProviderState []json.RawMessage `json:"-"`
 	ID            string            `json:"id"`
 	SessionID     string            `json:"sessionId"`
@@ -234,7 +236,7 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (Session, erro
 // AddMessage persists a user or assistant message at the next per-session
 // sequence number. Assistant tool call requests are persisted via
 // AddAssistantMessage so the call rows and the message commit atomically.
-func (s *Store) AddMessage(ctx context.Context, sessionID, runID, role, content string) (Message, error) {
+func (s *Store) AddMessage(ctx context.Context, sessionID, runID, role, content string, files ...materials.File) (Message, error) {
 	if role != RoleUser && role != RoleAssistant {
 		return Message{}, errors.New("无效的消息角色")
 	}
@@ -252,6 +254,26 @@ func (s *Store) AddMessage(ctx context.Context, sessionID, runID, role, content 
 			Scan(&item.ContextID, &item.Seq)
 		if err != nil {
 			return err
+		}
+		if len(files) > 0 {
+			if role != RoleUser {
+				return errors.New("仅用户消息可包含附件")
+			}
+			raw, e := json.Marshal(files)
+			if e != nil {
+				return e
+			}
+			if _, e = tx.ExecContext(ctx, `INSERT INTO message_files(message_id,payload) VALUES(?,?)`, item.ID, string(raw)); e != nil {
+				return e
+			}
+			for _, scope := range []string{ScopePersonal, ScopeUnknown} {
+				if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO session_context_scopes(session_id,scope) VALUES(?,?)`, sessionID, scope); err != nil {
+					return err
+				}
+			}
+			for _, f := range files {
+				item.Attachments = append(item.Attachments, f.Metadata())
+			}
 		}
 		if role == RoleUser {
 			_, err = tx.ExecContext(ctx, `UPDATE task_roots SET goal=? WHERE run_id=? AND goal=''`, content, runID)
@@ -337,7 +359,7 @@ func (s *Store) AddAssistantMessage(ctx context.Context, sessionID, runID, conte
 }
 
 func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]Message, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, (SELECT context_id FROM sessions WHERE id=messages.session_id), run_id, seq, role, content, tool_calls, created_at, provider_state FROM messages WHERE session_id = ? ORDER BY seq`, sessionID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, (SELECT context_id FROM sessions WHERE id=messages.session_id), run_id, seq, role, content, tool_calls, created_at, provider_state, COALESCE((SELECT payload FROM message_files WHERE message_id=messages.id),'[]') FROM messages WHERE session_id = ? ORDER BY seq`, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -346,8 +368,8 @@ func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]Message, 
 	for rows.Next() {
 		var item Message
 		var payload string
-		var stateRaw string
-		if err := rows.Scan(&item.ID, &item.SessionID, &item.ContextID, &item.RunID, &item.Seq, &item.Role, &item.Content, &payload, &item.CreatedAt, &stateRaw); err != nil {
+		var stateRaw, filesRaw string
+		if err := rows.Scan(&item.ID, &item.SessionID, &item.ContextID, &item.RunID, &item.Seq, &item.Role, &item.Content, &payload, &item.CreatedAt, &stateRaw, &filesRaw); err != nil {
 			return nil, err
 		}
 		if payload != "" {
@@ -358,6 +380,13 @@ func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]Message, 
 		if err := json.Unmarshal([]byte(stateRaw), &item.ProviderState); err != nil {
 			return nil, err
 		}
+		var files []materials.File
+		if err := json.Unmarshal([]byte(filesRaw), &files); err != nil {
+			return nil, err
+		}
+		for _, f := range files {
+			item.Attachments = append(item.Attachments, f.Metadata())
+		}
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -365,6 +394,7 @@ func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]Message, 
 
 // CreateRunOptions distinguishes top-level runs from delegated subtask runs.
 type CreateRunOptions struct {
+	Inspection     *InspectionRequest
 	SearchTools    []string
 	Component      string
 	TaskSpec       *TaskSpec
@@ -412,6 +442,9 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 		var frozen FrozenProfile
 		var resources RunResources
 		var resourcesRaw string
+		if opts.Inspection != nil && (opts.ParentRunID != "" || opts.Component != "" || opts.Depth != 0) {
+			return errors.New("独立审查/复盘只能创建根运行")
+		}
 		frozenMode := false
 		if opts.TaskSpec != nil && (opts.ParentRunID == "" || opts.Depth != 1 || opts.WorkerName == "") {
 			return errors.New("计划执行仅支持根任务的 worker 子运行")
@@ -450,6 +483,9 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 				if !ok {
 					return errors.New("worker 未包含在任务起始快照中")
 				}
+				if resources.Root.Data.Execution.Workflow == "fixed" && item.Component == "worker" && opts.TaskSpec == nil {
+					return errors.New("固定流程 worker 必须绑定已声明阶段")
+				}
 				policy = resources.RootPolicy
 				frozenMode = true
 			} else {
@@ -462,7 +498,16 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 			if err != nil {
 				return errors.New("会话没有可用的 Profile")
 			}
-			resources, err = captureRunResources(ctx, tx, frozen, contextID, policy, opts.DefaultModel, opts.SnapshotSkills)
+			if opts.Component != "" && opts.Component != "main" && opts.Component != "improver" {
+				return errors.New("根任务组件无效")
+			}
+			if opts.Component == "improver" {
+				if !frozen.Data.Execution.ImproverEnabled {
+					return errors.New("当前 Profile 未启用配置草案组件")
+				}
+				item.Component = "improver"
+			}
+			resources, err = captureRunResources(ctx, tx, frozen, contextID, policy, opts.DefaultModel, opts.SnapshotSkills, item.Component)
 			if err != nil {
 				return err
 			}
@@ -526,6 +571,16 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 				return err
 			}
 		}
+		if opts.ParentRunID == "" && item.Component == "main" && opts.Inspection == nil && frozen.Data.Execution.Workflow == "fixed" {
+			if err := initFixedGraph(ctx, tx, id, frozen.Data.Execution.Stages); err != nil {
+				return err
+			}
+		}
+		if opts.Inspection != nil {
+			if err := initInspectionRequest(ctx, tx, id, *opts.Inspection); err != nil {
+				return err
+			}
+		}
 		if opts.TaskSpec != nil {
 			if err := claimTaskInTx(ctx, tx, opts.ParentRunID, *opts.TaskSpec, id, opts.WorkerName); err != nil {
 				return err
@@ -537,7 +592,14 @@ func (s *Store) CreateRunWithOptions(ctx context.Context, sessionID string, opts
 			}
 		}
 		item.ContextID, item.ProfileID, item.ProfileRevision = contextID, frozen.ID, frozen.Revision
-		resolved = RunProfile{ContextID: contextID, ContextName: contextName, ProfileID: frozen.ID, ProfileName: frozen.Name, ProfileRevision: frozen.Revision, ProfileData: frozen.Data, Policy: policy, ResourcesFrozen: frozenMode, FrozenSkills: frozen.Skills}
+		configScopes := append(append([]string(nil), resources.Root.Scopes...), frozen.Scopes...)
+		for _, worker := range resources.Workers {
+			configScopes = append(configScopes, worker.Scopes...)
+			for _, skill := range worker.Skills {
+				configScopes = append(configScopes, skill.Scopes...)
+			}
+		}
+		resolved = RunProfile{ContextID: contextID, ContextName: contextName, ProfileID: frozen.ID, ProfileName: frozen.Name, ProfileRevision: frozen.Revision, ProfileData: frozen.Data, Policy: policy, ResourcesFrozen: frozenMode, FrozenSkills: frozen.Skills, ConfigScopes: configScopes}
 		resolved.Resources = &resources
 		return nil
 	})

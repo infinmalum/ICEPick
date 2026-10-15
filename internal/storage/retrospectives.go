@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"icepick/internal/config"
+	"icepick/internal/materials"
 	"strings"
 )
 
@@ -66,10 +67,11 @@ type RetrospectiveRun struct {
 	Error      string `json:"error"`
 }
 type RetrospectiveMessage struct {
-	ID      string `json:"id"`
-	RunID   string `json:"runId"`
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Attachments []materials.File `json:"attachments,omitempty"`
+	ID          string           `json:"id"`
+	RunID       string           `json:"runId"`
+	Role        string           `json:"role"`
+	Content     string           `json:"content"`
 }
 type RetrospectiveSnapshot struct {
 	Binding  string                 `json:"binding"`
@@ -142,15 +144,23 @@ func retrospectiveSnapshotInTx(ctx context.Context, tx *sql.Tx, root string) (Re
 	if err != nil {
 		return out, err
 	}
-	rows, err = tx.QueryContext(ctx, retrospectiveTree+`SELECT m.id,m.run_id,m.role,m.content FROM messages m JOIN runs r ON r.id=m.run_id WHERE m.run_id IN tree AND m.role IN ('user','assistant') AND NOT (m.role='user' AND r.component IN ('planner','reviewer')) ORDER BY m.created_at,m.seq`, root)
+	rows, err = tx.QueryContext(ctx, retrospectiveTree+`SELECT m.id,m.run_id,m.role,m.content,COALESCE((SELECT payload FROM message_files WHERE message_id=m.id),'[]') FROM messages m JOIN runs r ON r.id=m.run_id WHERE m.run_id IN tree AND m.role IN ('user','assistant') AND NOT (m.role='user' AND r.component IN ('planner','reviewer')) ORDER BY m.created_at,m.seq`, root)
 	if err != nil {
 		return out, err
 	}
 	for rows.Next() {
 		var m RetrospectiveMessage
-		if err = rows.Scan(&m.ID, &m.RunID, &m.Role, &m.Content); err != nil {
+		var filesRaw string
+		if err = rows.Scan(&m.ID, &m.RunID, &m.Role, &m.Content, &filesRaw); err != nil {
 			rows.Close()
 			return out, err
+		}
+		if err = json.Unmarshal([]byte(filesRaw), &m.Attachments); err != nil {
+			rows.Close()
+			return out, err
+		}
+		for i, f := range m.Attachments {
+			m.Attachments[i] = f.Metadata()
 		}
 		out.Messages = append(out.Messages, m)
 	}
@@ -188,22 +198,6 @@ func (s *Store) RetrospectiveSnapshot(ctx context.Context, root string) (Retrosp
 	var snap RetrospectiveSnapshot
 	err := s.withTx(ctx, func(tx *sql.Tx) error { var e error; snap, e = retrospectiveSnapshotInTx(ctx, tx, root); return e })
 	return snap, err
-}
-func (s *Store) InitRetrospectiveRequest(ctx context.Context, root, target string) error {
-	return s.withTx(ctx, func(tx *sql.Tx) error {
-		var contextID, targetContext string
-		if err := tx.QueryRowContext(ctx, `SELECT (SELECT context_id FROM sessions WHERE id=runs.session_id) FROM runs WHERE id=? AND status='running' AND parent_run_id IS NULL AND NOT EXISTS(SELECT 1 FROM review_requests WHERE run_id=runs.id)`, root).Scan(&contextID); err != nil {
-			return err
-		}
-		if err := tx.QueryRowContext(ctx, `SELECT (SELECT context_id FROM sessions WHERE id=runs.session_id) FROM runs WHERE id=? AND status<>'running' AND parent_run_id IS NULL`, target).Scan(&targetContext); err != nil {
-			return err
-		}
-		if contextID != targetContext {
-			return errors.New("复盘仅支持同一上下文内已结束的根任务")
-		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO retrospective_requests(run_id,target_run_id) VALUES(?,?)`, root, target)
-		return err
-	})
 }
 func (s *Store) SaveTaskRetrospective(ctx context.Context, root, reviewer, binding string, result RetrospectiveResult) (TaskRetrospective, error) {
 	id, err := newID()

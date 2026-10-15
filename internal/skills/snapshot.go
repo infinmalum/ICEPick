@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -15,10 +16,12 @@ const MaxSnapshotContent = 256 * 1024
 // A snapshot has no filesystem identity: persisted content remains usable
 // after an installed Skill is edited, moved or removed.
 type Snapshot struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Content     string `json:"content"`
-	SHA256      string `json:"sha256"`
+	Resources   map[string]Resource `json:"resources,omitempty"`
+	Scopes      []string            `json:"scopes,omitempty"`
+	Name        string              `json:"name"`
+	Description string              `json:"description"`
+	Content     string              `json:"content"`
+	SHA256      string              `json:"sha256"`
 }
 
 func (c *Catalog) Snapshot(all bool, names []string) ([]Snapshot, error) {
@@ -40,6 +43,17 @@ func (c *Catalog) Snapshot(all bool, names []string) ([]Snapshot, error) {
 		if item == nil {
 			return nil, fmt.Errorf("缺少 Skill %q", name)
 		}
+		if snap, ok := c.ManagedSnapshot(name); ok {
+			total += len(snap.Content)
+			for _, r := range snap.Resources {
+				total += len(r.Data)
+			}
+			if total > 16<<20 {
+				return nil, fmt.Errorf("Skill 快照总量超过16MiB")
+			}
+			items = append(items, snap)
+			continue
+		}
 		f, err := os.Open(item.Path)
 		if err != nil {
 			return nil, fmt.Errorf("冻结 Skill %q: %w", name, err)
@@ -57,7 +71,11 @@ func (c *Catalog) Snapshot(all bool, names []string) ([]Snapshot, error) {
 		if len(data) > MaxSnapshotContent {
 			return nil, fmt.Errorf("Skill %q 超过 256 KiB 快照上限", name)
 		}
-		total += len(data)
+		resources, size, err := snapshotResources(filepath.Dir(item.Path))
+		if err != nil {
+			return nil, fmt.Errorf("冻结 Skill %q: %w", name, err)
+		}
+		total += len(data) + size
 		if total > 16<<20 {
 			return nil, fmt.Errorf("Skill 快照总量超过 16 MiB，请收窄选择")
 		}
@@ -66,7 +84,7 @@ func (c *Catalog) Snapshot(all bool, names []string) ([]Snapshot, error) {
 			return nil, fmt.Errorf("Skill %q 的内容或名称无效", name)
 		}
 		digest := sha256.Sum256(data)
-		items = append(items, Snapshot{Name: name, Description: meta.Description, Content: string(data), SHA256: hex.EncodeToString(digest[:])})
+		items = append(items, Snapshot{Resources: resources, Name: name, Description: meta.Description, Content: string(data), SHA256: hex.EncodeToString(digest[:])})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 	return items, nil

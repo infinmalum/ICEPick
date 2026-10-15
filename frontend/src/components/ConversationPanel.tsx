@@ -10,6 +10,9 @@ type Props = {
   workspace: Pick<Workspace, "activeConversation" | "selected" | "sessions">;
   conversation: Pick<
     ConversationState,
+    | "attachments"
+    | "addAttachments"
+    | "removeAttachment"
     | "activeRun"
     | "approvalBusy"
     | "approveCall"
@@ -49,6 +52,9 @@ type Props = {
 export function ConversationPanel(props: Props) {
   const { activeConversation, selected, sessions } = props.workspace;
   const {
+    attachments,
+    addAttachments,
+    removeAttachment,
     activeRun,
     cancelTask,
     childRuns,
@@ -124,11 +130,51 @@ export function ConversationPanel(props: Props) {
           <form className="task-form" onSubmit={sendTask}>
             <textarea
               value={prompt}
+              disabled={sending}
               onChange={(event) => setPrompt(event.target.value)}
-              placeholder="给 ICEPick 一个任务…"
+              placeholder="描述任务、粘贴网页 URL，或指定本地目录…"
               rows={3}
             />
+            {attachments.length > 0 && (
+              <ul className="attachment-list" aria-label="待发送附件">
+                {attachments.map((file, index) => (
+                  <li key={index}>
+                    <span>
+                      {file.name} · {Math.ceil(file.size / 1024)} KiB
+                    </span>
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={sending}
+                      onClick={() => removeAttachment(index)}
+                      aria-label={`移除 ${file.name}`}
+                    >
+                      移除
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
             <div className="model-actions">
+              <label className="attachment-picker">
+                添加附件
+                <input
+                  aria-label="添加对话附件"
+                  type="file"
+                  multiple
+                  accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.docx,.txt,.md,.csv,.json,.yaml,.yml,.xml,.html,.log,.py,.js,.ts,.go"
+                  disabled={
+                    sending ||
+                    loadingSession ||
+                    !!activeRun ||
+                    activeConversation?.kind === "delegation"
+                  }
+                  onChange={(event) => {
+                    addAttachments(event.target.files);
+                    event.target.value = "";
+                  }}
+                />
+              </label>
               <label>
                 <input
                   type="checkbox"
@@ -154,7 +200,7 @@ export function ConversationPanel(props: Props) {
                   activeConversation?.kind === "delegation" ||
                   activeConversation?.profileArchived ||
                   !status?.storageReady ||
-                  !prompt.trim()
+                  (!prompt.trim() && attachments.length === 0)
                 }
               >
                 发送任务
@@ -169,11 +215,17 @@ export function ConversationPanel(props: Props) {
                 </button>
               )}
             </div>
+            <p className="hint">
+              支持图片、PDF、DOCX 和文本；最多8个，单个10MiB，总计20MiB；文本和
+              DOCX
+              提取正文限256KiB。目录路径可直接写入消息，读取受本机授权范围约束。
+            </p>
           </form>
           {activeConversation?.options?.webSearch && (
             <p className="hint">
               {searchAvailability?.reason ?? "正在检查搜索能力…"}
-              。允许按需搜索；仅影响后续任务，数据外发仍需授权。
+              。粘贴 URL
+              后可按需读取指定网页；仅影响后续任务，数据外发仍需授权。
             </p>
           )}
           {activeConversation?.options?.webSearch &&

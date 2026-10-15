@@ -146,12 +146,17 @@ func (s *Service) runDelegatedSubtask(parentCtx context.Context, ctx context.Con
 		finalize("failed", err.Error())
 		return "", err
 	}
-	structured := resources.Root.Data.Execution.Workflow == "dynamic" && childRun.WorkerName != ""
+	structured := (resources.Root.Data.Execution.Workflow == "dynamic" || resources.Root.Data.Execution.Workflow == "fixed") && childRun.WorkerName != ""
 	history := []model.Message{{Role: "system", Content: s.delegationSystemPrompt(parentProfile, childProfile)}}
 	if structured {
 		history[0].Content += "\n\n" + workerOutcomeContract
 	}
-	history = append(history, model.Message{Role: "user", Content: userContent})
+	files, err := s.store.RunInputFiles(ctx, childRun.ID)
+	if err != nil {
+		finalize("failed", err.Error())
+		return "", err
+	}
+	history = append(history, model.Message{Role: "user", Content: userContent, Files: files})
 	runTools := s.tools
 	if hub, ok := s.tools.(*mcptools.Hub); ok {
 		all, names := childProfile.AllMCPServers, childProfile.EnabledMCPServers

@@ -157,7 +157,7 @@ func (s *Store) BeginPlannerRound(ctx context.Context, root string) (TaskGraph, 
 	})
 	return g, err
 }
-func (s *Store) AcknowledgePlanner(ctx context.Context, root string, seq int, state, reason string) error {
+func (s *Store) AcknowledgeCoordination(ctx context.Context, root string, seq int, state, reason string) error {
 	switch state {
 	case "continue", "waiting", "blocked", "failed", "complete":
 	default:

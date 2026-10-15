@@ -115,6 +115,9 @@ func (s *Service) sessionScopes(ctx context.Context, sessionID string, profile s
 		return nil, err
 	}
 	set := map[string]bool{}
+	for _, scope := range profile.ConfigScopes {
+		set[scope] = true
+	}
 	if hasUser || profile.SystemPrompt != "" || profile.Persona != "" {
 		set[storage.ScopePersonal] = true
 	}
@@ -122,6 +125,11 @@ func (s *Service) sessionScopes(ctx context.Context, sessionID string, profile s
 		set[scope] = true
 	}
 	if profile.AllowsTool("local__load_skill") {
+		for _, skill := range profile.FrozenSkills {
+			for _, scope := range skill.Scopes {
+				set[scope] = true
+			}
+		}
 		summary := s.profileSkillSummary(profile)
 		if summary != "" {
 			set[storage.ScopeWorkspace] = true
@@ -197,6 +205,10 @@ func (s *Service) checkPayload(ctx context.Context, source config.Model, context
 	}
 	required := map[string]bool{}
 	for _, m := range messages {
+		if len(m.Files) > 0 {
+			required[storage.ScopePersonal] = true
+			required[storage.ScopeUnknown] = true
+		}
 		if m.Role == "system" && m.Content != "" {
 			required[storage.ScopePersonal] = true
 		}

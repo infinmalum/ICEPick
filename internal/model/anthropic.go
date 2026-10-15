@@ -54,7 +54,11 @@ func anthropicRequests(messages []Message, tools []Tool) (anthropic.MessageNewPa
 			}
 		case "user":
 			flush()
-			converted = append(converted, anthropic.NewUserMessage(anthropic.NewTextBlock(message.Content)))
+			var turn anthropic.MessageParam
+			if err := json.Unmarshal(materialJSON(message, "anthropic"), &turn); err != nil {
+				return params, err
+			}
+			converted = append(converted, turn)
 		case "assistant":
 			flush()
 			blocks := []anthropic.ContentBlockParamUnion{}

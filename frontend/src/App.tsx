@@ -5,6 +5,8 @@ import { ConversationPanel } from "./components/ConversationPanel";
 import { ProfileTemplates } from "./components/ProfileTemplates";
 import { ConversationProfile } from "./components/ConversationProfile";
 import { ContextPolicyPanel } from "./components/ContextPolicyPanel";
+import { SkillDrafts } from "./components/SkillDrafts";
+import { ProfileDrafts } from "./components/ProfileDrafts";
 import { ProfileEditor } from "./components/ProfileEditor";
 import { ProfileImport } from "./components/ProfileImport";
 import { ModelSettings } from "./components/ModelSettings";
@@ -35,24 +37,41 @@ function App() {
           profileState={app.profileState}
           runtime={app.runtime}
         />
-        <ProfileTemplates profileState={app.profileState} />
+
         <ConversationProfile
           workspace={app.workspace}
           profileState={app.profileState}
           conversation={app.conversation}
         />
-        <ContextPolicyPanel local={app.local} workspace={app.workspace} />
-        <ProfileEditor profileState={app.profileState} />
-        <ProfileImport profileState={app.profileState} />
-        <ModelSettings runtime={app.runtime} />
-        <CredentialsPanel runtime={app.runtime} />
-        <ExfilPanel workspace={app.workspace} local={app.local} />
-        <MemoryPanel workspace={app.workspace} local={app.local} />
-        <p className="next-step">
-          内置工具：local__current_time、local__read_file、local__write_file、local__edit_file、local__exec、local__tool_search、local__load_skill、local__memory_save、local__update_plan、local__task_plan、local__delegate_task，以及同根任务的
-          worker
-          过程检索与观察工具。工具调用受权限网关与审批约束；委派每次需确认；远端模型发送前会检查数据外发授权；长会话超预算时自动压缩旧轮次并保留原文。
-        </p>
+        <details className="settings-group">
+          <summary>本次对话的权限与记忆</summary>
+          <ContextPolicyPanel local={app.local} workspace={app.workspace} />
+          <ExfilPanel workspace={app.workspace} local={app.local} />
+          <MemoryPanel workspace={app.workspace} local={app.local} />
+        </details>
+        <details className="settings-group">
+          <summary>Profile 管理 · 创建、编辑、导入与导出</summary>
+          <ProfileTemplates profileState={app.profileState} />
+          <ProfileEditor profileState={app.profileState} />
+          <ProfileImport profileState={app.profileState} />
+        </details>
+        <details className="settings-group">
+          <summary>改进建议 · Profile 与 Skill 草案</summary>
+          <ProfileDrafts
+            state={app.drafts}
+            hasConversation={!!app.workspace.selected}
+            targetName={app.profileState.profileDraft?.name ?? ""}
+          />
+          <SkillDrafts
+            state={app.skillDrafts}
+            hasConversation={!!app.workspace.selected}
+          />
+        </details>
+        <details className="settings-group">
+          <summary>模型与服务商设置</summary>
+          <ModelSettings runtime={app.runtime} />
+          <CredentialsPanel runtime={app.runtime} />
+        </details>
       </main>
     </div>
   );

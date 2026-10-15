@@ -104,6 +104,11 @@ func (s *Service) reviewTarget(ctx context.Context, root, executionRoot, parentS
 		return review, err
 	}
 	messages := []model.Message{{Role: "system", Content: p.Persona + "\n" + p.SystemPrompt + "\n" + reviewerContract}, {Role: "user", Content: string(payload)}}
+	files, e := s.store.RunInputFiles(ctx, root)
+	if e != nil {
+		return review, e
+	}
+	messages[1].Files = files
 	recorder := runRecorder{svc: s, runID: run.ID, sessionID: session.ID, classifier: s.classifierFor(p)}
 	step, err := recorder.ModelRequest(runCtx, p.Model, messages, nil)
 	if err != nil {
@@ -198,7 +203,7 @@ func (s *Service) startConversationInspection(sessionID, target string, retrospe
 	s.mu.RLock()
 	source := s.config.Model
 	s.mu.RUnlock()
-	run, ctx, p, err := s.runs.StartPrepared(context.Background(), sessionID, source, s.skills.Snapshot)
+	run, ctx, p, err := s.runs.StartInspection(context.Background(), sessionID, target, retrospective, source, s.skills.Snapshot)
 	if err != nil {
 		return storage.Run{}, err
 	}
@@ -208,14 +213,6 @@ func (s *Service) startConversationInspection(sessionID, target string, retrospe
 	}
 	if p.Execution.Review.Mode != "on_demand" && p.Execution.Review.Mode != "required" {
 		return fail(errors.New("当前 Profile 未启用审查，请选择按需或必需模式"))
-	}
-	if retrospective {
-		err = s.store.InitRetrospectiveRequest(ctx, run.ID, target)
-	} else {
-		err = s.store.InitReviewRequest(ctx, run.ID, target)
-	}
-	if err != nil {
-		return fail(err)
 	}
 	if _, err := s.store.AddMessage(ctx, sessionID, run.ID, storage.RoleUser, label+"任务 "+target); err != nil {
 		return fail(err)

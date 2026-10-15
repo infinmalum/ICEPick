@@ -7,8 +7,23 @@ export function RuntimeStatus(props: Props) {
   const { status } = props.runtime;
   const { error } = props;
   return (
-    <section className="status-card" aria-live="polite">
-      <div className="card-title">运行状态</div>
+    <details
+      className="settings-group"
+      aria-live="polite"
+      open={
+        !!error ||
+        (!!status &&
+          (!status.storageReady ||
+            !status.runtimeReady ||
+            !status.modelConnected))
+      }
+    >
+      <summary>
+        运行状态 ·{" "}
+        {status?.storageReady && status?.runtimeReady && status?.modelConnected
+          ? "已就绪"
+          : "需要检查"}
+      </summary>
       {error ? (
         <p className="error">无法读取本地服务状态：{error}</p>
       ) : status ? (
@@ -36,6 +51,6 @@ export function RuntimeStatus(props: Props) {
       ) : (
         <p className="hint">正在读取本地服务状态…</p>
       )}
-    </section>
+    </details>
   );
 }

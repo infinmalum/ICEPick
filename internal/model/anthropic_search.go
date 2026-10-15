@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -22,18 +23,19 @@ func anthropicSearchResult(message anthropic.Message) (ChatResponse, error) {
 		out.Message.ProviderState = append(out.Message.ProviderState, raw)
 		switch block.Type {
 		case "server_tool_use":
-			if block.Name != "web_search" {
+			if block.Name != "web_search" && block.Name != "web_fetch" {
 				return out, errors.New("服务商返回未授权的服务器工具")
 			}
 			attempted++
 			var args struct {
 				Query string `json:"query"`
+				URL   string `json:"url"`
 			}
 			if err := json.Unmarshal(block.Input, &args); err != nil {
 				return out, err
 			}
-			out.Search.Events = append(out.Search.Events, SearchEvent{Type: "web_search_call", ID: block.ID, Query: args.Query, Status: "completed"})
-		case "web_search_tool_result":
+			out.Search.Events = append(out.Search.Events, SearchEvent{Type: block.Name + "_call", ID: block.ID, Query: args.Query, URL: args.URL, Status: "completed"})
+		case "web_search_tool_result", "web_fetch_tool_result":
 			var result struct {
 				ToolUseID string          `json:"tool_use_id"`
 				Content   json.RawMessage `json:"content"`
@@ -43,9 +45,15 @@ func anthropicSearchResult(message anthropic.Message) (ChatResponse, error) {
 			}
 			var failure struct {
 				ErrorCode string `json:"error_code"`
+				URL       string `json:"url"`
 			}
-			if json.Unmarshal(result.Content, &failure) == nil && failure.ErrorCode != "" {
-				out.Search.Events = append(out.Search.Events, SearchEvent{Type: "web_search_error", ID: result.ToolUseID, Status: failure.ErrorCode})
+			_ = json.Unmarshal(result.Content, &failure)
+			if ValidCitationURL(failure.URL) {
+				out.Search.Citations = append(out.Search.Citations, Citation{URL: failure.URL, Title: failure.URL})
+				out.Search.Events = append(out.Search.Events, SearchEvent{Type: "web_fetch_result", ID: result.ToolUseID, URL: failure.URL, Status: "completed"})
+			}
+			if failure.ErrorCode != "" {
+				out.Search.Events = append(out.Search.Events, SearchEvent{Type: block.Type + "_error", ID: result.ToolUseID, Status: failure.ErrorCode})
 				if failure.ErrorCode != "max_uses_exceeded" {
 					return out, fmt.Errorf("Anthropic 搜索失败: %s", failure.ErrorCode)
 				}
@@ -75,6 +83,7 @@ func anthropicSearchResult(message anthropic.Message) (ChatResponse, error) {
 		Usage struct {
 			ServerToolUse *struct {
 				Requests *int `json:"web_search_requests"`
+				Fetches  *int `json:"web_fetch_requests"`
 			} `json:"server_tool_use"`
 		} `json:"usage"`
 	}
@@ -82,7 +91,17 @@ func anthropicSearchResult(message anthropic.Message) (ChatResponse, error) {
 		return out, err
 	}
 	if usage.Usage.ServerToolUse != nil && usage.Usage.ServerToolUse.Requests != nil {
-		out.Search.Calls = usage.Usage.ServerToolUse.Requests
+		count := *usage.Usage.ServerToolUse.Requests
+		if usage.Usage.ServerToolUse.Fetches != nil {
+			count += *usage.Usage.ServerToolUse.Fetches
+		} else {
+			for _, e := range out.Search.Events {
+				if e.Type == "web_fetch_call" {
+					count++
+				}
+			}
+		}
+		out.Search.Calls = &count
 	} else if attempted == 0 {
 		zero := 0
 		out.Search.Calls = &zero
@@ -109,7 +128,25 @@ func (c Client) anthropicChatWithSearch(ctx context.Context, source config.Model
 		return ChatResponse{}, err
 	}
 	params.Model = source.Name
-	params.Tools = append(params.Tools, anthropic.ToolUnionParam{OfWebSearchTool20260318: &anthropic.WebSearchTool20260318Param{MaxUses: anthropic.Int(int64(search.MaxCalls)), AllowedCallers: []string{"direct"}}})
+	// Share the invocation ceiling between search and fetch, never reserve it twice.
+	directURL := false
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			directURL = strings.Contains(messages[i].Content, "https://") || strings.Contains(messages[i].Content, "http://")
+			break
+		}
+	}
+	searchUses, fetchUses := search.MaxCalls/2, search.MaxCalls-search.MaxCalls/2
+	if search.MaxCalls == 1 && !directURL {
+		searchUses, fetchUses = 1, 0
+	}
+	if fetchUses > 0 {
+		params.Tools = append(params.Tools, anthropic.ToolUnionParam{OfWebFetchTool20260318: &anthropic.WebFetchTool20260318Param{MaxUses: anthropic.Int(int64(fetchUses)), MaxContentTokens: anthropic.Int(16000), AllowedCallers: []string{"direct"}, Citations: anthropic.CitationsConfigParam{Enabled: anthropic.Bool(true)}}})
+	}
+	if searchUses > 0 {
+		params.Tools = append(params.Tools, anthropic.ToolUnionParam{OfWebSearchTool20260318: &anthropic.WebSearchTool20260318Param{MaxUses: anthropic.Int(int64(searchUses)), AllowedCallers: []string{"direct"}}})
+	}
+
 	opts := []option.RequestOption{option.WithMaxRetries(0)}
 	if onDelta == nil {
 		message, err := client.Messages.New(ctx, params, opts...)
@@ -137,10 +174,10 @@ func (c Client) anthropicChatWithSearch(ctx context.Context, source config.Model
 			return ChatResponse{}, err
 		}
 		if event.Type == "content_block_start" && event.ContentBlock.Type == "server_tool_use" {
-			if event.ContentBlock.Name != "web_search" {
+			if event.ContentBlock.Name != "web_search" && event.ContentBlock.Name != "web_fetch" {
 				return ChatResponse{}, errors.New("返回未授权的服务器工具")
 			}
-			e := SearchEvent{Type: "web_search_started", ID: event.ContentBlock.ID, Status: "executing"}
+			e := SearchEvent{Type: event.ContentBlock.Name + "_started", ID: event.ContentBlock.ID, Status: "executing"}
 			live = append(live, e)
 			if search.OnEvent != nil {
 				if err := search.OnEvent(e); err != nil {

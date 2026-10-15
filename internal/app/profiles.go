@@ -44,7 +44,7 @@ func (s *Service) CreateProfile(name, fromID string) (storage.Profile, error) {
 	if strings.TrimSpace(name) == "" {
 		name = source.Name + " 副本"
 	}
-	return s.store.CreateProfile(ctx, name, source.Data)
+	return s.store.CreateProfile(ctx, name, source.Data, source)
 }
 
 // UpdateProfile saves a new combination atomically. Before persisting, the

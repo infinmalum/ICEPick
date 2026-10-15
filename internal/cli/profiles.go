@@ -53,9 +53,13 @@ func boolText(value bool, whenTrue, whenFalse string) string {
 
 func cmdProfiles(client *ipc.Client, args []string) int {
 	if len(args) == 0 {
-		return usage("profiles 需要子命令 list|create|copy|edit|restore|export|import|delete")
+		return usage("profiles 需要子命令 list|create|copy|edit|restore|export|import|delete|draft|drafts")
 	}
 	switch args[0] {
+	case "draft":
+		return cmdProfileDraft(client, args[1:])
+	case "drafts":
+		return cmdProfileDrafts(client, args[1:])
 	case "list":
 		var profiles []storage.Profile
 		if err := client.Call("profiles.list", nil, &profiles); err != nil {
@@ -135,7 +139,7 @@ func cmdProfiles(client *ipc.Client, args []string) int {
 		fmt.Printf("已恢复内置内容（%s，v%d）\n", restored.Name, restored.Revision)
 		return 0
 	case "export":
-		parsed, err := parseCLI(args[1:], "include-workers")
+		parsed, err := parseCLI(args[1:], "include-workers", "reviewed")
 		if err != nil || parsed.arg(0) == "" {
 			return usage("用法: profiles export <id> [--out <文件.zip>] [--include-workers]")
 		}
@@ -146,6 +150,15 @@ func cmdProfiles(client *ipc.Client, args []string) int {
 		var result app.ExportResult
 		if err := client.Call(method, map[string]any{"id": parsed.arg(0)}, &result); err != nil {
 			return fail("profiles.export", err)
+		}
+		if len(result.ReviewNotes) > 0 {
+			for _, note := range result.ReviewNotes {
+				fmt.Println("分享检查:", note)
+			}
+			if !parsed.flags["reviewed"] {
+				fmt.Println("请先检查Profile/Skill内容，确认后用 --reviewed 保存分享包。")
+				return 0
+			}
 		}
 		out := parsed.value("out")
 		if out == "" {

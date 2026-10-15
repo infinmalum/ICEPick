@@ -1,12 +1,14 @@
 package ipc
 
 import (
+	"icepick/internal/materials"
 	"icepick/internal/storage"
 )
 
 // The same application contract is used by Profile-first CLI and desktop.
 func (s *Server) dispatchConversation(request Request) (any, error) {
 	var params struct {
+		Attachments  []materials.Upload          `json:"attachments"`
 		Options      storage.ConversationOptions `json:"options"`
 		ID           string                      `json:"id"`
 		ProfileID    string                      `json:"profileId"`
@@ -47,7 +49,7 @@ func (s *Server) dispatchConversation(request Request) (any, error) {
 	case "conversations.select":
 		return s.svc.SelectConversationProfile(params.ID, params.ProfileID)
 	case "conversations.start":
-		return s.svc.StartConversationTask(params.ID, params.Input)
+		return s.svc.StartConversationTask(params.ID, params.Input, params.Attachments...)
 	case "contexts.get":
 		return s.svc.GetLocalContext(params.ID)
 	case "contexts.update":

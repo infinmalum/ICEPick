@@ -40,11 +40,11 @@ func TestAGNativeSearchProtocolStateAndSwitchOff(t *testing.T) {
 						t.Error("incorrect Anthropic endpoint/auth")
 					}
 					if requests == 1 {
-						if len(tools) != 2 {
+						if len(tools) != 3 {
 							t.Errorf("missing tools: %s", raw)
 						}
 						search := tools[len(tools)-1].(map[string]any)
-						if search["type"] != "web_search_20260318" || search["max_uses"] != float64(2) || fmt.Sprint(search["allowed_callers"]) != "[direct]" {
+						if search["type"] != "web_search_20260318" || search["max_uses"] != float64(1) || fmt.Sprint(search["allowed_callers"]) != "[direct]" {
 							t.Errorf("unsafe search config: %s", raw)
 						}
 						w.Header().Set("Content-Type", "application/json")
@@ -64,7 +64,7 @@ func TestAGNativeSearchProtocolStateAndSwitchOff(t *testing.T) {
 						t.Errorf("server state enabled: %s", raw)
 					}
 					if requests == 1 {
-						if len(tools) != 2 || tools[0].(map[string]any)["type"] != "google_search" {
+						if len(tools) != 3 || tools[0].(map[string]any)["type"] != "google_search" || tools[1].(map[string]any)["type"] != "url_context" {
 							t.Errorf("missing tools: %s", raw)
 						}
 						w.Header().Set("Content-Type", "application/json")

@@ -13,9 +13,11 @@ import (
 	"time"
 
 	"icepick/internal/config"
+	"icepick/internal/materials"
 )
 
 type Message struct {
+	Files         []materials.File  `json:"files,omitempty"`
 	ProviderState []json.RawMessage `json:"provider_state,omitempty"`
 	Role          string            `json:"role"`
 	Content       string            `json:"content,omitempty"`
@@ -78,11 +80,11 @@ func (c ChatClient) Chat(ctx context.Context, source config.Model, messages []Me
 		return ChatResponse{}, err
 	}
 	request := struct {
-		Model     string    `json:"model"`
-		Messages  []Message `json:"messages"`
-		Tools     []Tool    `json:"tools,omitempty"`
-		Stream    bool      `json:"stream"`
-		MaxTokens int       `json:"max_tokens"`
+		Model     string            `json:"model"`
+		Messages  []json.RawMessage `json:"messages"`
+		Tools     []Tool            `json:"tools,omitempty"`
+		Stream    bool              `json:"stream"`
+		MaxTokens int               `json:"max_tokens"`
 	}{Model: source.Name, Messages: compatMessages(messages), Tools: tools, Stream: false, MaxTokens: 8192}
 	data, err := json.Marshal(request)
 	if err != nil {
@@ -144,12 +146,12 @@ func (c ChatClient) ChatStream(ctx context.Context, source config.Model, message
 		return ChatResponse{}, err
 	}
 	request := struct {
-		Model     string         `json:"model"`
-		Messages  []Message      `json:"messages"`
-		Tools     []Tool         `json:"tools,omitempty"`
-		Stream    bool           `json:"stream"`
-		Options   *streamOptions `json:"stream_options,omitempty"`
-		MaxTokens int            `json:"max_tokens"`
+		Model     string            `json:"model"`
+		Messages  []json.RawMessage `json:"messages"`
+		Tools     []Tool            `json:"tools,omitempty"`
+		Stream    bool              `json:"stream"`
+		Options   *streamOptions    `json:"stream_options,omitempty"`
+		MaxTokens int               `json:"max_tokens"`
 	}{Model: source.Name, Messages: compatMessages(messages), Tools: tools, Stream: true, MaxTokens: 8192}
 	if onDelta != nil {
 		request.Options = &streamOptions{IncludeUsage: true}
@@ -228,10 +230,16 @@ func validateRequest(source config.Model, messages []Message) error {
 	return nil
 }
 
-func compatMessages(messages []Message) []Message {
-	copy := append([]Message(nil), messages...)
-	for i := range copy {
-		copy[i].ProviderState = nil
+func compatMessages(messages []Message) []json.RawMessage {
+	out := make([]json.RawMessage, 0, len(messages))
+	for _, m := range messages {
+		m.ProviderState = nil
+		if len(m.Files) > 0 {
+			out = append(out, materialJSON(m, "openai"))
+		} else {
+			raw, _ := json.Marshal(m)
+			out = append(out, raw)
+		}
 	}
-	return copy
+	return out
 }

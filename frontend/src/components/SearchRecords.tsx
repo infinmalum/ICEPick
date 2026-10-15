@@ -12,11 +12,11 @@ export function SearchRecords(props: Props) {
           {searchRecords.map((record) => (
             <div key={record.id}>
               <p>
-                {record.provider} · {record.state} · 未知来源 · 搜索次数{" "}
+                {record.provider} · {record.state} · 未知来源 · 搜索/读取次数{" "}
                 {record.report.calls ?? "未知"} · 预算计数{" "}
                 {record.report.budgetUnit === "grounded_request"
                   ? "宿主请求"
-                  : "搜索调用"}{" "}
+                  : "联网调用"}{" "}
                 · 独立费用 {record.report.cost ?? "未知"}
               </p>
               {record.report.text && <p>{record.report.text}</p>}
@@ -47,6 +47,8 @@ export function SearchRecords(props: Props) {
               {(record.report.events ?? []).map((event, index) => (
                 <p className="hint" key={index}>
                   {event.type}
+                  {event.url ? " · " + event.url : ""}
+                  {event.status ? " · " + event.status : ""}
                   {event.query
                     ? " · " + event.query
                     : event.queries?.length

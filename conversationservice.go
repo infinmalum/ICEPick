@@ -2,6 +2,7 @@ package main
 
 import (
 	"icepick/internal/app"
+	"icepick/internal/materials"
 	"icepick/internal/storage"
 )
 
@@ -59,8 +60,8 @@ func (s *StatusService) StartConversationReview(sessionID, target string) (stora
 	return s.svc.StartConversationReview(sessionID, target)
 }
 
-func (s *StatusService) StartConversationTask(sessionID, input string) (storage.Run, error) {
-	return s.svc.StartConversationTask(sessionID, input)
+func (s *StatusService) StartConversationTask(sessionID, input string, uploads []materials.Upload) (storage.Run, error) {
+	return s.svc.StartConversationTask(sessionID, input, uploads...)
 }
 
 func (s *StatusService) SetConversationOptions(id string, options storage.ConversationOptions) (storage.Conversation, error) {

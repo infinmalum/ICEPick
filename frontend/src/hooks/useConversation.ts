@@ -36,6 +36,28 @@ export function useConversation(
   const [runs, setRuns] = useState<Run[]>([]);
   const [activeRun, setActiveRun] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
+  const [attachments, setAttachments] = useState<File[]>([]);
+  useEffect(() => {
+    setAttachments([]);
+    setPrompt("");
+  }, [selected]);
+  function addAttachments(files: FileList | null) {
+    if (!files) return;
+    const next = [...attachments, ...Array.from(files)];
+    if (
+      next.length > 8 ||
+      next.some((f) => f.size > 10 * 1024 * 1024) ||
+      next.reduce((n, f) => n + f.size, 0) > 20 * 1024 * 1024
+    ) {
+      setTaskError("最多8个附件，单个10MiB，总计20MiB。");
+      return;
+    }
+    setAttachments(next);
+    setTaskError("");
+  }
+  function removeAttachment(index: number) {
+    setAttachments((current) => current.filter((_, i) => i !== index));
+  }
   const [taskError, setTaskError] = useState("");
   const [searchAvailability, setSearchAvailability] =
     useState<SearchAvailability | null>(null);
@@ -378,19 +400,42 @@ export function useConversation(
   }
   async function sendTask(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!selected || !prompt.trim()) return;
+    if (!selected || (!prompt.trim() && !attachments.length) || sending) return;
+    const sessionID = selected;
     setSending(true);
     setStreamText("");
     try {
-      const run = await StatusService.StartConversationTask(selected, prompt);
+      const uploads = await Promise.all(
+        attachments.map(
+          (file) =>
+            new Promise<{ name: string; data: string }>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onerror = () =>
+                reject(new Error(`读取 ${file.name} 失败`));
+              reader.onload = () =>
+                resolve({
+                  name: file.name,
+                  data: String(reader.result).split(",")[1],
+                });
+              reader.readAsDataURL(file);
+            }),
+        ),
+      );
+      const run = await StatusService.StartConversationTask(
+        sessionID,
+        prompt,
+        uploads,
+      );
+      if (activeSessionID.current !== sessionID) return;
+      setAttachments([]);
       setPrompt("");
       setTaskError("");
       setRuns((current) => [run, ...current]);
       setActiveRun(run.id);
-      const history = await StatusService.ListMessages(selected);
-      setMessages(history ?? []);
+      const history = await StatusService.ListMessages(sessionID);
+      if (activeSessionID.current === sessionID) setMessages(history ?? []);
     } catch (reason) {
-      setTaskError(String(reason));
+      if (activeSessionID.current === sessionID) setTaskError(String(reason));
     } finally {
       setSending(false);
     }
@@ -425,6 +470,9 @@ export function useConversation(
     }
   }
   return {
+    attachments,
+    addAttachments,
+    removeAttachment,
     messages,
     approvalBusy,
     runs,

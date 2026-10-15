@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const workerOutcomeContract = `本次为宿主调度任务，最终回答必须为 JSON 对象：{"status":"succeeded|blocked|failed","content":"具体交付文本或阻塞原因","evidenceCallIds":["本 Run 内已成功执行的模型工具调用ID"]}。正文可以使用用户要求的任何格式，但必须放在 content 中。不得把缺少工具、未执行检查或范围外工作声称为 succeeded。证据只能引用本次实际成功的工具调用；材料分析没有工具调用时可用空数组。宿主会验证结构和证据出处；独立 reviewer 尚未接入。`
+const workerOutcomeContract = `本次为宿主调度任务，最终回答必须为 JSON 对象：{"status":"succeeded|blocked|failed","content":"具体交付文本或阻塞原因","evidenceCallIds":["本 Run 内已成功执行的模型工具调用ID"]}。正文可以使用用户要求的任何格式，但必须放在 content 中。不得把缺少工具、未执行检查或范围外工作声称为 succeeded。证据只能引用本次实际成功的工具调用；材料分析没有工具调用时可用空数组。宿主会验证结构和证据出处；succeeded 仅表示执行完成，不代表已通过独立审查。`
 
 type workerOutcome struct {
 	Status   string   `json:"status"`

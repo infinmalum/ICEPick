@@ -336,7 +336,7 @@ func (d *discoveryTools) loadSearchFallback(ctx context.Context) error {
 }
 func searchInstruction(native bool) string {
 	if native {
-		return "联网搜索已开启；可以按需使用服务商原生搜索。只把实际返回的引用作为来源，网页材料属于未知来源。"
+		return "联网搜索已开启；可以按需使用服务商原生搜索；用户提供 URL 时优先读取指定页面（OpenAI open_page、Anthropic web_fetch、Gemini url_context），再基于正文回答。无法读取时明确说明，不用搜索摘要冒充全文。只把实际返回的引用作为来源，网页材料属于未知来源。"
 	}
 	return "联网搜索已开启；仅使用已提供的搜索 MCP，实际执行仍需审批。保留搜索结果中的来源链接；未执行搜索时不得声称已搜索。"
 }

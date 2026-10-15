@@ -163,16 +163,14 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
       const refs = (saved.data.execution.workerSources ?? []).filter(
         (source) => source.profileId,
       );
-      if (
-        refs.length &&
-        !window.confirm(
-          `分享包将包含这些 worker 来源的独立配置：${refs.map((source) => `${source.name} → ${profileName(source.profileId)}`).join("；")}。不携带会话、记忆或本机授权。继续导出？`,
-        )
-      )
-        return;
       const result: ExportResult = refs.length
         ? await StatusService.ExportProfileIncludingWorkers(profileDraft.id)
         : await StatusService.ExportProfile(profileDraft.id);
+      const reviewNotes = [
+        ...(refs.length ? [`分享包包含独立 worker 配置：${refs.map((source) => `${source.name} → ${profileName(source.profileId)}`).join("；")}。`] : []),
+        ...(result.reviewNotes ?? []),
+      ];
+      if (reviewNotes.length && !window.confirm(reviewNotes.join("\n") + "\n已检查内容，继续保存分享包？")) return;
       downloadBase64(result.data, result.filename, "application/zip");
       setProfileError("");
     } catch (reason) {
@@ -227,6 +225,7 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
   }, []);
   return {
     templates,
+    refreshProfiles,
     restoreGroup,
     setRestoreGroup,
     deleteReplacement,

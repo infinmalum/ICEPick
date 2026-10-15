@@ -128,6 +128,9 @@ func (s *Store) SetTaskGraph(ctx context.Context, root string, expected int, spe
 		if err != nil {
 			return err
 		}
+		if resources.Root.Data.Execution.Workflow == "fixed" {
+			return errors.New("固定流程阶段由起始配置初始化，不能改写")
+		}
 		if !resources.Root.Data.PlanEnabled || !resources.Root.Data.Delegation.Enabled {
 			return errors.New("任务起始配置未启用规划和 worker 委派")
 		}

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"icepick/internal/materials"
 	"strings"
 	"time"
 )
@@ -80,14 +81,15 @@ type TaskReview struct {
 // covers goal, immutable execution contract, delivered message, artifacts and
 // complete tool evidence, including resolution of previously unknown effects.
 type ReviewSnapshot struct {
-	Binding     string       `json:"binding"`
-	ChecksAfter string       `json:"checksAfter,omitempty"`
-	Goal        string       `json:"goal"`
-	Tasks       []TaskSpec   `json:"tasks"`
-	Delivery    Message      `json:"delivery"`
-	Artifacts   []Artifact   `json:"artifacts"`
-	Calls       []ToolCall   `json:"calls"`
-	Policy      ReviewPolicy `json:"policy"`
+	Attachments []materials.File `json:"attachments,omitempty"`
+	Binding     string           `json:"binding"`
+	ChecksAfter string           `json:"checksAfter,omitempty"`
+	Goal        string           `json:"goal"`
+	Tasks       []TaskSpec       `json:"tasks"`
+	Delivery    Message          `json:"delivery"`
+	Artifacts   []Artifact       `json:"artifacts"`
+	Calls       []ToolCall       `json:"calls"`
+	Policy      ReviewPolicy     `json:"policy"`
 }
 
 func reviewSnapshotInTx(ctx context.Context, tx *sql.Tx, root string) (ReviewSnapshot, error) {
@@ -113,6 +115,19 @@ func reviewSnapshotInTx(ctx context.Context, tx *sql.Tx, root string) (ReviewSna
 	if out.Goal == "" {
 		if err := tx.QueryRowContext(ctx, `SELECT content FROM messages WHERE run_id=? AND role='user' ORDER BY seq LIMIT 1`, root).Scan(&out.Goal); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return out, err
+		}
+	}
+	var filesRaw string
+	err = tx.QueryRowContext(ctx, `SELECT f.payload FROM message_files f JOIN messages m ON m.id=f.message_id WHERE m.run_id=? AND m.role='user' ORDER BY m.seq LIMIT 1`, root).Scan(&filesRaw)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return out, err
+	}
+	if filesRaw != "" {
+		if err = json.Unmarshal([]byte(filesRaw), &out.Attachments); err != nil {
+			return out, err
+		}
+		for i, f := range out.Attachments {
+			out.Attachments[i] = f.Metadata()
 		}
 	}
 	out.Tasks = []TaskSpec{}
@@ -153,13 +168,14 @@ func reviewSnapshotInTx(ctx context.Context, tx *sql.Tx, root string) (ReviewSna
 		return out, err
 	}
 	payload, err := json.Marshal(struct {
-		Profile   string
-		Goal      string
-		Tasks     []TaskSpec
-		Delivery  Message
-		Artifacts []Artifact
-		Calls     []ToolCall
-	}{raw, out.Goal, out.Tasks, out.Delivery, out.Artifacts, out.Calls})
+		Profile     string
+		Attachments []materials.File
+		Goal        string
+		Tasks       []TaskSpec
+		Delivery    Message
+		Artifacts   []Artifact
+		Calls       []ToolCall
+	}{raw, out.Attachments, out.Goal, out.Tasks, out.Delivery, out.Artifacts, out.Calls})
 	if err != nil {
 		return out, err
 	}
@@ -322,6 +338,21 @@ func (s *Store) ListTaskReviews(ctx context.Context, root string) ([]TaskReview,
 	return out, err
 }
 func enforceRequiredReview(ctx context.Context, tx *sql.Tx, root string) error {
+	var component string
+	if err := tx.QueryRowContext(ctx, `SELECT component FROM runs WHERE id=?`, root).Scan(&component); err != nil {
+		return err
+	}
+	if component == "improver" {
+		var count int
+		if err := tx.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM profile_drafts WHERE run_id=?)+(SELECT count(*) FROM skill_drafts WHERE run_id=?)`, root, root).Scan(&count); err != nil {
+			return err
+		}
+		if count != 1 {
+			return errors.New("配置生成没有有效草案")
+		}
+		return nil
+	}
+
 	var retrospectiveTarget string
 	retrospectiveErr := tx.QueryRowContext(ctx, `SELECT target_run_id FROM retrospective_requests WHERE run_id=?`, root).Scan(&retrospectiveTarget)
 	if retrospectiveErr == nil {
@@ -384,19 +415,28 @@ func enforceRequiredReview(ctx context.Context, tx *sql.Tx, root string) error {
 }
 
 // One-shot review has its own root budget and never rewrites the old outcome.
-func (s *Store) InitReviewRequest(ctx context.Context, root, target string) error {
-	return s.withTx(ctx, func(tx *sql.Tx) error {
-		var contextID, targetContext, status string
-		if err := tx.QueryRowContext(ctx, `SELECT (SELECT context_id FROM sessions WHERE id=runs.session_id) FROM runs WHERE id=? AND status='running' AND parent_run_id IS NULL AND NOT EXISTS(SELECT 1 FROM retrospective_requests WHERE run_id=runs.id)`, root).Scan(&contextID); err != nil {
-			return err
-		}
-		if err := tx.QueryRowContext(ctx, `SELECT (SELECT context_id FROM sessions WHERE id=runs.session_id),status FROM runs WHERE id=? AND parent_run_id IS NULL`, target).Scan(&targetContext, &status); err != nil {
-			return err
-		}
-		if contextID != targetContext || status == "running" {
-			return errors.New("单次审查仅支持同一上下文内已结束的根任务")
-		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO review_requests(run_id,target_run_id) VALUES(?,?)`, root, target)
+// InspectionRequest fixes a root's independent review purpose at creation.
+// Inspection roots never initialize or execute the Profile's business stages.
+type InspectionRequest struct {
+	TargetRunID   string
+	Retrospective bool
+}
+
+func initInspectionRequest(ctx context.Context, tx *sql.Tx, root string, request InspectionRequest) error {
+	var contextID, targetContext string
+	if err := tx.QueryRowContext(ctx, `SELECT (SELECT context_id FROM sessions WHERE id=runs.session_id) FROM runs WHERE id=? AND status='running' AND parent_run_id IS NULL`, root).Scan(&contextID); err != nil {
 		return err
-	})
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT (SELECT context_id FROM sessions WHERE id=runs.session_id) FROM runs WHERE id=? AND status<>'running' AND parent_run_id IS NULL`, request.TargetRunID).Scan(&targetContext); err != nil {
+		return err
+	}
+	if contextID != targetContext {
+		return errors.New("审查/复盘仅支持同一上下文内已结束的根任务")
+	}
+	query := `INSERT INTO review_requests(run_id,target_run_id) VALUES(?,?)`
+	if request.Retrospective {
+		query = `INSERT INTO retrospective_requests(run_id,target_run_id) VALUES(?,?)`
+	}
+	_, err := tx.ExecContext(ctx, query, root, request.TargetRunID)
+	return err
 }

@@ -20,7 +20,7 @@ export function ProfileImport(props: Props) {
   return (
     importPreview && (
       <section className="session-card">
-        <div className="card-title">导入预览「{importPreview.name}」</div>
+        <div className="card-title">Profile 导入预览「{importPreview.name}」</div>
         <div className="import-preview">
           <p>
             模型：{importPreview.model.provider || "（应用默认）"}

@@ -37,6 +37,9 @@ func (c sessionCompactor) Summarize(ctx context.Context, source config.Model, ol
 		{Role: "system", Content: "你是会话摘要器。把既有摘要与新对话合并为一份供后续对话使用的紧凑摘要：保留任务目标、已完成的步骤、关键工具结果和未决问题；按时间顺序陈述事实，不加评价；不超过 1200 字。"},
 		{Role: "user", Content: summaryRequest(previous.Summary, found, older)},
 	}
+	for _, m := range older {
+		messages[1].Files = append(messages[1].Files, m.Files...)
+	}
 	payload, err := json.Marshal(modelRequestSnapshot{Model: source, Messages: messages, OutputTokenLimit: 8192})
 	if err != nil {
 		return "", err
@@ -143,17 +146,18 @@ func (t bookkeepingTools) definitionsWith(ctx context.Context, definitions []mod
 		}
 	}
 	if t.profile.ResourcesFrozen && len(t.profile.FrozenSkills) > 0 && t.profile.AllowsTool("local__load_skill") {
+		definition := model.Tool{Type: "function"}
+		definition.Function.Name = "local__load_skill"
+		definition.Function.Description = "读取本任务固定版本的 Skill 指令及 references/scripts/assets；path 留空返回指令和资源清单。脚本仅作为内容读取，执行须通过现有写文件和命令工具及其授权。"
+		definition.Function.Parameters = json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"},"path":{"type":"string"}},"required":["name"]}`)
 		found := false
-		for _, d := range definitions {
-			if d.Function.Name == "local__load_skill" {
+		for i, d := range definitions {
+			if d.Function.Name == definition.Function.Name {
+				definitions[i] = definition
 				found = true
 			}
 		}
 		if !found {
-			definition := model.Tool{Type: "function"}
-			definition.Function.Name = "local__load_skill"
-			definition.Function.Description = "读取本任务固定版本的 Skill 指令"
-			definition.Function.Parameters = json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)
 			definitions = append(definitions, definition)
 		}
 	}
@@ -210,6 +214,7 @@ func (t bookkeepingTools) Call(ctx context.Context, name, arguments string) (str
 		}
 		var args struct {
 			Name string `json:"name"`
+			Path string `json:"path"`
 		}
 		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
 			return "", err
@@ -219,7 +224,7 @@ func (t bookkeepingTools) Call(ctx context.Context, name, arguments string) (str
 		}
 		for _, item := range t.profile.FrozenSkills {
 			if item.Name == args.Name {
-				return item.Content, nil
+				return item.ReadResource(args.Path)
 			}
 		}
 		return "", errors.New("Skill 不在任务起始快照中")

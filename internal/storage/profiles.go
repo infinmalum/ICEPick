@@ -98,6 +98,7 @@ type Profile struct {
 // Context's identity and machine policy plus the Profile content snapshot.
 type RunProfile struct {
 	Resources       *RunResources     `json:"-"`
+	ConfigScopes    []string          `json:"configScopes"`
 	ResourcesFrozen bool              `json:"-"`
 	FrozenSkills    []skills.Snapshot `json:"-"`
 	ContextID       string            `json:"contextId"`
@@ -117,12 +118,12 @@ func BlankProfile() ProfileData {
 
 // defaultProfileData is the built-in default combination: a short generic
 // instruction, shared catalogs enabled, no role presets. Memory and plan
-// bookkeeping are part of the shipped default; upgrading databases keep
-// their stored runtime component until the user edits or restores it.
+// bookkeeping are part of the shipped default; edits publish a new revision.
 func defaultProfileData() ProfileData {
 	d := BlankProfile()
 	d.Description = "通用助手；使用已接入的工具和 Skills"
 	d.SystemPrompt = "你是 ICEPick 助手。使用可用工具完成用户任务；无法完成时如实说明。"
+	d.Execution.ImproverEnabled = true
 	d.AllMCPServers = true
 	d.AllSkills = true
 	d.Delegation = DelegationPolicy{Enabled: true, MaxDepth: 1}
@@ -264,7 +265,7 @@ func (s *Store) GetProfile(ctx context.Context, id string) (Profile, error) {
 // CreateProfile persists a new Profile from the blank template or a copy the
 // caller assembled. The new Profile starts at revision 1 and is never the
 // built-in default.
-func (s *Store) CreateProfile(ctx context.Context, name string, data ProfileData) (Profile, error) {
+func (s *Store) CreateProfile(ctx context.Context, name string, data ProfileData, sources ...Profile) (Profile, error) {
 	data = normalizeProfile(data)
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > 100 {
@@ -288,7 +289,13 @@ func (s *Store) CreateProfile(ctx context.Context, name string, data ProfileData
 		if err := saveProfileConfig(ctx, tx, id, data); err != nil {
 			return err
 		}
-		return saveProfileRevision(ctx, tx, id, 1, name, data)
+		if err := saveProfileRevision(ctx, tx, id, 1, name, data); err != nil {
+			return err
+		}
+		if len(sources) > 0 {
+			return copyProfileScopesInTx(ctx, tx, sources[0].ID, sources[0].Revision, id, 1)
+		}
+		return nil
 	})
 	if err != nil {
 		return Profile{}, err
@@ -334,7 +341,10 @@ func (s *Store) UpdateProfile(ctx context.Context, p Profile) (Profile, error) {
 		if err := saveProfileConfig(ctx, tx, p.ID, p.Data); err != nil {
 			return err
 		}
-		return saveProfileRevision(ctx, tx, p.ID, p.Revision+1, strings.TrimSpace(p.Name), p.Data)
+		if err := saveProfileRevision(ctx, tx, p.ID, p.Revision+1, strings.TrimSpace(p.Name), p.Data); err != nil {
+			return err
+		}
+		return copyProfileScopesInTx(ctx, tx, p.ID, p.Revision, p.ID, p.Revision+1)
 	})
 	if err != nil {
 		return Profile{}, err

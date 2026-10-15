@@ -253,6 +253,10 @@ func writeLine(conn net.Conn, payload any) error {
 // rules and exfiltration gates behave identically over IPC.
 func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 	switch request.Method {
+	case "skillDrafts.start", "skillDrafts.list", "skillDrafts.edit", "skillDrafts.apply", "skillDrafts.discard", "skillDrafts.withdraw":
+		return s.dispatchSkillDraft(request)
+	case "drafts.start", "drafts.list", "drafts.edit", "drafts.apply", "drafts.discard", "drafts.revert":
+		return s.dispatchProfileDraft(request)
 	case "conversations.options", "conversations.searchAvailability", "conversations.searchRecords", "conversations.list", "conversations.get", "conversations.create", "conversations.select", "conversations.start", "contexts.get", "contexts.update", "templates.list", "templates.create", "templates.restore", "components.list", "profiles.archive", "profiles.references", "profiles.replaceArchive", "profiles.exportWorkers":
 		return s.dispatchConversation(request)
 	case "status":

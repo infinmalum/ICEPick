@@ -5,6 +5,7 @@ import (
 
 	"icepick/internal/app"
 	"icepick/internal/config"
+	"icepick/internal/skills"
 	"icepick/internal/storage"
 )
 
@@ -222,4 +223,42 @@ func (s *StatusService) ImportProfile(dataBase64 string) (app.ImportResult, erro
 
 func (s *StatusService) CancelTask(id string) error {
 	return s.svc.CancelTask(id)
+}
+
+func (s *StatusService) StartProfileDraft(sessionID, target, request string, evidenceIDs []string) (storage.Run, error) {
+	return s.svc.StartProfileDraft(sessionID, target, request, evidenceIDs)
+}
+func (s *StatusService) ListProfileDrafts() ([]storage.ProfileDraft, error) {
+	return s.svc.ListProfileDrafts()
+}
+func (s *StatusService) EditProfileDraft(id string, revision int, proposal storage.ProfileProposal) (storage.ProfileDraft, error) {
+	return s.svc.EditProfileDraft(id, revision, proposal)
+}
+func (s *StatusService) ApplyProfileDraft(id string, revision int) (storage.Profile, error) {
+	return s.svc.ApplyProfileDraft(id, revision)
+}
+func (s *StatusService) DiscardProfileDraft(id string, revision int) error {
+	return s.svc.DiscardProfileDraft(id, revision)
+}
+func (s *StatusService) RevertProfileDraft(id string, revision int) (storage.Profile, error) {
+	return s.svc.RevertProfileDraft(id, revision)
+}
+
+func (s *StatusService) StartSkillDraft(sessionID, sourceName, request string, evidenceIDs []string) (storage.Run, error) {
+	return s.svc.StartSkillDraft(sessionID, sourceName, request, evidenceIDs)
+}
+func (s *StatusService) ListSkillDrafts() ([]storage.SkillDraft, error) {
+	return s.svc.ListSkillDrafts()
+}
+func (s *StatusService) EditSkillDraft(id string, revision int, proposal storage.SkillProposal) (storage.SkillDraft, error) {
+	return s.svc.EditSkillDraft(id, revision, proposal)
+}
+func (s *StatusService) ApplySkillDraft(id string, revision int) (skills.Snapshot, error) {
+	return s.svc.ApplySkillDraft(id, revision)
+}
+func (s *StatusService) DiscardSkillDraft(id string, revision int) error {
+	return s.svc.DiscardSkillDraft(id, revision)
+}
+func (s *StatusService) WithdrawSkillDraft(id string, revision int) error {
+	return s.svc.WithdrawSkillDraft(id, revision)
 }

@@ -14,6 +14,7 @@ import (
 
 	"icepick/internal/agent"
 	"icepick/internal/config"
+	"icepick/internal/materials"
 	"icepick/internal/mcptools"
 	"icepick/internal/model"
 	"icepick/internal/skills"
@@ -84,8 +85,9 @@ type Service struct {
 	// Tests shrink it to exercise the timeout path.
 	ApprovalTimeout time.Duration
 
-	taskMu  sync.Mutex
-	running map[string]string
+	skillPublishMu sync.Mutex
+	taskMu         sync.Mutex
+	running        map[string]string
 
 	muApprovals sync.Mutex
 	waiters     map[string]chan struct{}
@@ -97,7 +99,7 @@ type Service struct {
 
 func New(opts Options) *Service {
 	timeout := 5 * time.Minute
-	return &Service{
+	svc := &Service{
 		store: opts.Store, runs: opts.Runs, tools: opts.Tools, skills: opts.Skills,
 		chat: opts.Chat, discovery: opts.Discovery, config: opts.Config,
 		configPath: opts.ConfigPath, initErr: opts.InitError, running: map[string]string{},
@@ -110,6 +112,12 @@ func New(opts Options) *Service {
 		waiters:         map[string]chan struct{}{},
 		subs:            map[int]func(Event){},
 	}
+	if svc.store != nil && svc.skills != nil && svc.initErr == nil {
+		if err := svc.restoreManagedSkills(); err != nil {
+			svc.initErr = fmt.Errorf("恢复已发布Skill: %w", err)
+		}
+	}
+	return svc
 }
 
 // Subscribe registers a listener for post-commit events and returns an
@@ -379,9 +387,16 @@ func (s *Service) checkSessionExists(sessionID string) error {
 	return err
 }
 
-func (s *Service) StartConversationTask(sessionID, input string) (storage.Run, error) {
+func (s *Service) StartConversationTask(sessionID, input string, uploads ...materials.Upload) (storage.Run, error) {
 	if err := s.checkReady(); err != nil {
 		return storage.Run{}, err
+	}
+	files, err := materials.Prepare(uploads)
+	if err != nil {
+		return storage.Run{}, err
+	}
+	if strings.TrimSpace(input) == "" && len(files) > 0 {
+		input = "请分析所附文件"
 	}
 	input = strings.TrimSpace(input)
 	if input == "" || len(input) > 10000 {
@@ -436,7 +451,7 @@ func (s *Service) StartConversationTask(sessionID, input string) (storage.Run, e
 	if err != nil {
 		return storage.Run{}, err
 	}
-	if _, err := s.store.AddMessage(context.Background(), sessionID, item.ID, storage.RoleUser, input); err != nil {
+	if _, err := s.store.AddMessage(context.Background(), sessionID, item.ID, storage.RoleUser, input, files...); err != nil {
 		_ = s.runs.Finish(item.ID, "failed", err.Error())
 		return storage.Run{}, err
 	}
@@ -462,6 +477,7 @@ func (s *Service) StartConversationTask(sessionID, input string) (storage.Run, e
 			return storage.Run{}, grantErr
 		}
 	}
+
 	s.running[sessionID] = item.ID
 	s.publish(Event{Type: "run.started", SessionID: sessionID, RunID: item.ID})
 	go s.executeTask(runCtx, item.ID, sessionID, source, resolved, initialGrant)
@@ -482,10 +498,10 @@ func (s *Service) executeTask(ctx context.Context, runID, sessionID string, sour
 		_ = s.runs.Finish(runID, "failed", err.Error())
 		return
 	}
-	if profile.Execution.Workflow == "dynamic" {
-		err := s.executeDynamic(ctx, runID, sessionID, source, profile, history.history, nil)
+	if profile.Execution.Workflow == "dynamic" || profile.Execution.Workflow == "fixed" {
+		err := s.executeScheduled(ctx, runID, sessionID, source, profile, history.history, nil)
 		if err == nil {
-			err = s.requireDeliveryReview(ctx, runID, sessionID, profile, func(request reworkRequest) error {
+			repair := func(request reworkRequest) error {
 				if err := s.store.NotifyCoordination(ctx, runID, "review.rework"); err != nil {
 					return err
 				}
@@ -493,13 +509,17 @@ func (s *Service) executeTask(ctx context.Context, runID, sessionID string, sour
 				if err != nil {
 					return err
 				}
-				return s.executeDynamic(ctx, runID, sessionID, source, profile, updated.history, &request)
-			})
+				return s.executeScheduled(ctx, runID, sessionID, source, profile, updated.history, &request)
+			}
+			if profile.Execution.Workflow == "fixed" {
+				repair = nil
+			}
+			err = s.requireDeliveryReview(ctx, runID, sessionID, profile, repair)
 		}
 		if err != nil {
 			g, e := s.store.GetTaskGraph(context.WithoutCancel(ctx), runID)
 			if e == nil && g.RunStatus == "running" && g.Coordination.State != "waiting" && g.Coordination.State != "blocked" && g.Coordination.State != "failed" {
-				_ = s.store.AcknowledgePlanner(context.WithoutCancel(ctx), runID, g.Coordination.EventSeq, "failed", boundedText(err.Error(), 4000))
+				_ = s.store.AcknowledgeCoordination(context.WithoutCancel(ctx), runID, g.Coordination.EventSeq, "failed", boundedText(err.Error(), 4000))
 			}
 		}
 		status, detail := "completed", ""
@@ -513,7 +533,7 @@ func (s *Service) executeTask(ctx context.Context, runID, sessionID string, sour
 		if err := s.runs.Finish(runID, status, detail); err != nil {
 			_ = s.runs.Finish(runID, "failed", err.Error())
 		}
-		s.publish(Event{Type: "run.updated", SessionID: sessionID, RunID: runID, Detail: "动态调度结束"})
+		s.publish(Event{Type: "run.updated", SessionID: sessionID, RunID: runID, Detail: "流程调度结束"})
 		return
 	}
 	runTools := s.tools

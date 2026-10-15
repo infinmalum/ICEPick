@@ -35,6 +35,9 @@ func (s *Service) requireDeliveryReview(ctx context.Context, root, session strin
 			return nil
 		}
 		failure := fmt.Errorf("独立审查 %s：%s", review.Result.Status, review.Result.Summary)
+		if repair == nil {
+			return failure
+		}
 		snap, err := s.store.ReviewSnapshot(ctx, root)
 		if err != nil {
 			return err

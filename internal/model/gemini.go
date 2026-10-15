@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -56,7 +57,17 @@ func geminiContents(messages []Message) ([]*genai.Content, error) {
 			// The system prompt goes through config.SystemInstruction, not
 			// the contents list.
 		case "user":
-			contents = append(contents, &genai.Content{Role: "user", Parts: []*genai.Part{{Text: message.Content}}})
+			parts := []*genai.Part{{Text: materialText(message)}}
+			for _, f := range message.Files {
+				if f.Data != "" {
+					data, err := base64.StdEncoding.DecodeString(f.Data)
+					if err != nil {
+						return nil, err
+					}
+					parts = append(parts, &genai.Part{InlineData: &genai.Blob{MIMEType: f.MediaType, Data: data}})
+				}
+			}
+			contents = append(contents, &genai.Content{Role: "user", Parts: parts})
 		case "assistant":
 			turn := &genai.Content{Role: "model"}
 			if message.Content != "" {

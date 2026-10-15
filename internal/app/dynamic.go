@@ -36,7 +36,8 @@ type scheduledResult struct {
 	err             error
 }
 
-func (s *Service) executeDynamic(ctx context.Context, root, session string, source config.Model, p storage.RunProfile, history []model.Message, rework *reworkRequest) error {
+func (s *Service) executeScheduled(ctx context.Context, root, session string, source config.Model, p storage.RunProfile, history []model.Message, rework *reworkRequest) error {
+	fixed := p.Execution.Workflow == "fixed"
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup
@@ -49,6 +50,7 @@ func (s *Service) executeDynamic(ctx context.Context, root, session string, sour
 	sequence := 0
 	planningFailures := 0
 	validationError := ""
+	var dispatchError error
 	runner := bookkeepingTools{inner: emptyTools{}, svc: s, profile: p, sessionID: session, runID: root}
 	engine := agent.Engine{Tools: runner, Recorder: runRecorder{svc: s, runID: root, sessionID: session, classifier: s.classifierFor(p)}, Gate: toolGate{svc: s, contextID: p.ContextID, snapshot: &p, runID: root}, Approver: s, ApprovalTimeout: s.ApprovalTimeout}
 	for {
@@ -58,6 +60,9 @@ func (s *Service) executeDynamic(ctx context.Context, root, session string, sour
 			case result := <-results:
 				delete(active, result.id)
 				delete(activeModes, result.id)
+				if result.err != nil {
+					dispatchError = result.err
+				}
 			default:
 				break drain
 			}
@@ -72,13 +77,33 @@ func (s *Service) executeDynamic(ctx context.Context, root, session string, sour
 		if g.RunStatus != "running" {
 			return errors.New("根任务已结束")
 		}
+		if fixed {
+			if dispatchError != nil {
+				if err := s.store.AcknowledgeCoordination(ctx, root, g.Coordination.EventSeq, "blocked", boundedText(dispatchError.Error(), 4000)); err != nil {
+					return err
+				}
+				return fmt.Errorf("固定阶段执行未完成：%w", dispatchError)
+			}
+			for _, item := range g.Tasks {
+				if item.State != "pending" && item.State != "running" && item.State != "succeeded" {
+					_ = s.store.AcknowledgeCoordination(ctx, root, g.Coordination.EventSeq, "blocked", "固定阶段失败或结果未知，不自动重试")
+					return fmt.Errorf("固定阶段 %s：%s", item.Spec.ID, item.State)
+				}
+			}
+			if len(active) == 0 && validCompletion(g) == nil {
+				if err := s.store.AcknowledgeCoordination(ctx, root, g.Coordination.EventSeq, "complete", "全部固定阶段执行成功，尚待交付审查"); err != nil {
+					return err
+				}
+				return s.deliverScheduled(ctx, root, session, source, p, g, history)
+			}
+		}
 		if g.Coordination.State == "complete" && g.Coordination.EventSeq <= g.Coordination.PlannedSeq && len(active) == 0 {
 			if err := validReworkCompletion(g, rework); err != nil {
 				return err
 			}
-			return s.deliverDynamic(ctx, root, session, source, p, g, history)
+			return s.deliverScheduled(ctx, root, session, source, p, g, history)
 		}
-		if g.Coordination.EventSeq > g.Coordination.PlannedSeq {
+		if !fixed && g.Coordination.EventSeq > g.Coordination.PlannedSeq {
 			// Debounce only durable semantic events; streaming tokens are never inputs.
 			timer := time.NewTimer(25 * time.Millisecond)
 			select {
@@ -127,7 +152,7 @@ func (s *Service) executeDynamic(ctx context.Context, root, session string, sour
 				}
 			}
 			planningFailures = 0
-			if err = s.store.AcknowledgePlanner(ctx, root, observed.Coordination.EventSeq, patch.Disposition, patch.Reason); err != nil {
+			if err = s.store.AcknowledgeCoordination(ctx, root, observed.Coordination.EventSeq, patch.Disposition, patch.Reason); err != nil {
 				return err
 			}
 			s.publish(Event{Type: "run.updated", SessionID: session, RunID: root, Detail: "planner 已提交计划"})
@@ -152,7 +177,7 @@ func (s *Service) executeDynamic(ctx context.Context, root, session string, sour
 				if err := validReworkCompletion(g, rework); err != nil {
 					return err
 				}
-				return s.deliverDynamic(ctx, root, session, source, p, g, history)
+				return s.deliverScheduled(ctx, root, session, source, p, g, history)
 			case "continue":
 			default:
 				return errors.New("planner 返回无效 disposition")
@@ -226,16 +251,19 @@ func (s *Service) executeDynamic(ctx context.Context, root, session string, sour
 			if err != nil {
 				return err
 			}
-			if latest.Coordination.EventSeq > latest.Coordination.PlannedSeq {
+			if !fixed && latest.Coordination.EventSeq > latest.Coordination.PlannedSeq {
 				continue
 			}
-			_ = s.store.AcknowledgePlanner(ctx, root, latest.Coordination.EventSeq, "blocked", "没有可执行任务或新事件，不能证明目标完成")
+			_ = s.store.AcknowledgeCoordination(ctx, root, latest.Coordination.EventSeq, "blocked", "没有可执行任务或新事件，不能证明目标完成")
 			return errors.New("规划没有可执行任务或新事件，根任务阻塞")
 		}
 		select {
 		case result := <-results:
 			delete(active, result.id)
 			delete(activeModes, result.id)
+			if result.err != nil {
+				dispatchError = result.err
+			}
 		case <-time.After(40 * time.Millisecond):
 		case <-ctx.Done():
 			return ctx.Err()
@@ -291,7 +319,11 @@ func (s *Service) plannerRound(ctx context.Context, root, parentSession string, 
 	if err != nil {
 		return patch, err
 	}
-	payload, err := json.Marshal(map[string]any{"rework": rework, "validationError": validationError, "livePolicy": localContext.Policy, "goal": g.Goal, "graph": g, "workers": workers, "evidence": evidence, "context": history})
+	contextHistory := append([]model.Message(nil), history...)
+	for i := range contextHistory {
+		contextHistory[i].Files = nil
+	}
+	payload, err := json.Marshal(map[string]any{"rework": rework, "validationError": validationError, "livePolicy": localContext.Policy, "goal": g.Goal, "graph": g, "workers": workers, "evidence": evidence, "context": contextHistory})
 	if err != nil {
 		return patch, err
 	}
@@ -299,6 +331,11 @@ func (s *Service) plannerRound(ctx context.Context, root, parentSession string, 
 		return patch, errors.New("规划输入超过 512 KiB，请缩小任务材料")
 	}
 	messages := []model.Message{{Role: "system", Content: p.Persona + "\n" + p.SystemPrompt + "\n" + plannerContract}, {Role: "user", Content: string(payload)}}
+	files, e := s.store.RunInputFiles(ctx, root)
+	if e != nil {
+		return patch, e
+	}
+	messages[1].Files = files
 	if _, err = s.store.AddMessage(ctx, session.ID, run.ID, storage.RoleUser, string(payload)); err != nil {
 		return patch, err
 	}
@@ -393,7 +430,7 @@ func (s *Service) dynamicEvidence(ctx context.Context, g storage.TaskGraph, rece
 	}
 	return items, nil
 }
-func (s *Service) deliverDynamic(ctx context.Context, root, session string, source config.Model, p storage.RunProfile, g storage.TaskGraph, history []model.Message) error {
+func (s *Service) deliverScheduled(ctx context.Context, root, session string, source config.Model, p storage.RunProfile, g storage.TaskGraph, history []model.Message) error {
 	evidence, err := s.dynamicEvidence(ctx, g, session, p)
 	if err != nil {
 		return err

@@ -61,7 +61,7 @@ func cmdConversations(client *ipc.Client, args []string) int {
 
 	case "permissions":
 		if parsed.arg(0) == "" {
-			return usage("conversations permissions <id> [--mode manual|semi|automatic] [--workspace <路径>] [--unrestricted|--restricted] [--memory|--no-memory]")
+			return usage("conversations permissions <id> [--mode manual|semi|automatic] [--workspace <路径>] [--command <可执行文件>] [--unrestricted|--restricted] [--memory|--no-memory]")
 		}
 		var c storage.Conversation
 		if err := client.Call("conversations.get", map[string]any{"id": parsed.arg(0)}, &c); err != nil {
@@ -78,6 +78,10 @@ func cmdConversations(client *ipc.Client, args []string) int {
 		}
 		if path := parsed.value("workspace"); path != "" {
 			local.Policy.Permissions.WorkspacePaths = []string{path}
+			changed = true
+		}
+		if command := parsed.value("command"); command != "" {
+			local.Policy.Permissions.Commands = []string{command}
 			changed = true
 		}
 		if parsed.flags["unrestricted"] && parsed.flags["restricted"] {
@@ -107,7 +111,7 @@ func cmdConversations(client *ipc.Client, args []string) int {
 				return fail("contexts.update", err)
 			}
 		}
-		fmt.Printf("审批: %s\n一般资源范围不限: %t\n工作区: %v\n记忆授权: %t\n", local.Policy.ApprovalMode, local.Policy.Permissions.Unrestricted, local.Policy.Permissions.WorkspacePaths, local.Policy.Memory)
+		fmt.Printf("审批: %s\n一般资源范围不限: %t\n工作区: %v\n可执行文件: %v\n记忆授权: %t\n", local.Policy.ApprovalMode, local.Policy.Permissions.Unrestricted, local.Policy.Permissions.WorkspacePaths, local.Policy.Permissions.Commands, local.Policy.Memory)
 		return 0
 	case "list":
 		var items []storage.Conversation
@@ -197,8 +201,24 @@ func cmdTemplates(client *ipc.Client, args []string) int {
 		printTable(rows)
 		return 0
 	}
+	if args[0] == "show" {
+		if len(args) != 2 {
+			return usage("templates show <模板ID>")
+		}
+		var templates []storage.ProfileTemplate
+		if err := client.Call("templates.list", nil, &templates); err != nil {
+			return fail("templates.list", err)
+		}
+		for _, item := range templates {
+			if item.ID == args[1] {
+				fmt.Printf("%s（v%d，%s）\n输入: %s\n交付: %s\n准备: %s\n示例: %s\n", item.Name, item.Version, item.Validation, item.Guide.Input, item.Guide.Output, item.Guide.Requirements, item.Guide.Example)
+				return 0
+			}
+		}
+		return usage("出厂模板不存在或尚未实现")
+	}
 	if args[0] != "create" {
-		return usage("templates list | create <模板ID> [名称]")
+		return usage("templates list | show <模板ID> | create <模板ID> [名称]")
 	}
 	parsed, err := parseCLI(args[1:])
 	if err != nil || parsed.arg(0) == "" {

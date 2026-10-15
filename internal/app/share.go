@@ -90,7 +90,8 @@ type shareDelegation struct {
 }
 
 type ExportResult struct {
-	Filename string `json:"filename"`
+	ReviewNotes []string `json:"reviewNotes"`
+	Filename    string   `json:"filename"`
 	// Data is the zip package, base64-encoded for the binding/IPC layers.
 	Data string `json:"data"`
 }
@@ -121,6 +122,20 @@ func (s *Service) exportProfile(profileID string, includeWorkers bool) (ExportRe
 	if err != nil {
 		return ExportResult{}, err
 	}
+	reviewNotes := []string{}
+	noteProfile := func(p storage.Profile) error {
+		scopes, err := s.store.ProfileRevisionScopes(context.Background(), p.ID, p.Revision)
+		if err != nil {
+			return err
+		}
+		if len(scopes) > 0 {
+			reviewNotes = append(reviewNotes, "Profile "+p.Name+" 包含草案派生配置；请检查提示词/配置是否含不应分享的任务资料（来源范围："+strings.Join(scopes, ",")+"）")
+		}
+		return nil
+	}
+	if err = noteProfile(profile); err != nil {
+		return ExportResult{}, err
+	}
 	for i, source := range profile.Data.Execution.WorkerSources {
 		if source.ProfileID == "" {
 			continue
@@ -130,6 +145,9 @@ func (s *Service) exportProfile(profileID string, includeWorkers bool) (ExportRe
 		}
 		dependency, err := s.store.GetProfile(context.Background(), source.ProfileID)
 		if err != nil {
+			return ExportResult{}, err
+		}
+		if err = noteProfile(dependency); err != nil {
 			return ExportResult{}, err
 		}
 		portable, err := storage.WorkerConfigurationFrom(dependency)
@@ -232,6 +250,14 @@ func (s *Service) exportProfile(profileID string, includeWorkers bool) (ExportRe
 		if item == nil {
 			continue
 		}
+		if snap, managed := s.skills.ManagedSnapshot(name); managed {
+			reviewNotes = append(reviewNotes, "Skill "+name+" 是草案发布副本；请检查正文是否含不应分享的任务资料，自动检查不能证明已脱敏")
+			files["skills/"+name+"/SKILL.md"] = []byte(snap.Content)
+			for path, resource := range snap.Resources {
+				files["skills/"+name+"/"+path] = resource.Data
+			}
+			continue
+		}
 		root := filepath.Dir(item.Path)
 		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
@@ -274,7 +300,7 @@ func (s *Service) exportProfile(profileID string, includeWorkers bool) (ExportRe
 	if err := zw.Close(); err != nil {
 		return ExportResult{}, err
 	}
-	return ExportResult{Filename: shareFileName(profile.Name) + ".zip", Data: base64.StdEncoding.EncodeToString(buf.Bytes())}, nil
+	return ExportResult{ReviewNotes: reviewNotes, Filename: shareFileName(profile.Name) + ".zip", Data: base64.StdEncoding.EncodeToString(buf.Bytes())}, nil
 }
 
 func shareFileName(name string) string {

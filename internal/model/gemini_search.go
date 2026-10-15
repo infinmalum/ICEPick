@@ -31,7 +31,7 @@ func geminiSearchParams(source config.Model, messages []Message, tools []Tool, s
 		case "system":
 			system += m.Content + "\n"
 		case "user":
-			history = append(history, map[string]any{"type": "user_input", "content": []any{map[string]any{"type": "text", "text": m.Content}}})
+			history = append(history, map[string]any{"type": "user_input", "content": materialBlocks(m, "gemini")})
 		case "assistant":
 			if len(m.ProviderState) > 0 {
 				for _, step := range m.ProviderState {
@@ -60,7 +60,7 @@ func geminiSearchParams(source config.Model, messages []Message, tools []Tool, s
 	}
 	declared := []any{}
 	if enabled {
-		declared = append(declared, map[string]any{"type": "google_search"})
+		declared = append(declared, map[string]any{"type": "google_search"}, map[string]any{"type": "url_context"})
 	}
 	for _, tool := range providerToolsOf(tools) {
 		schema := map[string]any{"type": "object", "properties": map[string]any{}}
@@ -116,6 +116,8 @@ func geminiSearchResult(result geminiInteractionResult) (ChatResponse, error) {
 			} `json:"content"`
 			Result []struct {
 				Suggestions string `json:"search_suggestions"`
+				URL         string `json:"url"`
+				Status      string `json:"status"`
 			} `json:"result"`
 		}
 		if err := json.Unmarshal(raw, &step); err != nil {
@@ -139,20 +141,27 @@ func geminiSearchResult(result geminiInteractionResult) (ChatResponse, error) {
 					}
 				}
 			}
-		case "google_search_call":
+		case "google_search_call", "url_context_call":
 			var args struct {
 				Queries []string `json:"queries"`
+				URLs    []string `json:"urls"`
 			}
 			if err := json.Unmarshal(step.Arguments, &args); err != nil {
 				return out, err
 			}
-			out.Search.Events = append(out.Search.Events, SearchEvent{Type: "google_search_call", ID: step.ID, Queries: args.Queries, Status: "completed"})
-		case "google_search_result":
-			out.Search.Events = append(out.Search.Events, SearchEvent{Type: "google_search_result", ID: step.CallID, Status: "completed"})
+			out.Search.Events = append(out.Search.Events, SearchEvent{Type: step.Type, ID: step.ID, Queries: append(args.Queries, args.URLs...), Status: "completed"})
+		case "google_search_result", "url_context_result":
+			out.Search.Events = append(out.Search.Events, SearchEvent{Type: step.Type, ID: step.CallID, Status: "completed"})
 			if step.IsError {
 				return out, errors.New("Gemini Google Search 返回错误")
 			}
 			for _, item := range step.Result {
+				if step.Type == "url_context_result" {
+					out.Search.Events = append(out.Search.Events, SearchEvent{Type: "url_context_source", ID: step.CallID, URL: item.URL, Status: item.Status})
+					if item.Status == "success" && ValidCitationURL(item.URL) {
+						out.Search.Citations = append(out.Search.Citations, Citation{URL: item.URL, Title: item.URL})
+					}
+				}
 				if item.Suggestions != "" {
 					out.Search.Suggestions = append(out.Search.Suggestions, item.Suggestions)
 				}
@@ -238,7 +247,7 @@ func (s *geminiSearchStream) consume(raw []byte, search SearchOptions, onDelta f
 			return errors.New("Gemini 流步骤索引无效或重复")
 		}
 		s.steps[event.Index] = event.Step
-		if event.Step["type"] == "google_search_call" {
+		if event.Step["type"] == "google_search_call" || event.Step["type"] == "url_context_call" {
 			id, _ := event.Step["id"].(string)
 			return emit(SearchEvent{Type: "google_search_started", ID: id, Status: "executing"})
 		}
@@ -289,7 +298,7 @@ func (s *geminiSearchStream) consume(raw []byte, search SearchOptions, onDelta f
 			if content, ok := event.Delta["content"]; ok {
 				step["summary"] = append(parts, content)
 			}
-		case "google_search_call", "google_search_result":
+		case "google_search_call", "google_search_result", "url_context_call", "url_context_result":
 			if step["type"] != kind {
 				return errors.New("Gemini 搜索增量类型不匹配")
 			}

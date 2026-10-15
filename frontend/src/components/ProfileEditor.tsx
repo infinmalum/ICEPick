@@ -94,7 +94,7 @@ export function ProfileEditor(props: Props) {
             disabled={profileBusy}
             onClick={exportProfile}
           >
-            导出分享包
+            导出 Profile
           </button>
           <button
             type="button"
@@ -102,7 +102,7 @@ export function ProfileEditor(props: Props) {
             disabled={profileBusy}
             onClick={() => importInputRef.current?.click()}
           >
-            导入分享包…
+            导入 Profile…
           </button>
           <input
             ref={importInputRef}

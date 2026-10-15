@@ -53,16 +53,20 @@ func usage(errDetail string) int {
 	fmt.Fprintln(out, `用法：
   icepick serve                    启动无头宿主（含 IPC；桌面端同时内置）
   icepick status                   查看宿主与模型状态
-  icepick templates list | create <模板ID> [名称]
+  icepick profiles draft <对话ID> <需求> [--target <ProfileID>] [--evidence <runID,runID>]
+  icepick skill-drafts generate <对话ID> <需求> [--source <Skill名称>] [--evidence <runID,runID>]
+  icepick skill-drafts list | show <ID> | edit <ID> <proposal.json> --revision N | apply|discard|withdraw <ID> --revision N
+  icepick profiles drafts list | show <ID> | edit <ID> <proposal.json> --revision N | apply|discard|revert <ID> --revision N
+  icepick templates list | show <模板ID> | create <模板ID> [名称]
   icepick conversations list | create --profile <id> [--reuse <对话ID>]
   icepick conversations select <对话ID> --profile <id>
   icepick conversations start <对话ID> <任务内容…> [--wait] | show <对话ID>
   icepick conversations search <对话ID> [on|off|records]
-  icepick conversations permissions <对话ID> [--mode semi] [--workspace <路径>]
+  icepick conversations permissions <对话ID> [--mode semi] [--workspace <路径>] [--command <可执行文件>]
   icepick profiles list | create <名称> [--from <id>] | copy <id> <新名称>
   icepick profiles edit <id> [--name N] [--description D] [--prompt P] [--model 提供方/模型ID] [--budget N]
   icepick profiles restore | delete <id> [--replace <ProfileID> | --restore-workers]
-  icepick profiles export <id> [--out <文件.zip>] [--include-workers] | import <包.zip|目录> [--yes]
+  icepick profiles export <id> [--out <文件.zip>] [--include-workers] [--reviewed] | import <包.zip|目录> [--yes]
   icepick tasks status <runID> | review <sessionID> <runID> | cancel <runID>
   icepick approvals list [--context <contextID>] | approve <callID> | deny <callID> [原因]
   icepick memory list <contextID> | add <contextID> <内容…> | edit <contextID> <id> <内容…> | delete <contextID> <id> | export <contextID> [--out <文件>]
@@ -123,6 +127,8 @@ func dispatch(client *ipc.Client, args []string) int {
 		return cmdTemplates(client, args[1:])
 	case "status":
 		return cmdStatus(client)
+	case "skill-drafts":
+		return cmdSkillDrafts(client, args[1:])
 	case "profiles":
 		return cmdProfiles(client, args[1:])
 	case "tasks":

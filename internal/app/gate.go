@@ -210,7 +210,7 @@ func (g toolGate) hardLimits(ctx context.Context, profile storage.RunProfile, re
 		if g.parent != nil {
 			return "委派子任务不提供规划"
 		}
-		if !profile.PlanEnabled {
+		if !profile.PlanEnabled || profile.Execution.Workflow == "fixed" {
 			return "该 Profile 未启用规划"
 		}
 	}

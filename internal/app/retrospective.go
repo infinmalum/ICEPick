@@ -79,6 +79,10 @@ func (s *Service) retrospectTarget(ctx context.Context, target, executionRoot, p
 		return report, err
 	}
 	messages := []model.Message{{Role: "system", Content: p.Persona + "\n" + p.SystemPrompt + "\n" + retrospectiveContract}, {Role: "user", Content: string(payload)}}
+	messages[1].Files, err = s.store.RunInputFiles(ctx, target)
+	if err != nil {
+		return report, err
+	}
 	recorder := runRecorder{svc: s, runID: run.ID, sessionID: session.ID, classifier: s.classifierFor(p)}
 	step, err := recorder.ModelRequest(runCtx, p.Model, messages, nil)
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 )
 
 type FrozenProfile struct {
+	Scopes   []string          `json:"scopes"`
 	ID       string            `json:"id"`
 	Name     string            `json:"name"`
 	Revision int               `json:"revision"`
@@ -54,6 +55,9 @@ func readFrozenProfile(ctx context.Context, tx *sql.Tx, id string) (FrozenProfil
 	err := tx.QueryRowContext(ctx, `SELECT id,name,revision,config FROM profiles WHERE id=? AND archived_at IS NULL`, id).Scan(&item.ID, &item.Name, &item.Revision, &raw)
 	if err == nil {
 		err = json.Unmarshal([]byte(raw), &item.Data)
+	}
+	if err == nil {
+		item.Scopes, err = profileScopesInTx(ctx, tx, item.ID, item.Revision)
 	}
 	return item, err
 }
@@ -125,7 +129,7 @@ func intersectStrings(a, b []string) []string {
 	return out
 }
 
-func captureRunResources(ctx context.Context, tx *sql.Tx, root FrozenProfile, contextID string, policy ContextPolicy, defaultModel config.Model, snapshot SkillSnapshotter) (RunResources, error) {
+func captureRunResources(ctx context.Context, tx *sql.Tx, root FrozenProfile, contextID string, policy ContextPolicy, defaultModel config.Model, snapshot SkillSnapshotter, role string) (RunResources, error) {
 	resources := RunResources{RootContextID: contextID, RootPolicy: policy, Workers: map[string]FrozenProfile{}}
 	rawRoot := root.Data
 	// Bound retained content while capturing, before allocating the final JSON.
@@ -136,13 +140,16 @@ func captureRunResources(ctx context.Context, tx *sql.Tx, root FrozenProfile, co
 		}
 		for _, skill := range item.Skills {
 			snapshotBytes += len(skill.Content) + len(skill.Description)
+			for _, resource := range skill.Resources {
+				snapshotBytes += len(resource.Data)
+			}
 		}
 		if snapshotBytes > 16<<20 {
 			return errors.New("任务依赖快照超过 16 MiB，请收窄 Skills 或 worker 配置")
 		}
 		return nil
 	}
-	main, err := root.Data.ResolveComponent("main")
+	main, err := root.Data.ResolveComponent(role)
 	if err != nil {
 		return resources, err
 	}
@@ -154,7 +161,7 @@ func captureRunResources(ctx context.Context, tx *sql.Tx, root FrozenProfile, co
 		return resources, err
 	}
 	resources.Root = root
-	if rawRoot.Execution.Workflow == "dynamic" {
+	if role == "main" && rawRoot.Execution.Workflow == "dynamic" {
 		planned, err := rawRoot.ResolveComponent("planner")
 		if err != nil {
 			return resources, err
@@ -162,9 +169,9 @@ func captureRunResources(ctx context.Context, tx *sql.Tx, root FrozenProfile, co
 		if planned.Model.Provider == "" {
 			planned.Model = defaultModel
 		}
-		resources.Planner = FrozenProfile{ID: root.ID, Name: root.Name, Revision: root.Revision, Data: planned}
+		resources.Planner = FrozenProfile{ID: root.ID, Name: root.Name, Revision: root.Revision, Data: planned, Scopes: root.Scopes}
 	}
-	if rawRoot.Execution.Review.Mode != "" && rawRoot.Execution.Review.Mode != "off" {
+	if role == "main" && rawRoot.Execution.Review.Mode != "" && rawRoot.Execution.Review.Mode != "off" {
 		reviewed, err := rawRoot.ResolveComponent("reviewer")
 		if err != nil {
 			return resources, err
@@ -172,10 +179,14 @@ func captureRunResources(ctx context.Context, tx *sql.Tx, root FrozenProfile, co
 		if reviewed.Model.Provider == "" {
 			reviewed.Model = defaultModel
 		}
-		resources.Reviewer = FrozenProfile{ID: root.ID, Name: root.Name, Revision: root.Revision, Data: reviewed}
+		resources.Reviewer = FrozenProfile{ID: root.ID, Name: root.Name, Revision: root.Revision, Data: reviewed, Scopes: root.Scopes}
 	}
-	for _, slot := range rawRoot.Execution.WorkerSources {
-		item := FrozenProfile{ID: root.ID, Name: root.Name, Revision: root.Revision, Data: rawRoot}
+	workerSlots := rawRoot.Execution.WorkerSources
+	if role == "improver" {
+		workerSlots = nil
+	}
+	for _, slot := range workerSlots {
+		item := FrozenProfile{ID: root.ID, Name: root.Name, Revision: root.Revision, Data: rawRoot, Scopes: root.Scopes}
 		if slot.Configuration != nil {
 			item.Data = slot.Configuration.ProfileData()
 			item.Name = slot.Configuration.Name

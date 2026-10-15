@@ -62,7 +62,7 @@ func NewLocal(ctx context.Context, catalog *skills.Catalog) (*Hub, error) {
 	mcp.AddTool(server, &mcp.Tool{Name: "current_time", Description: "读取本机当前时间（含时区）"}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: time.Now().Format(time.RFC3339)}}}, nil, ctx.Err()
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "read_file", Description: "读取本机文本文件内容；受本机上下文权限与审批约束"}, func(ctx context.Context, _ *mcp.CallToolRequest, args struct {
+	mcp.AddTool(server, &mcp.Tool{Name: "read_file", Description: "读取本机文本文件或列出目录条目（最多200项，不递归）；用户指定目录时先列目录再按需读取相关文件，受本机上下文权限与审批约束"}, func(ctx context.Context, _ *mcp.CallToolRequest, args struct {
 		Path string `json:"path"`
 	}) (*mcp.CallToolResult, any, error) {
 		content, err := readLocalFile(ctx, args.Path)
@@ -74,8 +74,13 @@ func NewLocal(ctx context.Context, catalog *skills.Catalog) (*Hub, error) {
 	if catalog != nil && catalog.Summary() != "" {
 		mcp.AddTool(server, &mcp.Tool{Name: "load_skill", Description: "按名称读取已发现的 Agent Skill 的 SKILL.md 指令"}, func(_ context.Context, _ *mcp.CallToolRequest, args struct {
 			Name string `json:"name"`
+			Path string `json:"path,omitempty"`
 		}) (*mcp.CallToolResult, any, error) {
-			content, err := catalog.Load(args.Name)
+			snapshots, err := catalog.Snapshot(false, []string{args.Name})
+			if err != nil {
+				return nil, nil, err
+			}
+			content, err := snapshots[0].ReadResource(args.Path)
 			if err != nil {
 				return nil, nil, err
 			}

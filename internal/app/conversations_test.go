@@ -58,7 +58,7 @@ func TestConversationWithHTTPModelService(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForRun(t, svc, run.ID, "completed")
-	if got := <-requests; got != "HTTP component prompt" {
+	if got := <-requests; !strings.Contains(got, "HTTP component prompt") {
 		t.Fatal("model override lost", got)
 	}
 	history, err := svc.ListMessages(c.ID)

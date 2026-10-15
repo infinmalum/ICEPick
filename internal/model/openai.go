@@ -37,7 +37,15 @@ func openaiMessages(messages []Message) ([]openai.ChatCompletionMessageParamUnio
 		case "system":
 			converted = append(converted, openai.SystemMessage(message.Content))
 		case "user":
-			converted = append(converted, openai.UserMessage(message.Content))
+			if len(message.Files) == 0 {
+				converted = append(converted, openai.UserMessage(message.Content))
+			} else {
+				var item openai.ChatCompletionMessageParamUnion
+				if err := json.Unmarshal(materialJSON(message, "openai"), &item); err != nil {
+					return nil, err
+				}
+				converted = append(converted, item)
+			}
 		case "assistant":
 			param := openai.ChatCompletionAssistantMessageParam{
 				Content: openai.ChatCompletionAssistantMessageParamContentUnion{

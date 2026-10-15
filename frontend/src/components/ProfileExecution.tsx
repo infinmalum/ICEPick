@@ -1,3 +1,4 @@
+import { ProfileStages } from "./ProfileStages";
 import type { Profiles } from "../hooks/useProfiles";
 import {
   blankRootBudget,
@@ -16,32 +17,39 @@ export function ProfileExecution(props: Props) {
         <summary>高级：执行组件</summary>
         <p className="hint">
           direct 按工具调用顺序执行；dynamic 由 planner 生成计划，宿主按依赖调度
-          worker。独立审查可按需调用或设为交付门槛。
+          worker；fixed 按预设阶段执行，无需 planner。独立审查可按需调用或设为交付门槛。
         </p>
+        <label className="checkbox-label"><input type="checkbox" checked={profileDraft.data.execution.improverEnabled} onChange={(e) => setProfileDraft({ ...profileDraft, data: { ...profileDraft.data, execution: { ...profileDraft.data.execution, improverEnabled: e.target.checked } } })} />允许显式生成配置草案</label>
         <label>
           执行流程
           <select
             value={profileDraft.data.execution.workflow}
             onChange={(event) => {
               const dynamic = event.target.value === "dynamic";
+              const fixed = event.target.value === "fixed";
+              const scheduled = dynamic || fixed;
+              const workers = profileDraft.data.execution.workerSources ?? [];
+              const worker = workers[0]?.name || "worker1";
               setProfileDraft({
                 ...profileDraft,
                 data: {
                   ...profileDraft.data,
-                  planEnabled: dynamic || profileDraft.data.planEnabled,
+                  planEnabled: fixed ? false : dynamic || profileDraft.data.planEnabled,
                   delegation: {
                     ...profileDraft.data.delegation,
-                    enabled: dynamic || profileDraft.data.delegation.enabled,
-                    maxDepth: dynamic
+                    enabled: scheduled || profileDraft.data.delegation.enabled,
+                    maxDepth: scheduled
                       ? Math.max(1, profileDraft.data.delegation.maxDepth)
                       : profileDraft.data.delegation.maxDepth,
                   },
                   execution: {
                     ...profileDraft.data.execution,
                     workflow: event.target.value,
+                    budget: { ...profileDraft.data.execution.budget, autoRetry: fixed ? false : profileDraft.data.execution.budget.autoRetry },
+                    stages: fixed && !(profileDraft.data.execution.stages ?? []).length ? [{ id: "stage1", worker, task: "处理本次用户提供的材料", accessMode: "read", dependsOn: [], acceptance: "给出具体结果" }] : profileDraft.data.execution.stages,
                     workerSources:
-                      dynamic &&
-                      !(profileDraft.data.execution.workerSources ?? []).length
+                      scheduled &&
+                      !workers.length
                         ? [
                             {
                               name: "worker1",
@@ -57,6 +65,7 @@ export function ProfileExecution(props: Props) {
           >
             <option value="direct">直接执行</option>
             <option value="dynamic">动态规划与协作</option>
+            <option value="fixed">固定阶段流程（首版）</option>
           </select>
         </label>
         <p className="hint">
@@ -70,6 +79,7 @@ export function ProfileExecution(props: Props) {
         <label className="checkbox-label">
           <input
             type="checkbox"
+            disabled={profileDraft.data.execution.workflow === "fixed"}
             checked={profileDraft.data.execution.budget?.autoRetry ?? false}
             onChange={(event) =>
               setProfileDraft({
@@ -192,9 +202,9 @@ export function ProfileExecution(props: Props) {
         </label>
         <p className="hint">
           审查依据交付物和已有工具记录。必要检查需由执行组件完成并返回 JSON
-          passed:true；未执行或结果未知时无法判定。必需审查最多返工两轮，共享任务预算；按需审查只给出结论。
+          passed:true；未执行或结果未知时无法判定。直接与动态流程的必需审查最多返工两轮，共享任务预算；固定流程首版审查失败即停止，不自动改写阶段；按需审查只给出结论。
         </p>
-        {(["main", "planner", "worker", "reviewer"] as const).map((role) => {
+        {(["main", "planner", "worker", "reviewer", "improver"] as const).map((role) => {
           const component = profileDraft.data.execution[role] ?? {
             systemPrompt: "",
             restrictTools: false,
@@ -221,7 +231,7 @@ export function ProfileExecution(props: Props) {
                     ? "规划（仅生成计划）"
                     : role === "reviewer"
                       ? "独立审查（无工具）"
-                      : "子任务执行"}
+                      : role === "improver" ? "配置草案（无工具，仅手动采用）" : "子任务执行"}
               </strong>
               <label>
                 组件提示词（留空使用公共提示词）
@@ -289,7 +299,7 @@ export function ProfileExecution(props: Props) {
                   </label>
                 </>
               )}
-              {role !== "planner" && role !== "reviewer" && (
+              {role !== "planner" && role !== "reviewer" && role !== "improver" && (
                 <>
                   <label className="checkbox-label">
                     <input
@@ -472,6 +482,7 @@ export function ProfileExecution(props: Props) {
           direct 中委派按调用顺序同步执行；dynamic 由 planner 与宿主调度。worker
           来源只提供配置，权限使用当前对话授权。
         </p>
+        <ProfileStages profileState={props.profileState} />
       </details>
     </>
   );

@@ -23,7 +23,7 @@ func NewRuns(store *storage.Store) *Runs {
 	return &Runs{store: store, active: map[string]context.CancelFunc{}}
 }
 
-// Start creates the run and resolves the owning Agent's current Profile in
+// Start creates the run and resolves the conversation's current Profile in
 // one transaction. The returned resolved profile is the snapshot the run
 // must execute with; later profile edits affect only subsequent runs.
 func (r *Runs) Start(ctx context.Context, sessionID string) (storage.Run, context.Context, storage.RunProfile, error) {
@@ -32,6 +32,14 @@ func (r *Runs) Start(ctx context.Context, sessionID string) (storage.Run, contex
 
 func (r *Runs) StartPrepared(ctx context.Context, sessionID string, model config.Model, snapshot storage.SkillSnapshotter, searchTools ...string) (storage.Run, context.Context, storage.RunProfile, error) {
 	return r.start(ctx, sessionID, storage.CreateRunOptions{DefaultModel: model, SnapshotSkills: snapshot, SearchTools: searchTools})
+}
+
+func (r *Runs) StartInspection(ctx context.Context, sessionID, target string, retrospective bool, source config.Model, snapshot storage.SkillSnapshotter) (storage.Run, context.Context, storage.RunProfile, error) {
+	return r.start(ctx, sessionID, storage.CreateRunOptions{DefaultModel: source, SnapshotSkills: snapshot, Inspection: &storage.InspectionRequest{TargetRunID: target, Retrospective: retrospective}})
+}
+
+func (r *Runs) StartImprover(ctx context.Context, session string, source config.Model) (storage.Run, context.Context, storage.RunProfile, error) {
+	return r.start(ctx, session, storage.CreateRunOptions{Component: "improver", DefaultModel: source})
 }
 
 func (r *Runs) StartWorker(ctx context.Context, sessionID, parentID string, depth int, name string) (storage.Run, context.Context, storage.RunProfile, error) {

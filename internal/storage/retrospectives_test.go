@@ -42,11 +42,8 @@ func TestRetrospectivePersistenceUnknownEffectAndCompletionGate(t *testing.T) {
 	if err = s.SetRunStatus(ctx, target.ID, "failed", "响应丢失"); err != nil {
 		t.Fatal(err)
 	}
-	root, _, err := s.CreateRun(ctx, c.ID)
+	root, _, err := s.CreateRunWithOptions(ctx, c.ID, CreateRunOptions{Inspection: &InspectionRequest{TargetRunID: target.ID, Retrospective: true}})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err = s.InitRetrospectiveRequest(ctx, root.ID, target.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err = s.SetRunStatus(ctx, root.ID, "completed", ""); err == nil {

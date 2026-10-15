@@ -25,6 +25,15 @@ export function Transcript(props: Props) {
                   : "ICEPick"}
             </span>
             <p>{item.content}</p>
+            {!!item.attachments?.length && (
+              <ul className="attachment-list" aria-label="消息附件">
+                {item.attachments.map((file, index) => (
+                  <li key={index}>
+                    {file.name} · {Math.ceil(file.size / 1024)} KiB
+                  </li>
+                ))}
+              </ul>
+            )}
             {item.role === "assistant" &&
               searchRecords
                 .filter(

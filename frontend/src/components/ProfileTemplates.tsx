@@ -47,6 +47,16 @@ export function ProfileTemplates(props: Props) {
           ＋ 空白 Profile
         </button>
       </div>
+      {templates.map((item) => (
+        <details key={item.id}>
+          <summary>{item.name}：使用说明</summary>
+          <p className="hint">输入：{item.guide.input}</p>
+          <p className="hint">交付：{item.guide.output}</p>
+          <p className="hint">准备：{item.guide.requirements}</p>
+          <p className="hint">示例：{item.guide.example}</p>
+          <p className="hint">{item.validation}</p>
+        </details>
+      ))}
       {!profileDraft && (
         <p className="hint">
           请创建或选择 Profile；研究与开发模板需要提供实际材料或配置工具依赖。

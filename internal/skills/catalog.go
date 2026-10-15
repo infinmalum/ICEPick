@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -18,7 +19,11 @@ type Skill struct {
 	Path        string
 }
 
-type Catalog struct{ items map[string]Skill }
+type Catalog struct {
+	mu      sync.RWMutex
+	items   map[string]Skill
+	managed map[string]Snapshot
+}
 
 var validName = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
@@ -81,17 +86,8 @@ func parse(data []byte) (metadata, string, error) {
 }
 
 func (c *Catalog) Summary() string {
-	if c == nil || len(c.items) == 0 {
-		return ""
-	}
-	names := make([]string, 0, len(c.items))
-	for name := range c.items {
-		names = append(names, name)
-	}
-	sort.Strings(names)
 	var lines []string
-	for _, name := range names {
-		item := c.items[name]
+	for _, item := range c.Items() {
 		lines = append(lines, "- "+item.Name+": "+item.Description)
 	}
 	return strings.Join(lines, "\n")
@@ -103,7 +99,7 @@ func (c *Catalog) SummaryFor(enabled []string) string {
 	}
 	var lines []string
 	for _, name := range enabled {
-		if item, ok := c.items[name]; ok {
+		if item := c.Item(name); item != nil {
 			lines = append(lines, "- "+item.Name+": "+item.Description)
 		}
 	}
@@ -117,6 +113,8 @@ func (c *Catalog) Installed(name string) bool {
 	if c == nil {
 		return false
 	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	_, ok := c.items[name]
 	return ok
 }
@@ -126,6 +124,8 @@ func (c *Catalog) Item(name string) *Skill {
 	if c == nil {
 		return nil
 	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if item, ok := c.items[name]; ok {
 		return &item
 	}
@@ -138,6 +138,8 @@ func (c *Catalog) Items() []Skill {
 	if c == nil {
 		return nil
 	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	names := make([]string, 0, len(c.items))
 	for name := range c.items {
 		names = append(names, name)
@@ -151,8 +153,11 @@ func (c *Catalog) Items() []Skill {
 }
 
 func (c *Catalog) Load(name string) (string, error) {
-	item, ok := c.items[name]
-	if !ok {
+	if snap, ok := c.ManagedSnapshot(name); ok {
+		return snap.Content, nil
+	}
+	item := c.Item(name)
+	if item == nil {
 		return "", fmt.Errorf("未知 Skill %q", name)
 	}
 	data, err := os.ReadFile(item.Path)

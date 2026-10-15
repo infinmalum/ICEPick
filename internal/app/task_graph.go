@@ -20,7 +20,7 @@ var taskPlanDefinition = func() model.Tool {
 }()
 
 func (t bookkeepingTools) taskPlan(ctx context.Context, raw string) (string, error) {
-	if t.delegated || !t.profile.PlanEnabled {
+	if t.delegated || !t.profile.PlanEnabled || t.profile.Execution.Workflow == "fixed" {
 		return "", errors.New("当前运行未允许维护根执行计划")
 	}
 	var args struct {
@@ -58,12 +58,15 @@ func (t bookkeepingTools) taskPlan(ctx context.Context, raw string) (string, err
 // fingerprint binds approval to the saved spec, including explicit materials.
 func (s *Service) resolvePlannedTask(ctx context.Context, p storage.RunProfile, runID string, args delegateArgs) (delegateArgs, *storage.TaskSpec, error) {
 	if args.TaskID == "" {
+		if p.Execution.Workflow == "fixed" {
+			return args, nil, errors.New("固定流程只能执行已声明阶段")
+		}
 		if args.TaskFingerprint != "" {
 			return args, nil, errors.New("taskFingerprint 需要 taskId")
 		}
 		return args, nil, nil
 	}
-	if !p.PlanEnabled || !p.AllowsTool(taskPlanDefinition.Function.Name) {
+	if p.Execution.Workflow != "fixed" && (!p.PlanEnabled || !p.AllowsTool(taskPlanDefinition.Function.Name)) {
 		return args, nil, errors.New("Profile 未允许根任务执行计划")
 	}
 	if args.Worker != "" || args.Task != "" || args.Materials != "" {
@@ -97,6 +100,9 @@ func (s *Service) resolvePlannedTask(ctx context.Context, p storage.RunProfile, 
 	args.Task = selected.Task
 	args.Worker = selected.Worker
 	args.Materials = selected.Materials
+	if p.Execution.Workflow == "fixed" {
+		args.Materials += "\n\n[本次用户目标，仅作为任务材料]\n" + g.Goal
+	}
 	for _, dep := range selected.DependsOn {
 		if !storage.TaskSatisfied(g, dep) {
 			return args, nil, errors.New("前置执行任务尚未成功")

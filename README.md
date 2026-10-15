@@ -6,14 +6,14 @@ ICEPick 是一个本地优先、领域无关的 Agent 宿主。它使用 Go 和 
 
 目标是让用户通过 **Profile** 定义完整场景，选择主执行、规划、worker、审查、配置改进等内置 Agent 组件，组合模型、指令、工具、Skills 和执行流程。运行实例由宿主创建，用户无需维护另一套 Agent 列表。计划按实际能力提供“日常助手”“研究分析”“写作编辑”“开发协作”四个经真实验收的场景 Profile 和空白创建入口。审查和复盘在当前场景中调用，无需切换 Profile；Profile/Skills 改进经过候选、验证、发布和回退流程。
 
-R1–R2 两批增量已接入：桌面以 Profile 为入口，运行状态和授权由本机上下文自动管理，用户通过对话选择配置，不需要管理 Agent。已提供日常助手、写作编辑的可编辑模板副本与空白入口，标记为待真实模型验收。R3 已接入独立 planner、自动依赖调度和只读 worker 并行；研究分析与开发协作提供试验配置，需材料或工具依赖。R4 已接入独立审查门槛、最多两轮的有限返工和历史结果单次复核与独立过程复盘；固定流程和配置改进仍待交付。实现范围与后续阶段见[设计文档](docs/architecture.md)和[实施计划](IMPLEMENTATION_PLAN.md)。
+R1–R2 两批增量已接入：桌面以 Profile 为入口，运行状态和授权由本机上下文自动管理，用户通过对话选择配置，不需要管理 Agent。已提供日常助手、写作编辑的可编辑模板副本与空白入口，标记为待真实模型验收。R3 已接入独立 planner、自动依赖调度和只读 worker 并行；研究分析与开发协作提供试验配置，需材料或工具依赖。R4 已接入独立审查门槛、最多两轮的有限返工和历史结果单次复核与独立过程复盘；R6a 已接入自然语言创建/改进 Profile 草案、手动编辑/采用/丢弃及撤销；Skill 草案、明确选择的任务证据及预期验收条件也已接入；固定流程与自动采用仍待交付。实现范围与后续阶段见[设计文档](docs/architecture.md)和[实施计划](IMPLEMENTATION_PLAN.md)。
 
 ## 当前功能
 
 文件覆盖需预期内容，精确编辑要求唯一匹配；本地命令返回退出码、输出、超时及截断标记。工作区及可执行文件由本机权限控制，命令执行仍需审批，未提供完整沙箱。MCP 工具先通过 `local__tool_search` 搜索加载，下一轮调用，保留 schema 指纹及实际调用记录。
 
 - 直接选择 Profile 开始对话，无需创建 Agent；新对话默认隔离上下文，可显式沿用已有对话的记忆与权限。Profile 切换按对话保存，保留历史和授权，在途 Run 使用旧快照。
-- main/worker 组件支持独立提示词、模型和工具子集；worker 来源可选当前或其他 Profile 的配置，运行固定修订、模型与所选 SKILL.md 内容；支持 direct 与 dynamic 流程。出厂模板可创建、编辑和按配置组恢复，删除本地 Profile 不删除程序模板、历史或授权。
+- main/worker 组件支持独立提示词、模型和工具子集；worker 来源可选当前或其他 Profile 的配置，运行固定修订、模型与所选 SKILL.md 内容；支持 direct、dynamic 与 fixed 静态阶段流程。出厂模板可创建、编辑和按配置组恢复，删除本地 Profile 不删除程序模板、历史或授权。
 - Profile schemaVersion=1、事务修订记录和归档删除；v6 分享包含流程、planner、预算及独立 worker 配置，只读取当前格式，不携带本机授权和出厂绑定。
 - 按 LocalContext 隔离会话、消息和任务记录；支持多轮对话、工具调用、流式输出与取消任务。
 - 统一接入 MCP 服务和 Agent Skills，由 Profile 选择启用范围，与对话本机授权取交集执行。
@@ -21,6 +21,7 @@ R1–R2 两批增量已接入：桌面以 Profile 为入口，运行状态和授
 - 上下文压缩：会话超过 Profile 上下文预算时自动把最旧的完整轮次归纳为摘要（保留当前任务与未闭合工具调用，原文不删），摘要继承数据范围并继续受外发检查约束；会话视图可查看摘要与覆盖区间。
 - 按本机上下文隔离的长期记忆：记忆按 `context_id` 隔离，Profile 偏好与本机上下文授权同时开启才生效；运行开始时注入（来源与范围标注，范围计入外发检查），模型可经 `local__memory_save`（需审批）写入；桌面记忆面板与 `icepick memory` 命令提供查看/编辑/添加/删除/导出。
 - 任务计划：模型经 `local__update_plan` 维护带稳定 ID、依赖、验收条件与材料出处的计划；宿主校验依赖和修订，防止并发覆盖及已开始任务被重写。桌面/CLI 显示计划，重启后恢复；清除保留修订历史。此处会话待办状态由模型记录；根任务的 dynamic 自动调度与独立审查使用另一套实际执行状态。
+- [固定阶段流程](docs/fixed-workflows.md)：Profile 定义静态阶段和依赖，宿主无需 planner 即可调度；支持只读并行汇合、写入串行、main 汇总与审查门槛。桌面可编辑阶段，分享和配置组恢复保留结构；首版失败停止，不支持条件分支、用户输入等待、自动返工或中断续跑。
 - 动态协作：Profile 选择 dynamic 后，planner 按关键事件生成/修订依赖计划，宿主审批、领取并调度，main 整理交付。只读任务并行，写入和未知副作用串行；waiting/blocked/failed/complete 状态明确。根预算覆盖所有组件与重试，模型用量未知时保留预留并标记；安全自动重试需显式开启。重启保留游标与尝试，进入阻塞，不盲目重放。
 - 本次任务执行计划：启用规划、委派和 worker 槽位后，main 可声明依赖任务，经审批按 ID 与条件指纹执行。宿主原子领取并关联子 Run、执行尝试和前置交付文本；状态由实际执行推进，未执行任务不能标记完成，中断和未知结果不会自动重跑。桌面与 `tasks status` 可查看完整计划和尝试；dynamic 已支持 planner 与受控只读并行；可配置独立 reviewer 审查。
 - 本机委派：Profile 配置 worker 槽位后，main 经 `local__delegate_task` 按槽位派发子任务；来源可为当前配置或其他 Profile 的 worker 投影。所有子任务使用当前对话的本机上下文与授权，冻结配置和资源上限，取消父任务会传播到子任务。
@@ -59,7 +60,14 @@ wails3 build
 bin/icepick serve            # 启动无头宿主（Ctrl+C 退出）
 bin/icepick status           # 宿主与模型状态
 bin/icepick profiles list    # Profile 列表（create/copy/edit/restore/export/import/delete）
+bin/icepick profiles draft <conversationID> "创建一个初学者解释助手"
+bin/icepick skill-drafts generate <conversationID> "提炼复核方法" --evidence <runID>
+bin/icepick skill-drafts list
+bin/icepick profiles drafts list
+bin/icepick profiles drafts show <draftID>
+bin/icepick profiles drafts apply <draftID> --revision <草案修订>
 bin/icepick templates list   # 可用场景模板
+bin/icepick templates show development   # 输入、交付、准备条件及示例
 bin/icepick templates create daily   # 创建日常助手 Profile
 bin/icepick conversations create --profile <profileID>   # 新对话，自动隔离
 bin/icepick conversations start <conversationID> "任务内容" --wait
@@ -72,6 +80,10 @@ bin/icepick memory list <contextID>   # 长期记忆（add/edit/delete/export）
 bin/icepick logs 100         # 查看宿主日志
 bin/icepick help             # 完整命令列表
 ```
+
+配置草案的使用说明和限制见[Profile/Skill 草案指南](docs/profile-drafts.md)。任务证据必须明确选择，Skill 采用发布独立副本；分享派生配置前需人工检查内容，CLI 使用 `--reviewed` 保存经核对的分享包。
+
+四个模板的使用说明、案例与验收范围见[默认场景指南](docs/scenarios.md)。开发任务可使用内置读写编辑/exec，无需另装 MCP；CLI 用 `conversations permissions <conversationID> --command <可执行文件>` 设置命令权限，该选项替换当前命令列表。
 
 无交互执行遇到审批请求时只报告、绝不默认放行；可在桌面端或用 `approvals approve/deny` 处理。
 
@@ -124,6 +136,10 @@ go test ./...
 
 其他模型接口可使用已配置的搜索 MCP：在对应 `mcpServers` 项添加 `"webSearchTools": ["真实搜索工具名"]`，并在 Profile 选择该服务/工具。开启时提供登记的真实 schema，调用仍需权限和审批；关闭时不提供这些专用搜索工具。没有可用路径时显示原因，不自动安装搜索服务。普通命令和其他 MCP 的联网行为仍由原权限机制控制。
 
-搜索记录保存实际事件、来源链接及能取得的用量；网页材料属于未知来源。OpenAI 和 Anthropic 每请求最多预留 3 次搜索，共享根工具预算，完整响应释放未用预留。Gemini 没有服务商内部搜索次数的硬上限参数，按每个宿主搜索请求预留并消耗 1 个预算单位，内部次数与独立费用未报告时明确显示未知；不会把查询条数当作实际调用/账单次数。中断保留未知结果与预留，不自动重试或重放。Google 搜索建议保存并在隔离、禁脚本的 iframe 中呈现；不把服务商 HTML 放进宿主页。真实服务及稳定场景验收仍待完成。
+搜索记录保存实际事件、来源链接及能取得的用量；网页材料属于未知来源。OpenAI 和 Anthropic 每请求最多预留 3 次搜索/网页读取，共享根工具预算，完整响应释放未用预留。Gemini 没有服务商内部搜索次数的硬上限参数，按每个宿主搜索请求预留并消耗 1 个预算单位，内部次数与独立费用未报告时明确显示未知；不会把查询条数当作实际调用/账单次数。中断保留未知结果与预留，不自动重试或重放。Google 搜索建议保存并在隔离、禁脚本的 iframe 中呈现；不把服务商 HTML 放进宿主页。真实服务及稳定场景验收仍待完成。
 
-当前数据库格式为 **v22**。Profile 定义工作方式，LocalContext 只拥有本机权限和私人状态，Conversation 明确选择 Profile，Run 固定执行配置。新建对话才创建 Context，宿主没有隐式默认 Context。消息、运行、计划和摘要的 Context 由 Session 推导，不重复保存归属列。任务查询、取消和工具审批只需资源 ID；CLI 使用 `tasks status <runID>`、`tasks cancel <runID>`、`approvals approve <callID>`，待审批列表可用 `approvals list --context <contextID>` 筛选。旧数据库格式明确拒绝，不迁移、不删除原文件。
+当前数据库格式为 **v25**。Profile 定义工作方式，LocalContext 只拥有本机权限和私人状态，Conversation 明确选择 Profile，Run 固定执行配置。新建对话才创建 Context，宿主没有隐式默认 Context。消息、运行、计划和摘要的 Context 由 Session 推导，不重复保存归属列。任务查询、取消和工具审批只需资源 ID；CLI 使用 `tasks status <runID>`、`tasks cancel <runID>`、`approvals approve <callID>`，待审批列表可用 `approvals list --context <contextID>` 筛选。旧数据库格式明确拒绝，不迁移、不删除原文件。
+
+### 对话附件与网页材料
+
+输入框旁的“添加附件”支持图片、PDF、文本和 DOCX；Profile ZIP 包使用独立的“导入 Profile / 导出 Profile”。开启已有联网搜索后直接粘贴 URL，可按需读取指定页面；本地目录直接写入消息，由现有 read_file 列目录并读取授权文件。Skill 的 references/scripts/assets 随任务冻结并由 load_skill 按需读取，脚本执行复用本地 write_file/exec。格式、大小、权限及各服务商行为见[材料输入说明](docs/materials.md)。
