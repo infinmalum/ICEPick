@@ -4,6 +4,8 @@ import (
 	"embed"
 	"log"
 	"os"
+	"path/filepath"
+	"runtime"
 
 	"icepick/internal/app"
 	"icepick/internal/cli"
@@ -32,6 +34,19 @@ func runDesktop() {
 		log.Fatal(err)
 	}
 	defer h.Close()
+	// GTK/WebKit uses XDG paths for its own persistent page state and cache.
+	// Set them before creating the first webview so it stays with this install.
+	if runtime.GOOS == "linux" {
+		for key, subdir := range map[string]string{"XDG_CONFIG_HOME": "config", "XDG_DATA_HOME": "storage", "XDG_CACHE_HOME": "cache", "XDG_STATE_HOME": "state"} {
+			dir := filepath.Join(h.Paths.Data, "webview", subdir)
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				log.Fatal(err)
+			}
+			if err := os.Setenv(key, dir); err != nil {
+				log.Fatal(err)
+			}
+		}
+	}
 
 	wails := application.New(application.Options{
 		Name:        "ICEPick",
@@ -42,6 +57,7 @@ func runDesktop() {
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
 		},
+		Windows: application.WindowsOptions{WebviewUserDataPath: filepath.Join(h.Paths.Data, "webview")},
 		Mac: application.MacOptions{
 			ApplicationShouldTerminateAfterLastWindowClosed: true,
 		},

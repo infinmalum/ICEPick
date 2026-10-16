@@ -3,6 +3,8 @@ import { useApp } from "./hooks/useApp";
 import { Sidebar } from "./components/Sidebar";
 import { ConversationPanel } from "./components/ConversationPanel";
 import { ProfileTemplates } from "./components/ProfileTemplates";
+import { ProfileList } from "./components/ProfileList";
+import { ProfileAdvanced } from "./components/ProfileAdvanced";
 import { ProfileEditor } from "./components/ProfileEditor";
 import { ProfileImport } from "./components/ProfileImport";
 import { ModelSettings } from "./components/ModelSettings";
@@ -10,7 +12,8 @@ import { MemoryPanel } from "./components/MemoryPanel";
 import { PrivacySettings } from "./components/PrivacySettings";
 import { ContextPolicyPanel } from "./components/ContextPolicyPanel";
 import { ExfilPanel } from "./components/ExfilPanel";
-import { CredentialsPanel } from "./components/CredentialsPanel";
+import { MCPServersPanel } from "./components/MCPServersPanel";
+import { HostActivityPanel } from "./components/HostActivityPanel";
 import { ProfileDrafts } from "./components/ProfileDrafts";
 import { SkillDrafts } from "./components/SkillDrafts";
 import { ErrorNotice } from "./shared/errors";
@@ -105,6 +108,7 @@ function App() {
               profileState={app.profileState}
               runtime={app.runtime}
               openModel={openModel}
+              openAssistants={() => app.setPage("assistants")}
               onImprove={improveLatest}
             />
           </>
@@ -128,8 +132,41 @@ function App() {
             />
             {app.page === "assistants" ? (
               <>
+                <ProfileList
+                  profileState={app.profileState}
+                  startConversation={(id) => void app.createSession(id)}
+                />
                 <ProfileTemplates profileState={app.profileState} />
-                <ProfileEditor profileState={app.profileState} />
+                <ProfileEditor
+                  profileState={app.profileState}
+                  skillCatalog={app.skillCatalog}
+                  mcpCatalog={app.mcpCatalog}
+                  openDeveloper={() => {
+                    app.setSettingsTab("developer");
+                    app.setPage("settings");
+                  }}
+                  openExtensions={() => {
+                    app.setSettingsTab("extensions");
+                    app.setPage("settings");
+                  }}
+                />
+                <button
+                  disabled={
+                    !app.profileState.profileEditID ||
+                    app.profileState.dirty ||
+                    w.creating
+                  }
+                  onClick={() =>
+                    void app.createSession(
+                      app.profileState.profileEditID ?? undefined,
+                    )
+                  }
+                >
+                  使用这个助手开始新对话
+                </button>
+                <p className="hint">
+                  编辑助手不会切换当前对话。聊天顶部可以切换当前助手；这里会开启独立的新对话。
+                </p>
                 {app.profileState.dirty && (
                   <p className="unsaved-note" role="status">
                     有未保存的助手修改，切换页面时会保留草稿。
@@ -147,6 +184,7 @@ function App() {
                   hasConversation={!!w.selected}
                   tasks={tasks}
                   useMethod={useMethod}
+                  skillNames={app.skillCatalog.map((item) => item.name)}
                 />
               </>
             ) : (
@@ -154,6 +192,7 @@ function App() {
                 <nav className="settings-tabs" aria-label="设置分类">
                   {[
                     ["model", "模型连接"],
+                    ["extensions", "技能与服务"],
                     ["privacy", "权限与记忆"],
                     ["developer", "开发者设置"],
                   ].map(([id, label]) => (
@@ -173,14 +212,64 @@ function App() {
                     runtime={app.runtime}
                     onConnected={() => app.setPage("chat")}
                   />
+                ) : app.settingsTab === "extensions" ? (
+                  <>
+                    <section className="session-card">
+                      <h2>已安装的 Skills</h2>
+                      {app.skillCatalog.length ? (
+                        <div className="capability-list">
+                          {app.skillCatalog.map((skill) => (
+                            <div className="checkbox-label" key={skill.name}>
+                              {skill.name}
+                              {skill.managed && (
+                                <span className="memory-meta">（AI 生成）</span>
+                              )}
+                              <span className="memory-meta">
+                                {skill.description}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="hint">
+                          本机还没有已安装的 Skills。AI
+                          可以在对话中起草并发布新的 Skill。
+                        </p>
+                      )}
+                      <p className="hint">
+                        每个助手能用哪些 Skills
+                        和服务，在助手编辑页的「技能与扩展」里勾选。
+                      </p>
+                    </section>
+                    <MCPServersPanel
+                      servers={app.mcpCatalog}
+                      runtime={app.runtime}
+                      onChanged={app.refreshCapabilities}
+                    />
+                    {app.catalogError && (
+                      <ErrorNotice error={app.catalogError} />
+                    )}
+                  </>
                 ) : app.settingsTab === "privacy" ? (
                   <>
-                    <PrivacySettings local={app.local} workspace={w} />
+                    <PrivacySettings
+                      local={app.local}
+                      workspace={w}
+                      searchAvailability={app.conversation.searchAvailability}
+                    />
                     <MemoryPanel local={app.local} workspace={w} />
                   </>
                 ) : (
                   <>
-                    <p>以下设置面向自定义工具和执行环境。普通使用无需修改。</p>
+                    <p>集中管理助手的执行配置与本机高级选项。</p>
+                    <ProfileAdvanced profileState={app.profileState} />
+                    <button
+                      className="secondary"
+                      onClick={() => app.setPage("assistants")}
+                    >
+                      返回助手编辑
+                    </button>
+                    <HostActivityPanel activity={app.activity} />
                     <details>
                       <summary>本机权限的完整配置</summary>
                       <ContextPolicyPanel local={app.local} workspace={w} />
@@ -188,23 +277,6 @@ function App() {
                     <details>
                       <summary>内容来源与目的地授权</summary>
                       <ExfilPanel local={app.local} workspace={w} />
-                    </details>
-                    <details>
-                      <summary>已保存的模型密钥</summary>
-                      <CredentialsPanel runtime={app.runtime} />
-                    </details>
-                    <details>
-                      <summary>扩展服务与运行状态</summary>
-                      <pre>
-                        {JSON.stringify(
-                          {
-                            status: app.runtime.status,
-                            services: app.runtime.mcpServers,
-                          },
-                          null,
-                          2,
-                        )}
-                      </pre>
                     </details>
                     <label className="checkbox-label">
                       <input

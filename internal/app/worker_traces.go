@@ -21,6 +21,19 @@ func traceDefinitions() []model.Tool {
 	}
 	return tools
 }
+
+// ListWorkerTraces returns one root run's worker work history — delegated
+// tool calls and explicit observations, newest first — for the developer
+// view. The same store query backs the model-side trace tools.
+func (s *Service) ListWorkerTraces(runID, query string) ([]storage.WorkerTrace, error) {
+	if err := s.checkReady(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(runID) == "" {
+		return []storage.WorkerTrace{}, nil
+	}
+	return s.store.WorkerTraces(context.Background(), runID, query)
+}
 func (t bookkeepingTools) traceCall(ctx context.Context, name, raw string) (string, error) {
 	if !t.delegated {
 		return "", errors.New("过程交换只向 worker 提供")

@@ -5,8 +5,10 @@ type Props = {
   local: Pick<
     LocalContextState,
     | "contextBusy"
+    | "contextDirty"
     | "contextDraft"
     | "contextError"
+    | "discardContextEdits"
     | "saveContext"
     | "updatePermissions"
     | "updatePolicy"
@@ -16,8 +18,10 @@ type Props = {
 export function ContextPolicyPanel(props: Props) {
   const {
     contextBusy,
+    contextDirty,
     contextDraft,
     contextError,
+    discardContextEdits,
     saveContext,
     updatePermissions,
     updatePolicy,
@@ -116,6 +120,18 @@ export function ContextPolicyPanel(props: Props) {
                 />
               </label>
             </>
+          )}
+          {contextDirty && (
+            <p className="unsaved-note" role="status">
+              有未保存的权限修改。切换对话后会保留草稿，回到这里可继续编辑。
+              <button
+                type="button"
+                className="text-button"
+                onClick={discardContextEdits}
+              >
+                放弃修改
+              </button>
+            </p>
           )}
           <button type="submit" disabled={contextBusy}>
             保存本机权限

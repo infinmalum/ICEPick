@@ -53,3 +53,6 @@ build/windows/icon.ico
 build/wails_windows_*.syso
 build/linux/appimage/build/
 build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
+
+# Portable application state beside a workspace-root executable
+/data/

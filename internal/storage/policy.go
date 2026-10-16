@@ -208,6 +208,16 @@ func (s *Store) ListMCPEndpoints(ctx context.Context) ([]MCPEndpoint, error) {
 	return items, rows.Err()
 }
 
+// DeleteMCPEndpoint drops one server's registration, e.g. after the user
+// removed the server; a later re-addition starts a fresh trust baseline.
+func (s *Store) DeleteMCPEndpoint(ctx context.Context, name string) error {
+	if name == "" {
+		return errors.New("MCP 服务名为空")
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM mcp_endpoints WHERE name = ?`, name)
+	return err
+}
+
 // AccumulateContextScopes preserves restrictions across Profile switches,
 // summaries and subsequent Runs without tracking per-word provenance.
 func (s *Store) AccumulateContextScopes(ctx context.Context, sessionID string, scopes []string) error {

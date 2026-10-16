@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"icepick/internal/config"
 )
 
 const maxWriteBytes = 256 * 1024
@@ -264,11 +266,11 @@ func Exec(ctx context.Context, args ExecArgs) (string, error) {
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, args.Executable, args.Args...)
 	cmd.Dir = args.Cwd
-	cache, err := os.UserCacheDir()
+	paths, err := config.DefaultPaths()
 	if err != nil {
 		return "", err
 	}
-	tempDir := filepath.Join(cache, "icepick", "exec-tmp")
+	tempDir := filepath.Join(paths.Data, "exec-tmp")
 	if err := os.MkdirAll(tempDir, 0700); err != nil {
 		return "", err
 	}

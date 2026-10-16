@@ -22,6 +22,10 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
   const [profileEditID, chooseID] = useState<string | null>(null);
   const [profileDraft, setDraft] = useState<Profile | null>(null);
   const [profileBusy, setProfileBusy] = useState(false);
+  const creating = useRef(false);
+  const [creatingTemplate, setCreatingTemplate] = useState("");
+  const [creationNotice, setCreationNotice] = useState("");
+  const [creationError, setCreationError] = useState("");
   const [profileError, setProfileError] = useState("");
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(
     null,
@@ -83,16 +87,61 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
       `Profile ${id.slice(0, 8)}…`
     );
   }
+  async function confirmCreation() {
+    return (
+      !dirty ||
+      (await dialog.confirm({
+        title: "保留修改并添加助手？",
+        body: "当前助手的修改会保留为草稿。添加后打开新助手，稍后可以切回来继续编辑。",
+        confirm: "保留并添加",
+      }))
+    );
+  }
+  function acceptCreated(created: Profile) {
+    setProfiles((current) => [
+      ...current.filter((p) => p.id !== created.id),
+      created,
+    ]);
+    chooseID(created.id);
+    setCreationNotice(`已添加「${created.name}」，可在下方编辑或开始新对话。`);
+    setProfileError("");
+  }
   async function createTemplate(id: string) {
+    if (creating.current || profileBusy) return;
+    creating.current = true;
+    setCreatingTemplate(id);
     setProfileBusy(true);
+    setCreationError("");
+    setCreationNotice("");
     try {
-      const created = await StatusService.CreateTemplateProfile(id, "");
-      await refreshProfiles();
-      setProfileEditID(created.id);
-      setProfileError("");
+      if (!(await confirmCreation())) return;
+      // Clicking a template twice should not silently pile up copies: offer
+      // to continue with the assistant this template already created.
+      const existing = profiles.find((item) => item.data.templateId === id);
+      if (existing) {
+        const pick = await dialog.ask({
+          title: `已有「${existing.name}」`,
+          body: "这个模板已经添加过一个助手。可以继续编辑现有的，也可以再新建一个同模板的助手。",
+          choices: [
+            { label: "编辑现有的", value: "edit" },
+            { label: "再新建一个", value: "new" },
+          ],
+        });
+        if (pick === null) return;
+        if (pick === "edit") {
+          if (!(await setProfileEditID(existing.id))) return;
+          setCreationNotice(
+            `已选择「${existing.name}」，可在下方编辑或开始新对话。`,
+          );
+          return;
+        }
+      }
+      acceptCreated(await StatusService.CreateTemplateProfile(id, ""));
     } catch (reason) {
-      setProfileError(String(reason));
+      setCreationError(String(reason));
     } finally {
+      creating.current = false;
+      setCreatingTemplate("");
       setProfileBusy(false);
     }
   }
@@ -117,34 +166,44 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
     }
   }
   async function createProfile(fromID = "") {
-    let name = "";
-    if (!fromID) {
-      name =
-        (await dialog.ask({
-          title: "创建助手",
-          label: "助手名称",
-          confirm: "创建",
-        })) ?? "";
-      if (!name.trim()) return;
-    }
+    if (creating.current || profileBusy) return;
+    creating.current = true;
     setProfileBusy(true);
+    setCreationError("");
+    setCreationNotice("");
     try {
-      const created = await StatusService.CreateProfile(name.trim(), fromID);
-      await refreshProfiles();
-      setProfileEditID(created.id);
-      setProfileError("");
+      if (!(await confirmCreation())) return;
+      let name = "";
+      if (!fromID) {
+        name =
+          (await dialog.ask({
+            title: "创建助手",
+            label: "助手名称",
+            confirm: "创建",
+            singleLine: true,
+          })) ?? "";
+        if (!name.trim()) return;
+      }
+      acceptCreated(await StatusService.CreateProfile(name.trim(), fromID));
     } catch (reason) {
-      setProfileError(String(reason));
+      setCreationError(String(reason));
     } finally {
+      creating.current = false;
       setProfileBusy(false);
     }
   }
-  async function deleteProfile() {
-    if (!profileDraft) return;
+  async function deleteProfile(targetID?: string) {
+    const target = targetID
+      ? profiles.find((item) => item.id === targetID)
+      : profileDraft;
+    if (!target) return;
+    if (target.isDefault) {
+      setProfileError("默认助手不能删除；可以先复制一个助手，再删除多余的那个。");
+      return;
+    }
     setProfileBusy(true);
     try {
-      const refs =
-        (await StatusService.ProfileReferences(profileDraft.id)) ?? [];
+      const refs = (await StatusService.ProfileReferences(target.id)) ?? [];
       const own = deleteReplacement === "__own__";
       const replacement = own ? "" : deleteReplacement;
       const consequence = refs.length
@@ -152,7 +211,7 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
         : "";
       if (
         !(await dialog.confirm({
-          title: `删除助手「${profileDraft.name}」？`,
+          title: `删除助手「${target.name}」？`,
           body: `历史记录会保留。正在进行的工作不受影响，后续对话需选择其他助手。${consequence}`,
           confirm: "删除助手",
           danger: true,
@@ -161,17 +220,24 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
         return;
       if (refs.length)
         await StatusService.ArchiveProfileReplacing(
-          profileDraft.id,
+          target.id,
           replacement,
           own,
           refs,
         );
-      else await StatusService.ArchiveProfile(profileDraft.id);
+      else await StatusService.ArchiveProfile(target.id);
       await refreshProfiles();
       await refreshConversations();
-      const remaining = (await StatusService.ListProfiles()) ?? [];
-      setProfileEditID(remaining[0]?.id ?? null);
-      setProfileError("");
+      // The assistant no longer exists: drop its cached edits and move on
+      // directly instead of routing through setProfileEditID, whose
+      // unsaved-changes prompt would promise a draft that can never be
+      // revisited.
+      cached.current.delete(target.id);
+      if (target.id === profileEditID) {
+        const remaining = (await StatusService.ListProfiles()) ?? [];
+        setDraft(null);
+        chooseID(remaining[0]?.id ?? null);
+      }
     } catch (reason) {
       setProfileError(String(reason));
     } finally {
@@ -295,6 +361,9 @@ export function useProfiles(refreshConversations: () => Promise<void>) {
   }, []);
   return {
     templates,
+    creatingTemplate,
+    creationNotice,
+    creationError,
     refreshProfiles,
     restoreGroup,
     setRestoreGroup,

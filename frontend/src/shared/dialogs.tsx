@@ -14,6 +14,12 @@ type Question = {
   confirm?: string;
   cancel?: string;
   danger?: boolean;
+  // Names and other single-value fields use a one-line input so Enter
+  // submits; multi-line notes keep the textarea.
+  singleLine?: boolean;
+  // Two equally valid actions (e.g. edit the existing assistant or create
+  // another): each button resolves with its value, 取消/Esc resolves null.
+  choices?: { label: string; value: string }[];
 };
 type Request = { question: Question; resolve: (value: string | null) => void };
 const DialogContext = createContext<(q: Question) => Promise<string | null>>(
@@ -73,17 +79,28 @@ export function DialogProvider({ children }: { children: ReactNode }) {
           >
             <h2 id="dialog-title">{request.question.title}</h2>
             <div className="dialog-body">{request.question.body}</div>
-            {request.question.label && (
-              <label>
-                {request.question.label}
-                <textarea
-                  autoFocus
-                  value={value}
-                  onChange={(e) => setValue(e.target.value)}
-                  rows={3}
-                />
-              </label>
-            )}
+            {request.question.label &&
+              (request.question.singleLine ? (
+                <label>
+                  {request.question.label}
+                  <input
+                    autoFocus
+                    type="text"
+                    value={value}
+                    onChange={(e) => setValue(e.target.value)}
+                  />
+                </label>
+              ) : (
+                <label>
+                  {request.question.label}
+                  <textarea
+                    autoFocus
+                    value={value}
+                    onChange={(e) => setValue(e.target.value)}
+                    rows={3}
+                  />
+                </label>
+              ))}
             <div className="actions">
               <button
                 type="button"
@@ -92,13 +109,26 @@ export function DialogProvider({ children }: { children: ReactNode }) {
               >
                 {request.question.cancel ?? "取消"}
               </button>
-              <button
-                autoFocus={!request.question.label}
-                className={request.question.danger ? "danger" : ""}
-                type="submit"
-              >
-                {request.question.confirm ?? "确认"}
-              </button>
+              {request.question.choices ? (
+                request.question.choices.map((choice, index) => (
+                  <button
+                    key={choice.value}
+                    type="button"
+                    autoFocus={index === 0 && !request.question.label}
+                    onClick={() => finish(choice.value)}
+                  >
+                    {choice.label}
+                  </button>
+                ))
+              ) : (
+                <button
+                  autoFocus={!request.question.label}
+                  className={request.question.danger ? "danger" : ""}
+                  type="submit"
+                >
+                  {request.question.confirm ?? "确认"}
+                </button>
+              )}
             </div>
           </form>
         </dialog>

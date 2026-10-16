@@ -1,12 +1,15 @@
 import type { LocalContextState } from "../hooks/useLocalContext";
 import type { Workspace } from "../hooks/useWorkspace";
+import type { SearchAvailability } from "../../bindings/icepick/internal/app";
 import { ErrorNotice } from "../shared/errors";
 export function PrivacySettings({
   local: l,
   workspace: w,
+  searchAvailability,
 }: {
   local: LocalContextState;
   workspace: Workspace;
+  searchAvailability: SearchAvailability | null;
 }) {
   return (
     <section className="session-card">
@@ -49,8 +52,34 @@ export function PrivacySettings({
                 {l.contextDraft.policy.permissions.workspacePaths?.join("、") ||
                   "尚未选择。可在聊天输入框旁选择文件夹。"}
               </p>
+              {l.contextDirty && (
+                <p className="unsaved-note" role="status">
+                  有未保存的修改。切换对话后会保留草稿，回来可继续编辑。
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={l.discardContextEdits}
+                  >
+                    放弃修改
+                  </button>
+                </p>
+              )}
               <button disabled={l.contextBusy}>保存偏好</button>
             </form>
+          )}
+          <h3>联网检索</h3>
+          {!searchAvailability ? (
+            <p>打开一个对话后，这里显示它的联网检索方式。</p>
+          ) : searchAvailability.available ? (
+            <p>
+              可用（
+              {searchAvailability.route === "native"
+                ? "模型原生搜索"
+                : "通过已接入的搜索 MCP 服务"}
+              ）：{searchAvailability.reason}
+            </p>
+          ) : (
+            <p>当前不可用：{searchAvailability.reason}</p>
           )}
           <h3>内容发送授权</h3>
           <p>发送到远端模型前会说明接收地址。你可以随时撤销。</p>

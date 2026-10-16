@@ -16,7 +16,9 @@ export function useSkillDrafts(sessionID: string | null) {
   const [source, setSource] = useState("");
   const [evidenceIDs, setEvidenceIDs] = useState("");
   const [selected, chooseSelected] = useState("");
-  const [editor, setEditor] = useState("");
+  // The proposal is edited as a typed object; raw JSON is only an advanced
+  // view. This keeps broken JSON from silently disabling the friendly fields.
+  const [proposal, setProposal] = useState<SkillProposal | null>(null);
   const [run, setRun] = useState<Run | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -24,7 +26,8 @@ export function useSkillDrafts(sessionID: string | null) {
   async function setSelected(id: string) {
     if (
       draft &&
-      editor !== JSON.stringify(draft.proposal, null, 2) &&
+      proposal &&
+      JSON.stringify(proposal) !== JSON.stringify(draft.proposal) &&
       !(await dialog.confirm({
         title: "放弃尚未保存的建议修改？",
         body: "先保存修改可以继续保留它。",
@@ -47,7 +50,7 @@ export function useSkillDrafts(sessionID: string | null) {
     setEvidenceIDs("");
   }, [sessionID]);
   useEffect(() => {
-    setEditor(draft ? JSON.stringify(draft.proposal, null, 2) : "");
+    setProposal(draft ? structuredClone(draft.proposal) : null);
   }, [draft?.id, draft?.revision]);
   useEffect(() => {
     if (!run || run.status !== "running") return;
@@ -104,11 +107,12 @@ export function useSkillDrafts(sessionID: string | null) {
     setError("");
     try {
       if (action === "save") {
-        await StatusService.EditSkillDraft(
-          draft.id,
-          draft.revision,
-          JSON.parse(editor) as SkillProposal,
-        );
+        if (!proposal) return;
+        if (!proposal.content.trim()) {
+          setError("请先填写工作方法的内容。");
+          return;
+        }
+        await StatusService.EditSkillDraft(draft.id, draft.revision, proposal);
       } else if (action === "apply") {
         await StatusService.ApplySkillDraft(draft.id, draft.revision);
       } else if (action === "withdraw") {
@@ -142,8 +146,8 @@ export function useSkillDrafts(sessionID: string | null) {
     setEvidenceIDs,
     selected,
     setSelected,
-    editor,
-    setEditor,
+    proposal,
+    setProposal,
     run,
     busy,
     error,

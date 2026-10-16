@@ -15,7 +15,10 @@ export function useLocalContext(contextID: string, selected: string | null) {
   }, [contextID]);
   const activeContextID = useRef(contextID);
   activeContextID.current = contextID;
+  const contextBase = useRef<LocalContext | null>(null);
   const [contextDraft, setContextDraft] = useState<LocalContext | null>(null);
+  const currentDraft = useRef(contextDraft);
+  currentDraft.current = contextDraft;
   const [contextBusy, setContextBusy] = useState(false);
   const [contextError, setContextError] = useState("");
   const [grants, setGrants] = useState<ExfilGrant[]>([]);
@@ -66,14 +69,45 @@ export function useLocalContext(contextID: string, selected: string | null) {
       current = false;
     };
   }, [contextID]);
+  const memoryEditRef = useRef(memoryEdit);
+  memoryEditRef.current = memoryEdit;
+  // Unsaved edits survive switching conversations: they are stashed per
+  // context and restored on return instead of being silently dropped.
+  const contextCache = useRef(new Map<string, LocalContext>());
+  const memoryEditCache = useRef(
+    new Map<string, { id: string; content: string } | null>(),
+  );
+  const prevContext = useRef("");
   useEffect(() => {
+    const previous = prevContext.current;
+    prevContext.current = contextID;
+    if (previous && previous !== contextID) {
+      const base = contextBase.current;
+      const draft = currentDraft.current;
+      if (
+        base &&
+        base.id === previous &&
+        draft &&
+        JSON.stringify(draft) !== JSON.stringify(base)
+      )
+        contextCache.current.set(previous, draft);
+      else contextCache.current.delete(previous);
+      if (memoryEditRef.current)
+        memoryEditCache.current.set(previous, memoryEditRef.current);
+      else memoryEditCache.current.delete(previous);
+    }
     let current = true;
-    setContextDraft(null);
+    contextBase.current = null;
     setContextError("");
+    const cached = contextCache.current.get(contextID) ?? null;
+    setContextDraft(cached);
+    setMemoryEdit(memoryEditCache.current.get(contextID) ?? null);
     if (selected)
       StatusService.GetLocalContext(contextID)
         .then((item) => {
-          if (current) setContextDraft(item);
+          if (!current) return;
+          contextBase.current = item;
+          if (!contextCache.current.has(contextID)) setContextDraft(item);
         })
         .catch((reason) => {
           if (current) setContextError(String(reason));
@@ -82,10 +116,62 @@ export function useLocalContext(contextID: string, selected: string | null) {
       current = false;
     };
   }, [contextID, selected]);
+  const contextDirty =
+    !!contextDraft &&
+    (!contextBase.current ||
+      JSON.stringify(contextDraft) !== JSON.stringify(contextBase.current));
+  function discardContextEdits() {
+    contextCache.current.delete(contextID);
+    setContextDraft(contextBase.current);
+    setContextError("");
+  }
+  async function chooseMemoryEdit(
+    next: { id: string; content: string } | null,
+  ) {
+    if (
+      memoryEdit &&
+      next &&
+      next.id !== memoryEdit.id &&
+      memoryEdit.content !==
+        (memories.find((item) => item.id === memoryEdit.id)?.content ?? "") &&
+      !(await dialog.confirm({
+        title: "放弃这条记忆的未保存修改？",
+        body: "切换后会丢弃刚才输入的内容；也可以先保存修改。",
+        confirm: "放弃并切换",
+        danger: true,
+      }))
+    )
+      return;
+    setMemoryEdit(next);
+  }
   async function refreshContext() {
     if (selected) {
       const item = await StatusService.GetLocalContext(contextID);
-      if (activeContextID.current === contextID) setContextDraft(item);
+      if (activeContextID.current === contextID) {
+        contextBase.current = item;
+        contextCache.current.delete(contextID);
+        setContextDraft(item);
+      }
+    }
+  }
+  async function refreshVisible() {
+    if (!contextID) return;
+    try {
+      const [item, updatedGrants] = await Promise.all([
+        StatusService.GetLocalContext(contextID),
+        StatusService.ListExfilGrants(contextID),
+      ]);
+      if (activeContextID.current !== contextID) return;
+      setGrants(updatedGrants ?? []);
+      if (
+        JSON.stringify(currentDraft.current) ===
+        JSON.stringify(contextBase.current)
+      ) {
+        contextBase.current = item;
+        setContextDraft(item);
+      }
+    } catch (e) {
+      if (activeContextID.current === contextID) setContextError(String(e));
     }
   }
   async function saveContext(event: React.FormEvent<HTMLFormElement>) {
@@ -93,7 +179,44 @@ export function useLocalContext(contextID: string, selected: string | null) {
     if (!contextDraft || !selected) return;
     setContextBusy(true);
     try {
-      await StatusService.UpdateContextPolicy(contextID, contextDraft.policy);
+      const latest = await StatusService.GetLocalContext(contextID);
+      const base = contextBase.current;
+      if (!base || base.id !== contextID) {
+        setContextError("设置状态已过期，请重新打开此对话的权限设置后再保存。");
+        return;
+      }
+      // Apply only fields edited here; folder grants may have changed in chat.
+      const merge = <T extends object>(
+        original: T,
+        edited: T,
+        current: T,
+      ): T => {
+        const result = { ...current };
+        for (const key of Object.keys(edited) as (keyof T)[]) {
+          if (JSON.stringify(edited[key]) === JSON.stringify(original[key]))
+            continue;
+          if (
+            JSON.stringify(current[key]) !== JSON.stringify(original[key]) &&
+            JSON.stringify(current[key]) !== JSON.stringify(edited[key])
+          )
+            throw new Error(
+              "此项权限已在其他操作中修改，请重新打开对话后核对再保存。",
+            );
+          result[key] = edited[key];
+        }
+        return result;
+      };
+      const permissions = merge(
+        base.policy.permissions,
+        contextDraft.policy.permissions,
+        latest.policy.permissions,
+      );
+      const policy = merge(
+        { ...base.policy, permissions },
+        { ...contextDraft.policy, permissions },
+        { ...latest.policy, permissions },
+      );
+      await StatusService.UpdateContextPolicy(contextID, policy);
       await refreshContext();
       setContextError("");
     } catch (reason) {
@@ -242,8 +365,10 @@ export function useLocalContext(contextID: string, selected: string | null) {
   }
   return {
     contextDraft,
+    contextDirty,
     contextBusy,
     contextError,
+    discardContextEdits,
     grants,
     grantForm,
     setGrantForm,
@@ -253,9 +378,10 @@ export function useLocalContext(contextID: string, selected: string | null) {
     memoryDraft,
     setMemoryDraft,
     memoryEdit,
-    setMemoryEdit,
+    chooseMemoryEdit,
     memoryBusy,
     memoryError,
+    refreshVisible,
     saveContext,
     saveGrant,
     revokeGrant,

@@ -1,5 +1,5 @@
 import type { ConversationState } from "../hooks/useConversation";
-import { stateLabel } from "../shared/errors";
+import { ErrorNotice, stateLabel } from "../shared/errors";
 type Props = {
   onImprove?: () => void;
   conversation: Pick<
@@ -14,10 +14,16 @@ type Props = {
     | "sessionPlan"
     | "sessionSummary"
     | "taskGraph"
+    | "toolHistory"
+    | "workerTraces"
+    | "workerBusy"
+    | "traceError"
+    | "loadWorkerTraces"
   >;
 };
 export function TaskProgress({ conversation: c, onImprove }: Props) {
   const run = c.runs[0];
+  const rootRunId = c.taskGraph?.rootRunId ?? run?.id ?? "";
   return (
     <>
       {c.sessionSummary && (
@@ -87,6 +93,23 @@ export function TaskProgress({ conversation: c, onImprove }: Props) {
               <p>{r.result.limitations?.join("；")}</p>
             </section>
           ))}
+          {c.toolHistory.length > 0 && (
+            <details>
+              <summary>工具活动 · {c.toolHistory.length} 次</summary>
+              <ul className="activity-list">
+                {c.toolHistory.slice(0, 40).map((call) => (
+                  <li key={call.id}>
+                    <span className="memory-meta">
+                      {new Date(call.createdAt).toLocaleTimeString()} ·{" "}
+                      {stateLabel(call.state)}
+                    </span>{" "}
+                    <code>{call.toolName}</code>
+                    {call.error && <span> 失败：{call.error}</span>}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
           <details className="developer-settings">
             <summary>开发者记录</summary>
             <pre>
@@ -108,6 +131,41 @@ export function TaskProgress({ conversation: c, onImprove }: Props) {
                 清除会话待办
               </button>
             )}
+            <details>
+              <summary>工作过程（worker 轨迹）</summary>
+              <p className="hint">
+                委派 worker 在这个根任务内的工具调用与显式观察，来自任务自身的记录。
+              </p>
+              <button
+                type="button"
+                className="secondary"
+                disabled={c.workerBusy || !rootRunId}
+                onClick={c.loadWorkerTraces}
+              >
+                {c.workerBusy ? "正在读取…" : "查看工作过程"}
+              </button>
+              <ErrorNotice error={c.traceError} />
+              {c.workerTraces.length > 0 && (
+                <ul className="activity-list">
+                  {c.workerTraces.map((trace) => {
+                    const text = trace.content || trace.error;
+                    return (
+                      <li key={trace.id}>
+                        <span className="memory-meta">
+                          {new Date(trace.createdAt).toLocaleTimeString()} ·{" "}
+                          {trace.tool} · {stateLabel(trace.state)}
+                        </span>
+                        {text && (
+                          <p>
+                            {text.length > 200 ? text.slice(0, 200) + "…" : text}
+                          </p>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </details>
           </details>
         </details>
       )}

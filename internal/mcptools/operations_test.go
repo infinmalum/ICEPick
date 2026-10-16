@@ -119,7 +119,11 @@ func TestExecResultsTimeoutAndBoundedJSON(t *testing.T) {
 			if len(raw) > 15000 || result.ExitCode != tc.code || result.TimedOut != tc.timeout || result.Passed != (tc.code == 0 && !tc.timeout) {
 				t.Fatalf("unexpected command outcome: code=%d timeout=%t passed=%t bytes=%d", result.ExitCode, result.TimedOut, result.Passed, len(raw))
 			}
-			if tc.mode == "success" && (!strings.Contains(result.Stdout, "你好") || strings.Contains(result.Stdout, "\n/tmp")) {
+			// The child must get Exec's private exec-tmp dir, never the
+			// shared default /tmp. The test binary itself lives under a
+			// temporary directory, so the path prefix proves nothing; only
+			// the bare default directory is the regression.
+			if tc.mode == "success" && (!strings.Contains(result.Stdout, "你好") || strings.HasSuffix(result.Stdout, "\n/tmp")) {
 				t.Fatal("temporary directory not persistent", raw)
 			}
 			if tc.mode == "large" && !result.Truncated {

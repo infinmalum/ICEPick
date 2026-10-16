@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { ProfileDrafts as DraftState } from "../hooks/useProfileDrafts";
 import { TaskEvidence, type EvidenceOption } from "./TaskEvidence";
 import { ErrorNotice, stateLabel } from "../shared/errors";
@@ -13,11 +14,15 @@ export function ProfileDrafts({
   tasks?: EvidenceOption[];
 }) {
   const d = s.draft;
-  let proposal = d?.proposal;
-  try {
-    proposal = JSON.parse(s.editor);
-  } catch {}
-  const unsaved = !!d && s.editor !== JSON.stringify(d.proposal, null, 2);
+  const proposal = s.proposal;
+  const unsaved =
+    !!d &&
+    !!proposal &&
+    JSON.stringify(proposal) !== JSON.stringify(d.proposal);
+  const [devDraft, setDevDraft] = useState<string | null>(null);
+  useEffect(() => {
+    setDevDraft(null);
+  }, [proposal]);
   return (
     <section className="session-card">
       <h2>让 AI 帮你设计助手</h2>
@@ -78,7 +83,7 @@ export function ProfileDrafts({
       </label>
       {d && proposal && (
         <>
-          <p>{d.proposal.summary}</p>
+          <p>{proposal.summary}</p>
           <ul>
             {d.proposal.reasons?.map((v, i) => (
               <li key={i}>{v}</li>
@@ -90,13 +95,18 @@ export function ProfileDrafts({
               value={proposal.name}
               disabled={d.state !== "draft"}
               onChange={(e) =>
-                s.setEditor(
-                  JSON.stringify(
-                    { ...proposal, name: e.target.value },
-                    null,
-                    2,
-                  ),
-                )
+                s.setProposal({ ...proposal, name: e.target.value })
+              }
+            />
+          </label>
+          <label>
+            这个助手做什么
+            <textarea
+              rows={2}
+              disabled={d.state !== "draft"}
+              value={proposal.summary}
+              onChange={(e) =>
+                s.setProposal({ ...proposal, summary: e.target.value })
               }
             />
           </label>
@@ -107,16 +117,10 @@ export function ProfileDrafts({
               disabled={d.state !== "draft"}
               value={proposal.data.systemPrompt}
               onChange={(e) =>
-                s.setEditor(
-                  JSON.stringify(
-                    {
-                      ...proposal,
-                      data: { ...proposal!.data, systemPrompt: e.target.value },
-                    },
-                    null,
-                    2,
-                  ),
-                )
+                s.setProposal({
+                  ...proposal,
+                  data: { ...proposal.data, systemPrompt: e.target.value },
+                })
               }
             />
           </label>
@@ -128,10 +132,22 @@ export function ProfileDrafts({
             <summary>开发者设置 · 完整草案与依据</summary>
             <textarea
               rows={12}
-              value={s.editor}
+              value={devDraft ?? JSON.stringify(proposal, null, 2)}
               disabled={d.state !== "draft"}
-              onChange={(e) => s.setEditor(e.target.value)}
+              onChange={(e) => {
+                const text = e.target.value;
+                setDevDraft(text);
+                try {
+                  s.setProposal(JSON.parse(text));
+                } catch {
+                  // Incomplete JSON just waits for the next keystroke; the
+                  // typed proposal keeps its last valid value meanwhile.
+                }
+              }}
             />
+            {devDraft !== null && !devDraft.trim() && (
+              <p className="hint">内容为空，修改暂未生效。</p>
+            )}
             <pre>
               {JSON.stringify(
                 {

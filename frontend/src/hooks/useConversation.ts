@@ -11,6 +11,7 @@ import type {
   Run,
   SessionSummary,
   ToolCall,
+  WorkerTrace,
 } from "../../bindings/icepick/internal/storage";
 import type {
   SearchAvailability,
@@ -19,6 +20,11 @@ import type {
 import type { Workspace } from "./useWorkspace";
 import { useDialog } from "../shared/dialogs";
 import { useSendConsent } from "../shared/consent";
+import {
+  clearDraftFiles,
+  loadDraftFiles,
+  saveDraftFiles,
+} from "../shared/draftFiles";
 export function useConversation(
   workspace: Workspace,
   profiles: Profile[],
@@ -78,28 +84,52 @@ export function useConversation(
     }
   }
   const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
+  // The full call history of this session, so the transcript's task details
+  // can show completed tool activity from the authoritative tool_calls rows.
+  const [toolHistory, setToolHistory] = useState<ToolCall[]>([]);
+  const [workerTraces, setWorkerTraces] = useState<WorkerTrace[]>([]);
+  const [workerBusy, setWorkerBusy] = useState(false);
+  const [traceError, setTraceError] = useState("");
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [runs, setRuns] = useState<Run[]>([]);
   const [activeRun, setActiveRun] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
+  // Drafts survive restarts: text lives in localStorage, attachments in
+  // IndexedDB, with the in-memory cache serving instant switches.
+  const lastSavedFiles = useRef(new Map<string, File[]>());
   useEffect(() => {
-    const draft = selected ? draftCache.current.get(selected) : null;
+    const id = selected;
+    const cached = id ? draftCache.current.get(id) : null;
     let text = "";
     try {
-      text = selected
-        ? (sessionStorage.getItem("icepick.draft." + selected) ?? "")
-        : "";
+      text = id ? (localStorage.getItem("icepick.draft." + id) ?? "") : "";
     } catch {}
-    setPrompt(draft?.prompt ?? text);
-    setAttachments(draft?.attachments ?? []);
+    setPrompt(cached?.prompt ?? text);
+    setAttachments(cached?.attachments ?? []);
+    if (id && !cached)
+      void loadDraftFiles(id).then((files) => {
+        if (!files.length || activeSessionID.current !== id) return;
+        const entry = draftCache.current.get(id);
+        if (entry?.attachments.length) return;
+        lastSavedFiles.current.set(id, files);
+        draftCache.current.set(id, {
+          prompt: entry?.prompt ?? text,
+          attachments: files,
+        });
+        setAttachments(files);
+      });
   }, [selected]);
   function updateDraft(text: string, files: File[]) {
     if (!selected) return;
     draftCache.current.set(selected, { prompt: text, attachments: files });
     try {
-      sessionStorage.setItem("icepick.draft." + selected, text);
+      localStorage.setItem("icepick.draft." + selected, text);
     } catch {}
+    if (lastSavedFiles.current.get(selected) !== files) {
+      lastSavedFiles.current.set(selected, files);
+      void saveDraftFiles(selected, files);
+    }
   }
   function changePrompt(value: string) {
     setPrompt(value);
@@ -174,20 +204,38 @@ export function useConversation(
       setMessages([]);
       setRuns([]);
       setToolCalls([]);
+      setToolHistory([]);
+      setWorkerTraces([]);
+      setTraceError("");
       setActiveRun(null);
+      setStreamText("");
+      setChildRuns([]);
+      setTaskGraph(null);
+      setReviews([]);
+      setRetrospectives([]);
+      setSessionSummary(null);
+      setSessionPlan(null);
+      setSearchRecords([]);
+      setTaskError("");
+      setHasEarlier(false);
       setLoadingSession(false);
       return;
     }
     let cancelled = false;
+    setActiveRun(null);
     setStreamText("");
     setMessages([]);
     earliestLoaded.current = 0;
     setHasEarlier(false);
     setRuns([]);
     setToolCalls([]);
+    setToolHistory([]);
+    setWorkerTraces([]);
+    setTraceError("");
     setChildRuns([]);
     setSessionSummary(null);
     setSessionPlan(null);
+    setSearchRecords([]);
     setTaskError("");
     setLoadingSession(true);
     setTaskGraph(null);
@@ -197,12 +245,14 @@ export function useConversation(
       fetchMessages(selected),
       StatusService.ListRuns(selected),
       StatusService.PendingApprovals(contextID),
+      StatusService.ListToolCalls(selected),
     ])
-      .then(([history, previousRuns, calls]) => {
+      .then(([history, previousRuns, calls, historyCalls]) => {
         if (cancelled) return;
         setMessages(history ?? []);
         setRuns(previousRuns ?? []);
         setToolCalls(calls ?? []);
+        setToolHistory(historyCalls ?? []);
         setActiveRun(
           (previousRuns ?? []).find((item) => item.status === "running")?.id ??
             null,
@@ -236,15 +286,17 @@ export function useConversation(
       if (querying) return;
       querying = true;
       try {
-        const [run, history, calls, pending] = await Promise.all([
+        const [run, history, calls, pending, historyCalls] = await Promise.all([
           StatusService.GetRun(activeRun),
           fetchMessages(selected),
           StatusService.PendingApprovals(contextID),
           StatusService.PendingStreamText(activeRun),
+          StatusService.ListToolCalls(selected),
         ]);
         if (cancelled) return;
         mergeMessages(history ?? []);
         setToolCalls(calls ?? []);
+        setToolHistory(historyCalls ?? []);
         setStreamText(pending ?? "");
         setRuns((current) => [
           run,
@@ -285,9 +337,11 @@ export function useConversation(
       off();
     };
   }, [activeRun]);
+  const modelKey = status?.model
+    ? `${status.model.provider}/${status.model.baseUrl}/${status.model.name}`
+    : "";
   useEffect(() => {
     setSearchAvailability(null);
-    setSearchRecords([]);
     if (!selected) return;
     let cancelled = false;
     StatusService.ConversationSearchAvailability(selected)
@@ -300,7 +354,7 @@ export function useConversation(
     return () => {
       cancelled = true;
     };
-  }, [selected, activeConversation?.profileId, profiles, status?.model]);
+  }, [selected, activeConversation?.profileId, modelKey]);
   async function toggleSearch(enabled: boolean) {
     if (!selected || !activeConversation) return;
     const id = selected;
@@ -348,22 +402,68 @@ export function useConversation(
   const unknownCalls = toolCalls.filter(
     (item) => item.state === "execution_unknown",
   );
+  // Approval requests can also come from delegated (hidden) sessions, whose
+  // runs never become this session's activeRun. The backend publishes a run
+  // event whenever a run changes, so refresh approvals on any run event and
+  // resync the run list when it concerns this session.
+  useEffect(() => {
+    if (!selected) return;
+    const id = selected;
+    const off = Events.On("icepick:service-event", (event) => {
+      const detail =
+        (event.data as { type?: string; sessionId?: string }) ?? {};
+      if (detail.type !== "run.started" && detail.type !== "run.updated")
+        return;
+      refreshCalls();
+      if (detail.sessionId !== id) return;
+      StatusService.ListRuns(id)
+        .then((items) => {
+          if (activeSessionID.current !== id) return;
+          const list = items ?? [];
+          setRuns(list);
+          const running = list.find((item) => item.status === "running");
+          if (running) setActiveRun((current) => current ?? running.id);
+        })
+        .catch(() => {});
+    });
+    return () => off();
+  }, [selected, contextID]);
+  // The fast poll stops with activeRun; keep a slow one while any call still
+  // waits on the user so follow-up requests (e.g. from delegated work) keep
+  // surfacing without requiring the user to send another message.
+  useEffect(() => {
+    if (!selected || activeRun) return;
+    if (!pendingCalls.length && !unknownCalls.length) return;
+    const timer = window.setInterval(() => {
+      refreshCalls();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [selected, activeRun, pendingCalls.length, unknownCalls.length]);
   async function refreshCalls() {
     if (!selected) return;
+    const id = selected;
+    const ctx = contextID;
     try {
-      setToolCalls((await StatusService.PendingApprovals(contextID)) ?? []);
+      const calls = (await StatusService.PendingApprovals(ctx)) ?? [];
+      if (activeSessionID.current === id && activeContextID.current === ctx)
+        setToolCalls(calls);
     } catch (reason) {
-      setTaskError(String(reason));
+      if (activeSessionID.current === id && activeContextID.current === ctx)
+        setTaskError(String(reason));
     }
   }
   async function approveCall(call: ToolCall) {
+    const id = selected;
+    const ctx = contextID;
     setApprovalBusy(true);
     try {
       await StatusService.ApproveToolCall(call.id);
-      setTaskError("");
+      if (activeSessionID.current === id && activeContextID.current === ctx)
+        setTaskError("");
       await refreshCalls();
     } catch (reason) {
-      setTaskError(String(reason));
+      if (activeSessionID.current === id && activeContextID.current === ctx)
+        setTaskError(String(reason));
     } finally {
       setApprovalBusy(false);
     }
@@ -376,13 +476,17 @@ export function useConversation(
       confirm: "拒绝操作",
     });
     if (note === null) return;
+    const id = selected;
+    const ctx = contextID;
     setApprovalBusy(true);
     try {
       await StatusService.DenyToolCall(call.id, note);
-      setTaskError("");
+      if (activeSessionID.current === id && activeContextID.current === ctx)
+        setTaskError("");
       await refreshCalls();
     } catch (reason) {
-      setTaskError(String(reason));
+      if (activeSessionID.current === id && activeContextID.current === ctx)
+        setTaskError(String(reason));
     } finally {
       setApprovalBusy(false);
     }
@@ -408,6 +512,8 @@ export function useConversation(
         })) ?? "";
       if (!result.trim()) return;
     }
+    const id = selected;
+    const ctx = contextID;
     setApprovalBusy(true);
     try {
       await StatusService.ResolveToolCall(
@@ -416,22 +522,34 @@ export function useConversation(
         result,
         note,
       );
-      setTaskError("");
+      if (activeSessionID.current === id && activeContextID.current === ctx)
+        setTaskError("");
       await refreshCalls();
     } catch (reason) {
-      setTaskError(String(reason));
+      if (activeSessionID.current === id && activeContextID.current === ctx)
+        setTaskError(String(reason));
     } finally {
       setApprovalBusy(false);
     }
   }
+  const [profileSwitchBusy, setProfileSwitchBusy] = useState(false);
   async function selectConversationProfile(profileID: string) {
-    if (!selected) return;
+    if (!selected || profileSwitchBusy) return;
+    const id = selected;
+    setProfileSwitchBusy(true);
     try {
-      await StatusService.SelectConversationProfile(selected, profileID);
-      await refreshConversations();
-      setTaskError("");
+      const updated = await StatusService.SelectConversationProfile(
+        id,
+        profileID,
+      );
+      setSessions((items) =>
+        items.map((item) => (item.id === id ? updated : item)),
+      );
+      if (activeSessionID.current === id) setTaskError("");
     } catch (reason) {
-      setTaskError(String(reason));
+      if (activeSessionID.current === id) setTaskError(String(reason));
+    } finally {
+      setProfileSwitchBusy(false);
     }
   }
   async function clearPlan() {
@@ -544,18 +662,23 @@ export function useConversation(
             }),
         ),
       );
+      const rootRunID = taskGraph?.rootRunId ?? runs[0]?.id ?? "";
+      if (continuation && !rootRunID)
+        throw new Error("找不到可以继续的原任务，请刷新对话后再试。");
       const run = continuation
         ? await StatusService.ContinueConversationTask(
-            runs[0].id,
+            rootRunID,
             taskGraph?.waitingTaskId ?? "",
             prompt,
             uploads,
           )
         : await StatusService.StartConversationTask(sessionID, prompt, uploads);
       draftCache.current.delete(sessionID);
+      lastSavedFiles.current.delete(sessionID);
       try {
-        sessionStorage.removeItem("icepick.draft." + sessionID);
+        localStorage.removeItem("icepick.draft." + sessionID);
       } catch {}
+      void clearDraftFiles(sessionID);
       if (activeSessionID.current !== sessionID) return;
       setAttachments([]);
       setPrompt("");
@@ -572,6 +695,29 @@ export function useConversation(
       if (activeSessionID.current === sessionID) setTaskError(String(reason));
     } finally {
       setSending(false);
+    }
+  }
+  // The developer work-history view: what the delegated workers actually did
+  // inside the root task, from the same store the model-side trace tools use.
+  async function loadWorkerTraces() {
+    if (!selected) return;
+    const id = selected;
+    const root = taskGraph?.rootRunId ?? runs[0]?.id ?? "";
+    if (!root) {
+      setTraceError("还没有已开始的任务。");
+      return;
+    }
+    setWorkerBusy(true);
+    try {
+      const items = await StatusService.ListWorkerTraces(root, "");
+      if (activeSessionID.current === id) {
+        setWorkerTraces(items ?? []);
+        setTraceError("");
+      }
+    } catch (reason) {
+      if (activeSessionID.current === id) setTraceError(String(reason));
+    } finally {
+      setWorkerBusy(false);
     }
   }
   async function cancelTask() {
@@ -635,10 +781,16 @@ export function useConversation(
     toggleSearch,
     pendingCalls,
     unknownCalls,
+    toolHistory,
+    workerTraces,
+    workerBusy,
+    traceError,
+    loadWorkerTraces,
     approveCall,
     denyCall,
     resolveUnknown,
     selectConversationProfile,
+    profileSwitchBusy,
     clearPlan,
     openChildSession,
     sendTask,

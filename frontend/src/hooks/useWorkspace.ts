@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { StatusService } from "../../bindings/icepick";
 import type { Conversation } from "../../bindings/icepick/internal/storage";
 import { useDialog } from "../shared/dialogs";
+import { clearDraftFiles } from "../shared/draftFiles";
 export function useWorkspace() {
   const dialog = useDialog();
   const [workspaceError, setWorkspaceError] = useState("");
@@ -9,6 +10,7 @@ export function useWorkspace() {
   const [reuseContext, setReuseContext] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [contextID, setContextID] = useState("");
+  const creatingRef = useRef(false);
   const [creating, setCreating] = useState(false);
   const [query, setQuery] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -16,7 +18,9 @@ export function useWorkspace() {
   function openConversation(item: Conversation) {
     setContextID(item.contextId);
     setSelected(item.id);
-    localStorage.setItem("icepick.lastConversation", item.id);
+    try {
+      localStorage.setItem("icepick.lastConversation", item.id);
+    } catch {}
   }
   async function refreshConversations() {
     const items = (await StatusService.ListConversations()) ?? [];
@@ -24,6 +28,8 @@ export function useWorkspace() {
     return items;
   }
   async function createSession(profileID: string | null) {
+    if (creatingRef.current) return null;
+    creatingRef.current = true;
     setCreating(true);
     try {
       let id = profileID;
@@ -38,7 +44,10 @@ export function useWorkspace() {
         reuseContext && selected ? selected : "",
         "",
       );
-      await refreshConversations();
+      setSessions((current) => [
+        item,
+        ...current.filter((s) => s.id !== item.id),
+      ]);
       openConversation(item);
       setReuseContext(false);
       setWorkspaceError("");
@@ -47,6 +56,7 @@ export function useWorkspace() {
       setWorkspaceError(String(e));
       return null;
     } finally {
+      creatingRef.current = false;
       setCreating(false);
     }
   }
@@ -56,6 +66,7 @@ export function useWorkspace() {
       label: "对话名称",
       initial: item.title,
       confirm: "保存",
+      singleLine: true,
     });
     if (title === null) return;
     try {
@@ -77,13 +88,22 @@ export function useWorkspace() {
       return;
     try {
       await StatusService.DeleteConversation(item.id);
+      try {
+        localStorage.removeItem("icepick.draft." + item.id);
+      } catch {}
+      void clearDraftFiles(item.id);
       const items = await refreshConversations();
       if (selected === item.id) {
-        if (items[0]) openConversation(items[0]);
+        // Fall back to a conversation the sidebar actually shows; opening a
+        // hidden delegation session would strand the user in a read-only view.
+        const next = items.find((i) => i.kind === "normal");
+        if (next) openConversation(next);
         else {
           setSelected(null);
           setContextID("");
-          localStorage.removeItem("icepick.lastConversation");
+          try {
+            localStorage.removeItem("icepick.lastConversation");
+          } catch {}
         }
       }
     } catch (e) {
@@ -96,10 +116,15 @@ export function useWorkspace() {
       .then((items) => {
         if (!active) return;
         setSessions(items ?? []);
+        let lastID = "";
+        try {
+          lastID = localStorage.getItem("icepick.lastConversation") ?? "";
+        } catch {}
         const last = (items ?? []).find(
-          (i) => i.id === localStorage.getItem("icepick.lastConversation"),
+          (i) => i.id === lastID && i.kind === "normal",
         );
-        if (last ?? items?.[0]) openConversation((last ?? items?.[0])!);
+        const fallback = (items ?? []).find((i) => i.kind === "normal");
+        if (last ?? fallback) openConversation((last ?? fallback)!);
       })
       .catch((e) => setWorkspaceError(String(e)))
       .finally(() => {

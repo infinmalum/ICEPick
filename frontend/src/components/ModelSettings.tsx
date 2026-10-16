@@ -109,10 +109,40 @@ export function ModelSettings({
             disabled={r.modelBusy}
             onClick={r.refreshModel}
           >
-            检测连接
+            检测已保存的连接
           </button>
         </div>
+        {!r.status?.storageReady && (
+          <p className="hint" role="status">
+            本机存储正在初始化，稍等片刻即可保存；如果长时间不可用，请重启应用。
+          </p>
+        )}
       </form>
+      <details>
+        <summary>管理已保存的密钥</summary>
+        <p>
+          每个服务商共用一份密钥，所有使用它的助手都会使用此密钥。选择上方服务商可以替换密钥。
+        </p>
+        {r.credStatus
+          .filter((item) => item.configured)
+          .map((item) => (
+            <div className="credential-row" key={item.provider}>
+              <span>
+                {providerLabels[item.provider] ?? item.provider} · 已保存
+              </span>
+              <button
+                type="button"
+                className="secondary"
+                disabled={r.credBusy || r.modelBusy}
+                onClick={() => r.deleteCredential(item.provider)}
+              >
+                删除密钥
+              </button>
+            </div>
+          ))}
+        {!r.credStatus.some((item) => item.configured) && <p>尚未保存密钥。</p>}
+        <ErrorNotice error={r.credError} />
+      </details>
       <ErrorNotice error={r.modelError} />
       {r.connectedMessage && <p className="success">{r.connectedMessage}</p>}
       {r.status?.runtimeReady && (

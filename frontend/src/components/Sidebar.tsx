@@ -1,4 +1,5 @@
 import type { Workspace } from "../hooks/useWorkspace";
+import { useTheme } from "../shared/theme";
 type Page = "chat" | "assistants" | "settings";
 export function Sidebar({
   workspace: w,
@@ -11,6 +12,7 @@ export function Sidebar({
   setPage: (p: Page) => void;
   createSession: () => Promise<void>;
 }) {
+  const { theme, toggle } = useTheme();
   return (
     <aside className="sidebar">
       <a
@@ -25,7 +27,7 @@ export function Sidebar({
       </a>
       <button
         className="new-session"
-        onClick={createSession}
+        onClick={() => void createSession()}
         disabled={w.creating}
       >
         {w.creating ? "正在创建…" : "＋ 新对话"}
@@ -43,7 +45,7 @@ export function Sidebar({
           .filter(
             (s) =>
               s.kind === "normal" &&
-              s.title.toLowerCase().includes(w.query.toLowerCase()),
+              s.title.toLowerCase().includes(w.query.trim().toLowerCase()),
           )
           .map((s) => (
             <div
@@ -87,9 +89,12 @@ export function Sidebar({
               </details>
             </div>
           ))}
-        {w.query && !w.sessions.some((s) => s.title.includes(w.query)) && (
-          <p className="hint">没有找到匹配的对话</p>
-        )}
+        {w.query &&
+          !w.sessions.some(
+            (s) =>
+              s.kind === "normal" &&
+              s.title.toLowerCase().includes(w.query.trim().toLowerCase()),
+          ) && <p className="hint">没有找到匹配的对话</p>}
       </nav>
       <div className="sidebar-bottom">
         <button
@@ -103,6 +108,14 @@ export function Sidebar({
           onClick={() => setPage("settings")}
         >
           ⚙ 设置
+        </button>
+        <button
+          className="theme-toggle"
+          onClick={toggle}
+          aria-label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
+          title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
+        >
+          {theme === "dark" ? "☀ 浅色模式" : "🌙 深色模式"}
         </button>
       </div>
     </aside>

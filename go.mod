@@ -3,7 +3,6 @@ module icepick
 go 1.25.0
 
 require (
-	github.com/adrg/xdg v0.5.3
 	github.com/anthropics/anthropic-sdk-go v1.78.0
 	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/modelcontextprotocol/go-sdk v1.7.0
@@ -18,6 +17,7 @@ require (
 	cloud.google.com/go v0.116.0 // indirect
 	cloud.google.com/go/auth v0.9.3 // indirect
 	cloud.google.com/go/compute/metadata v0.5.0 // indirect
+	github.com/adrg/xdg v0.5.3 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/coder/websocket v1.8.14 // indirect

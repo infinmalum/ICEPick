@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { SkillDrafts as DraftState } from "../hooks/useSkillDrafts";
 import { TaskEvidence, type EvidenceOption } from "./TaskEvidence";
 import { ErrorNotice, stateLabel } from "../shared/errors";
@@ -6,20 +7,26 @@ export function SkillDrafts({
   hasConversation,
   tasks = [],
   useMethod,
+  skillNames = [],
 }: {
   state: DraftState;
   hasConversation: boolean;
   tasks?: EvidenceOption[];
   useMethod?: (name: string) => Promise<void>;
+  skillNames?: string[];
 }) {
   const d = s.draft;
-  let proposal = d?.proposal;
-  try {
-    proposal = JSON.parse(s.editor);
-  } catch {}
-  const unsaved = !!d && s.editor !== JSON.stringify(d.proposal, null, 2);
+  const proposal = s.proposal;
+  const unsaved =
+    !!d &&
+    !!proposal &&
+    JSON.stringify(proposal) !== JSON.stringify(d.proposal);
   const header =
     proposal?.content.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n/)?.[0] ?? "";
+  const [devDraft, setDevDraft] = useState<string | null>(null);
+  useEffect(() => {
+    setDevDraft(null);
+  }, [proposal]);
   return (
     <section className="session-card">
       <h2>教助手一种工作方法</h2>
@@ -50,6 +57,7 @@ export function SkillDrafts({
       >
         {s.run?.status === "running" ? "正在准备…" : "生成工作方法"}
       </button>
+      {!hasConversation && <p>先开始一个对话，选择要使用的模型。</p>}
       {s.run?.status === "running" && (
         <button className="secondary" onClick={s.cancel}>
           停止
@@ -71,7 +79,18 @@ export function SkillDrafts({
       </label>
       {d && proposal && (
         <>
-          <p>{d.proposal.summary}</p>
+          <p>{proposal.summary}</p>
+          <label>
+            方法简介
+            <textarea
+              rows={2}
+              disabled={d.state !== "draft"}
+              value={proposal.summary}
+              onChange={(e) =>
+                s.setProposal({ ...proposal, summary: e.target.value })
+              }
+            />
+          </label>
           <label>
             具体步骤
             <textarea
@@ -79,13 +98,10 @@ export function SkillDrafts({
               disabled={d.state !== "draft"}
               value={proposal.content.slice(header.length)}
               onChange={(e) =>
-                s.setEditor(
-                  JSON.stringify(
-                    { ...proposal, content: header + e.target.value },
-                    null,
-                    2,
-                  ),
-                )
+                s.setProposal({
+                  ...proposal,
+                  content: header + e.target.value,
+                })
               }
             />
           </label>
@@ -93,17 +109,36 @@ export function SkillDrafts({
           <details className="developer-settings">
             <summary>开发者设置 · 来源与完整内容</summary>
             <label>
-              现有 Skill 名称（留空新建）
-              <input
+              改进现有 Skill（留空新建）
+              <select
                 value={s.source}
                 onChange={(e) => s.setSource(e.target.value)}
-              />
+              >
+                <option value="">新建</option>
+                {skillNames.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
             </label>
             <textarea
               rows={12}
-              value={s.editor}
-              onChange={(e) => s.setEditor(e.target.value)}
+              value={devDraft ?? JSON.stringify(proposal, null, 2)}
+              onChange={(e) => {
+                const text = e.target.value;
+                setDevDraft(text);
+                try {
+                  s.setProposal(JSON.parse(text));
+                } catch {
+                  // Incomplete JSON just waits for the next keystroke; the
+                  // typed proposal keeps its last valid value meanwhile.
+                }
+              }}
             />
+            {devDraft !== null && !devDraft.trim() && (
+              <p className="hint">内容为空，修改暂未生效。</p>
+            )}
             <pre>
               {JSON.stringify(
                 {

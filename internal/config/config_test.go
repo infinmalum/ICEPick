@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -60,5 +61,54 @@ func TestModelAddressMustBeLocal(t *testing.T) {
 		if err := (Model{Provider: "lmstudio", BaseURL: endpoint}).Validate(); err == nil {
 			t.Errorf("accepted nonlocal/invalid endpoint %q", endpoint)
 		}
+	}
+}
+
+func TestPathsFollowRealExecutableInsteadOfUserOrWorkingDirectory(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "icepick")
+	if err := os.WriteFile(executable, []byte("test"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "unrelated-data"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "unrelated-config"))
+	paths, err := pathsForExecutable(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(root, "data")
+	if paths.Data != want || paths.Config != filepath.Join(want, "config.json") {
+		t.Fatalf("unexpected paths: %+v", paths)
+	}
+	if err := EnsureDirs(paths); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Join(want, "skills")); err != nil || !info.IsDir() {
+		t.Fatalf("missing skills directory: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "shortcut")
+	if err := os.Symlink(executable, link); err == nil {
+		linked, err := pathsForExecutable(link)
+		if err != nil || linked != paths {
+			t.Fatalf("symlink changed storage: %+v %v", linked, err)
+		}
+	}
+	if _, err := pathsForExecutable("icepick"); err == nil {
+		t.Fatal("accepted relative executable path")
+	}
+}
+
+func TestDefaultPathsUsesInstalledAppImage(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("AppImage is Linux-specific")
+	}
+	image := filepath.Join(t.TempDir(), "ICEPick.AppImage")
+	if err := os.WriteFile(image, nil, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("APPIMAGE", image)
+	paths, err := DefaultPaths()
+	if err != nil || paths.Data != filepath.Join(filepath.Dir(image), "data") {
+		t.Fatalf("AppImage paths: %+v %v", paths, err)
 	}
 }

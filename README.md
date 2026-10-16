@@ -48,7 +48,7 @@ wails3 build
 
 无需模型或密钥也可启动；界面会显示“模型未连接”。要运行任务，先在“模型服务”选择提供方并保存模型 ID：本机 Ollama/LM Studio 确保服务已连接；远端 OpenAI/Anthropic/Gemini 需在“远端凭据”面板保存 API 密钥（保存在数据目录内的 0600 文件，不会回显），并按需在当前对话的“数据外发授权”面板允许该端点。本机模型调用支持流式输出，界面会实时显示生成文本。
 
-配置文件保存在用户 XDG 配置目录的 `ICEPick/config.json`；未创建时默认使用 Ollama 的 `http://127.0.0.1:11434/v1`。本机模型地址必须指向本机 HTTP 服务。数据库 `icepick.db`、日志 `icepick.log`、凭据 `credentials.json` 与 IPC 套接字位于用户 XDG 数据目录的 `ICEPick/` 下。
+全部应用数据默认保存在二进制文件旁的 `data/`，与启动时的工作目录无关。配置文件为 `data/config.json`；未创建时默认使用 Ollama 的 `http://127.0.0.1:11434/v1`。本机模型地址必须指向本机 HTTP 服务。数据库 `icepick.db`、日志 `icepick.log`、凭据 `credentials.json` 与 IPC 套接字以及 `skills/` 均位于同一个 `data/` 下。桌面 App 和 CLI 共用此规则。AppImage 使用 `.AppImage` 文件旁的 `data/`；普通二进制通过符号链接启动时使用真实二进制旁的目录。应用所在目录必须可写，失败会明确报错，不回退到用户目录。
 
 ## 命令行
 

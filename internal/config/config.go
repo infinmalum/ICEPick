@@ -8,9 +8,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
-
-	"github.com/adrg/xdg"
 )
 
 type Paths struct {
@@ -18,11 +17,31 @@ type Paths struct {
 	Data   string
 }
 
-func UserPaths() Paths {
-	return Paths{
-		Config: filepath.Join(xdg.ConfigHome, "ICEPick", "config.json"),
-		Data:   filepath.Join(xdg.DataHome, "ICEPick"),
+// DefaultPaths keeps application state beside the installed executable. It
+// never depends on the working directory or falls back to a user directory.
+func DefaultPaths() (Paths, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return Paths{}, fmt.Errorf("定位应用程序: %w", err)
 	}
+	// AppImage executes a binary in a read-only temporary mount. APPIMAGE points
+	// to the installed image, whose sibling data directory remains persistent.
+	if runtime.GOOS == "linux" && os.Getenv("APPIMAGE") != "" {
+		executable = os.Getenv("APPIMAGE")
+	}
+	return pathsForExecutable(executable)
+}
+
+func pathsForExecutable(executable string) (Paths, error) {
+	if !filepath.IsAbs(executable) {
+		return Paths{}, fmt.Errorf("应用程序路径必须是绝对路径: %s", executable)
+	}
+	resolved, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		return Paths{}, fmt.Errorf("解析应用程序位置: %w", err)
+	}
+	root := filepath.Join(filepath.Dir(resolved), "data")
+	return Paths{Config: filepath.Join(root, "config.json"), Data: root}, nil
 }
 
 type Config struct {
@@ -248,9 +267,9 @@ func Save(path string, cfg Config) error {
 }
 
 func EnsureDirs(paths Paths) error {
-	for _, dir := range []string{filepath.Dir(paths.Config), paths.Data} {
+	for _, dir := range []string{filepath.Dir(paths.Config), paths.Data, filepath.Join(paths.Data, "skills")} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
-			return fmt.Errorf("创建数据目录 %s: %w", dir, err)
+			return fmt.Errorf("无法创建应用数据目录 %s，请将应用放在可写目录: %w", dir, err)
 		}
 	}
 	return nil

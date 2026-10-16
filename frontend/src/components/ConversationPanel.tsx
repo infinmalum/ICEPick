@@ -31,6 +31,7 @@ export function ConversationPanel({
   profileState: p,
   runtime: r,
   openModel,
+  openAssistants,
   onImprove,
 }: {
   workspace: Workspace;
@@ -38,6 +39,7 @@ export function ConversationPanel({
   profileState: Profiles;
   runtime: RuntimeSettings;
   openModel: () => void;
+  openAssistants: () => void;
   onImprove?: () => void;
 }) {
   const activeSession = useRef(w.selected);
@@ -60,6 +62,8 @@ export function ConversationPanel({
   const disabled =
     c.sending ||
     c.loadingSession ||
+    c.profileSwitchBusy ||
+    w.creating ||
     !!c.activeRun ||
     w.activeConversation?.kind === "delegation" ||
     !w.selected ||
@@ -110,7 +114,7 @@ export function ConversationPanel({
           c.prompt +
             (c.prompt ? "\n" : "") +
             "请查看这个文件夹：" +
-            JSON.stringify(folder),
+            folder,
         );
       setFolderError("");
     } catch (e) {
@@ -122,7 +126,12 @@ export function ConversationPanel({
   return (
     <section className="chat-page">
       <header className="chat-header">
-        <ConversationProfile workspace={w} conversation={c} profileState={p} />
+        <ConversationProfile
+          workspace={w}
+          conversation={c}
+          profileState={p}
+          openAssistants={openAssistants}
+        />
         <button className="model-switch secondary" onClick={openModel}>
           {r.status?.model.name || "连接模型"} ▾
         </button>
@@ -140,6 +149,16 @@ export function ConversationPanel({
         </div>
       </div>
       <div className="composer-wrap">
+        {w.creating && (
+          <p className="hint" role="status">
+            正在创建新对话…
+          </p>
+        )}
+        {c.profileSwitchBusy && (
+          <p className="hint" role="status">
+            正在切换助手…
+          </p>
+        )}
         {c.loadingSession && <p className="hint">正在打开对话…</p>}
         {!w.selected && w.loaded && (
           <p className="hint">
@@ -256,7 +275,7 @@ export function ConversationPanel({
             <button
               type="button"
               className="secondary"
-              disabled={folderBusy || !!c.activeRun || c.sending}
+              disabled={!w.selected || folderBusy || !!c.activeRun || c.sending}
               onClick={chooseFolder}
             >
               选择文件夹
@@ -265,7 +284,7 @@ export function ConversationPanel({
               <input
                 type="checkbox"
                 checked={w.activeConversation?.options.webSearch ?? false}
-                disabled={c.searchBusy}
+                disabled={!w.selected || c.searchBusy || c.sending}
                 onChange={(e) => c.toggleSearch(e.target.checked)}
               />
               联网

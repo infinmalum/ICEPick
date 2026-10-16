@@ -1,4 +1,4 @@
-// Package host boots the single ICEPick host for a user data directory:
+// Package host boots the single ICEPick host for an executable-local data directory:
 // configuration, the ownership lock, the SQLite store, run recovery, the
 // skills catalog, the MCP hub and the application service. The desktop
 // entry point and the headless `icepick serve` host share this path so both
@@ -39,11 +39,14 @@ type Host struct {
 	InitError error
 }
 
-// Start performs the full host startup for the current user. Startup
+// Start performs the full host startup for the installed executable. Startup
 // failures are carried in InitError (the host still runs so clients and the
 // UI can surface them); only catalog/MCP construction errors are fatal.
 func Start() (*Host, error) {
-	paths := config.UserPaths()
+	paths, err := config.DefaultPaths()
+	if err != nil {
+		return nil, err
+	}
 	host := &Host{Paths: paths, CredPath: filepath.Join(paths.Data, "credentials.json")}
 	var initErr error
 	if err := config.EnsureDirs(paths); err != nil {
@@ -106,7 +109,7 @@ func Start() (*Host, error) {
 	host.Service = app.New(app.Options{
 		Store: host.Store, Runs: host.Runs, Tools: hub, Skills: catalog,
 		Chat: modelClient, Discovery: modelClient, Config: host.Config, ConfigPath: paths.Config,
-		DataDir: paths.Data, MCPEndpoints: hub, InitError: host.InitError, CredentialPath: host.CredPath,
+		DataDir: paths.Data, MCPEndpoints: hub, MCPManager: hub, InitError: host.InitError, CredentialPath: host.CredPath,
 	})
 	if host.Store != nil {
 		if err := host.Service.SyncMCPEndpoints(context.Background()); err != nil {

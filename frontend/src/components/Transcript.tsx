@@ -25,6 +25,13 @@ export function Transcript({
   const follow = useRef(true);
   const [away, setAway] = useState(false);
   const [copied, setCopied] = useState("");
+  const copyTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+    },
+    [],
+  );
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<{
     name: string;
@@ -162,6 +169,12 @@ export function Transcript({
                   try {
                     await navigator.clipboard.writeText(m.content);
                     setCopied(m.id);
+                    if (copyTimer.current !== null)
+                      window.clearTimeout(copyTimer.current);
+                    copyTimer.current = window.setTimeout(
+                      () => setCopied(""),
+                      1500,
+                    );
                   } catch (e) {
                     setError(String(e));
                   }

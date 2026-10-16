@@ -23,7 +23,9 @@ export function useProfileDrafts(
   const [request, setRequest] = useState("");
   const [improve, setImprove] = useState(false);
   const [selected, chooseSelected] = useState("");
-  const [editor, setEditor] = useState("");
+  // The proposal is edited as a typed object; raw JSON is only an advanced
+  // view. This keeps broken JSON from silently disabling the friendly fields.
+  const [proposal, setProposal] = useState<ProfileProposal | null>(null);
   const [run, setRun] = useState<Run | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -31,7 +33,8 @@ export function useProfileDrafts(
   async function setSelected(id: string) {
     if (
       draft &&
-      editor !== JSON.stringify(draft.proposal, null, 2) &&
+      proposal &&
+      JSON.stringify(proposal) !== JSON.stringify(draft.proposal) &&
       !(await dialog.confirm({
         title: "放弃尚未保存的建议修改？",
         body: "先保存修改可以继续保留它。",
@@ -51,7 +54,7 @@ export function useProfileDrafts(
     refresh().catch((e) => setError(String(e)));
   }, []);
   useEffect(() => {
-    setEditor(draft ? JSON.stringify(draft.proposal, null, 2) : "");
+    setProposal(draft ? structuredClone(draft.proposal) : null);
   }, [draft?.id, draft?.revision]);
   useEffect(() => {
     if (!run || run.status !== "running") return;
@@ -110,7 +113,11 @@ export function useProfileDrafts(
     setError("");
     try {
       if (action === "save") {
-        const proposal = JSON.parse(editor) as ProfileProposal;
+        if (!proposal) return;
+        if (!proposal.name.trim()) {
+          setError("请先填写助手名称。");
+          return;
+        }
         await StatusService.EditProfileDraft(
           draft.id,
           draft.revision,
@@ -151,8 +158,8 @@ export function useProfileDrafts(
     setImprove,
     selected,
     setSelected,
-    editor,
-    setEditor,
+    proposal,
+    setProposal,
     run,
     busy,
     error,

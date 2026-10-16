@@ -46,6 +46,10 @@ type Options struct {
 	// MCPEndpoints is the attached MCP hub surface used to display servers
 	// and keep their fingerprints registered. *mcptools.Hub satisfies it.
 	MCPEndpoints MCPEndpointSource
+	// MCPManager is the mutable hub surface used to save or remove MCP
+	// servers and connect them on demand. *mcptools.Hub satisfies it; nil
+	// disables server administration (tests).
+	MCPManager MCPManager
 	// CredentialPath is the data-directory file holding remote provider API
 	// keys; empty disables the credential store (tests).
 	CredentialPath string
@@ -69,6 +73,9 @@ type Service struct {
 	// credential sources (the data dir, conventional credential stores).
 	protectedPaths []string
 	endpoints      MCPEndpointSource
+	manager        MCPManager
+	// dataDir hosts the log file for the log viewer; empty disables it.
+	dataDir string
 
 	mu         sync.RWMutex
 	config     config.Config
@@ -106,6 +113,8 @@ func New(opts Options) *Service {
 		credStore:       newCredentialStore(opts.CredentialPath),
 		protectedPaths:  mcptools.DefaultProtectedPaths(opts.DataDir),
 		endpoints:       opts.MCPEndpoints,
+		manager:         opts.MCPManager,
+		dataDir:         opts.DataDir,
 		mcpChanged:      map[string]bool{},
 		ApprovalTimeout: timeout,
 		streams:         map[string]*strings.Builder{},

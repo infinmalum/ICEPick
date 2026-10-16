@@ -1,23 +1,30 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { StatusService, type AppStatus } from "../../bindings/icepick";
 import type {
   CredentialStatus,
   MCPEndpointStatus,
 } from "../../bindings/icepick/internal/app";
+import { useDialog } from "../shared/dialogs";
 import { type ModelDraft } from "../shared/config";
 export function useRuntimeSettings() {
+  const dialog = useDialog();
   const [status, setStatus] = useState<AppStatus | null>(null);
   const [error, setError] = useState("");
   const [mcpServers, setMcpServers] = useState<MCPEndpointStatus[]>([]);
-  const [modelDraft, setModelDraft] = useState<ModelDraft>({
+  const modelEdited = useRef(false);
+  const [modelDraft, setModelDraftState] = useState<ModelDraft>({
     provider: "ollama",
     baseUrl: "http://127.0.0.1:11434/v1",
     name: "",
   });
+  function setModelDraft(value: ModelDraft) {
+    modelEdited.current = true;
+    setModelDraftState(value);
+    setConnectedMessage("");
+  }
   const [modelBusy, setModelBusy] = useState(false);
   const [modelError, setModelError] = useState("");
   const [credStatus, setCredStatus] = useState<CredentialStatus[]>([]);
-  const [credDraft, setCredDraft] = useState<Record<string, string>>({});
   const [apiKey, setApiKey] = useState("");
   const [connectedMessage, setConnectedMessage] = useState("");
   const [credBusy, setCredBusy] = useState(false);
@@ -27,7 +34,9 @@ export function useRuntimeSettings() {
     try {
       const value = await StatusService.GetStatus();
       setStatus(value);
-      setModelError("");
+      setError("");
+      setModelError(value.modelConnected ? "" : value.message);
+      setConnectedMessage(value.modelConnected ? "已保存的模型连接正常。" : "");
     } catch (reason) {
       setModelError(String(reason));
     } finally {
@@ -44,6 +53,7 @@ export function useRuntimeSettings() {
       setApiKey("");
       const value = await StatusService.SaveModelConfig(modelDraft);
       setStatus(value);
+      setError("");
       setCredStatus((await StatusService.ListCredentialStatus()) ?? []);
       if (!value.modelConnected) {
         setModelError(value.message);
@@ -61,14 +71,22 @@ export function useRuntimeSettings() {
       setModelBusy(false);
     }
   }
-  async function saveCredential(provider: string) {
-    const apiKey = (credDraft[provider] ?? "").trim();
-    if (!apiKey) return;
+  async function deleteCredential(provider: string) {
+    if (
+      !(await dialog.confirm({
+        title: "删除保存的密钥？",
+        body: "使用此服务的助手将需要重新填写密钥。聊天记录不会删除。",
+        confirm: "删除密钥",
+        danger: true,
+      }))
+    )
+      return;
     setCredBusy(true);
     try {
-      await StatusService.SaveCredential(provider, apiKey);
-      setCredDraft((current) => ({ ...current, [provider]: "" }));
+      await StatusService.DeleteCredential(provider);
       setCredStatus((await StatusService.ListCredentialStatus()) ?? []);
+      setStatus(await StatusService.GetStatus());
+      setConnectedMessage("");
       setCredError("");
     } catch (reason) {
       setCredError(String(reason));
@@ -76,23 +94,20 @@ export function useRuntimeSettings() {
       setCredBusy(false);
     }
   }
-  async function deleteCredential(provider: string) {
-    setCredBusy(true);
+  async function refreshEndpoints() {
     try {
-      await StatusService.DeleteCredential(provider);
-      setCredStatus((await StatusService.ListCredentialStatus()) ?? []);
-      setCredError("");
+      const items = await StatusService.ListMCPEndpoints();
+      setMcpServers(items ?? []);
     } catch (reason) {
-      setCredError(String(reason));
-    } finally {
-      setCredBusy(false);
+      setError(String(reason));
     }
   }
   useEffect(() => {
     StatusService.GetStatus()
       .then((value) => {
         setStatus(value);
-        setModelDraft(value.model);
+        setError("");
+        if (!modelEdited.current) setModelDraftState(value.model);
       })
       .catch((reason) => setError(String(reason)));
     StatusService.ListMCPEndpoints()
@@ -106,13 +121,12 @@ export function useRuntimeSettings() {
     status,
     error,
     mcpServers,
+    refreshEndpoints,
     modelDraft,
     setModelDraft,
     modelBusy,
     modelError,
     credStatus,
-    credDraft,
-    setCredDraft,
     credBusy,
     credError,
     refreshModel,
@@ -120,7 +134,6 @@ export function useRuntimeSettings() {
     apiKey,
     setApiKey,
     connectedMessage,
-    saveCredential,
     deleteCredential,
   };
 }

@@ -162,6 +162,60 @@ func (h *Hub) ConnectCommand(ctx context.Context, server config.MCPServer) error
 	return nil
 }
 
+// Disconnect removes one attached endpoint and terminates its process. The
+// server stays in the configured set; the next run reconnects it lazily.
+// An unknown name is not an error so callers can disconnect unconditionally.
+func (h *Hub) Disconnect(name string) error {
+	h.mu.Lock()
+	var target *endpoint
+	kept := make([]endpoint, 0, len(h.endpoints))
+	for _, ep := range h.endpoints {
+		if ep.name == name && target == nil {
+			detached := ep
+			target = &detached
+			continue
+		}
+		kept = append(kept, ep)
+	}
+	h.endpoints = kept
+	h.mu.Unlock()
+	if target == nil {
+		return nil
+	}
+	return target.close()
+}
+
+// Connect attaches one configured server immediately, bypassing the lazy
+// per-run connection, so the UI can verify a configuration right away. It is
+// a no-op when the server is already attached.
+func (h *Hub) Connect(ctx context.Context, name string) error {
+	h.startMu.Lock()
+	defer h.startMu.Unlock()
+	h.mu.RLock()
+	cfg, ok := h.configured[name]
+	attached := false
+	for _, ep := range h.endpoints {
+		if ep.name == name {
+			attached = true
+			break
+		}
+	}
+	h.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("未配置 MCP 服务 %q", name)
+	}
+	if attached {
+		return nil
+	}
+	seconds := cfg.TimeoutSeconds
+	if seconds <= 0 {
+		seconds = 10
+	}
+	start, cancel := context.WithTimeout(ctx, time.Duration(seconds)*time.Second)
+	defer cancel()
+	return h.ConnectCommand(start, cfg)
+}
+
 // BuildEnv assembles the child environment from an allowlist of variable
 // names. Values come from this process at launch; the config file only ever
 // stores names. An empty allowlist passes just PATH and HOME.

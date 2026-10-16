@@ -167,6 +167,49 @@ func (s *StatusService) ListMCPEndpoints() ([]app.MCPEndpointStatus, error) {
 	return s.svc.ListMCPEndpoints()
 }
 
+// ListConfiguredMCPServers returns the configured MCP server catalog that
+// assistant editing picks enabled servers from.
+func (s *StatusService) ListConfiguredMCPServers() []config.MCPServer {
+	return s.svc.ListConfiguredMCPServers()
+}
+
+// SaveMCPServer validates, persists and connects one MCP server: adding it,
+// or replacing the entry with the same name. The command runs immediately so
+// configuration mistakes surface here and not mid-task.
+func (s *StatusService) SaveMCPServer(server config.MCPServer) ([]config.MCPServer, error) {
+	return s.svc.SaveMCPServer(server)
+}
+
+// DeleteMCPServer removes one configured server, stops its process and drops
+// its fingerprint registration.
+func (s *StatusService) DeleteMCPServer(name string) ([]config.MCPServer, error) {
+	return s.svc.DeleteMCPServer(name)
+}
+
+// ConfirmMCPEndpoint re-trusts one server's current fingerprints after the
+// user reviewed the change; automatic execution resumes.
+func (s *StatusService) ConfirmMCPEndpoint(name string) ([]app.MCPEndpointStatus, error) {
+	return s.svc.ConfirmMCPEndpoint(name)
+}
+
+// ListSkills returns the installed skill catalog that assistant editing
+// picks enabled skills from.
+func (s *StatusService) ListSkills() ([]app.SkillInfo, error) {
+	return s.svc.ListSkills()
+}
+
+// ReadHostLogs returns the recent lines of the host log, oldest first —
+// the desktop counterpart of `icepick logs`.
+func (s *StatusService) ReadHostLogs(limit int) ([]string, error) {
+	return s.svc.ReadHostLogs(limit)
+}
+
+// ListWorkerTraces returns one root run's worker work history for the
+// developer view: delegated tool calls and explicit observations.
+func (s *StatusService) ListWorkerTraces(runID, query string) ([]storage.WorkerTrace, error) {
+	return s.svc.ListWorkerTraces(runID, query)
+}
+
 // ListRuns returns the runs of one session, newest first.
 func (s *StatusService) ListRuns(sessionID string) ([]storage.Run, error) {
 	return s.svc.ListRuns(sessionID)

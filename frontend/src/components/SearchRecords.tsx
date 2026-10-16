@@ -1,4 +1,5 @@
 import type { ConversationState } from "../hooks/useConversation";
+import { stateLabel } from "../shared/errors";
 export function SearchRecords({
   conversation: c,
 }: {
@@ -39,9 +40,24 @@ export function SearchRecords({
             }
           />
         ))}
-      <details>
-        <summary>技术记录</summary>
-        <pre>{JSON.stringify(c.searchRecords, null, 2)}</pre>
+      <details className="search-record-log">
+        <summary>联网检索记录 · {c.searchRecords.length} 次</summary>
+        {c.searchRecords.map((r) => (
+          <div className="search-record" key={r.id}>
+            <p>
+              {r.provider} · {new Date(r.createdAt).toLocaleString()} ·{" "}
+              {stateLabel(r.state)}
+            </p>
+            {r.error && <p>未完成：{r.error}</p>}
+            {r.report.text && (
+              <p>
+                {r.report.text.length > 400
+                  ? r.report.text.slice(0, 400) + "…"
+                  : r.report.text}
+              </p>
+            )}
+          </div>
+        ))}
       </details>
     </details>
   ) : null;

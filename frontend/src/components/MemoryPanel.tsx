@@ -7,6 +7,7 @@ type Props = {
   local: Pick<
     LocalContextState,
     | "addMemory"
+    | "chooseMemoryEdit"
     | "deleteMemory"
     | "exportMemory"
     | "memories"
@@ -16,13 +17,13 @@ type Props = {
     | "memoryError"
     | "saveMemoryEdit"
     | "setMemoryDraft"
-    | "setMemoryEdit"
   >;
 };
 export function MemoryPanel(props: Props) {
   const { activeConversation, selected } = props.workspace;
   const {
     addMemory,
+    chooseMemoryEdit,
     deleteMemory,
     exportMemory,
     memories,
@@ -32,7 +33,6 @@ export function MemoryPanel(props: Props) {
     memoryError,
     saveMemoryEdit,
     setMemoryDraft,
-    setMemoryEdit,
   } = props.local;
   return (
     selected && (
@@ -57,7 +57,7 @@ export function MemoryPanel(props: Props) {
                   rows={2}
                   value={memoryEdit.content}
                   onChange={(event) =>
-                    setMemoryEdit({
+                    chooseMemoryEdit({
                       id: memory.id,
                       content: event.target.value,
                     })
@@ -74,7 +74,7 @@ export function MemoryPanel(props: Props) {
                   <button
                     type="button"
                     className="secondary"
-                    onClick={() => setMemoryEdit(null)}
+                    onClick={() => chooseMemoryEdit(null)}
                   >
                     取消
                   </button>
@@ -94,7 +94,10 @@ export function MemoryPanel(props: Props) {
                     type="button"
                     className="secondary"
                     onClick={() =>
-                      setMemoryEdit({ id: memory.id, content: memory.content })
+                      chooseMemoryEdit({
+                        id: memory.id,
+                        content: memory.content,
+                      })
                     }
                   >
                     编辑

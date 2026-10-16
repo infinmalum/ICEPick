@@ -5,10 +5,12 @@ export function ConversationProfile({
   workspace: w,
   profileState: p,
   conversation: c,
+  openAssistants,
 }: {
   workspace: Workspace;
   profileState: Profiles;
   conversation: ConversationState;
+  openAssistants: () => void;
 }) {
   return w.activeConversation ? (
     <label className="assistant-selector">
@@ -20,8 +22,17 @@ export function ConversationProfile({
             ? ""
             : w.activeConversation.profileId
         }
-        disabled={w.activeConversation.kind === "delegation"}
-        onChange={(e) => c.selectConversationProfile(e.target.value)}
+        disabled={
+          c.profileSwitchBusy ||
+          c.sending ||
+          w.activeConversation.kind === "delegation"
+        }
+        title="切换助手用于下一条消息，正在进行的工作继续使用原助手"
+        onChange={(e) =>
+          e.target.value === "__manage__"
+            ? openAssistants()
+            : c.selectConversationProfile(e.target.value)
+        }
       >
         <option value="" disabled>
           请选择助手
@@ -31,6 +42,7 @@ export function ConversationProfile({
             {v.name}
           </option>
         ))}
+        <option value="__manage__">添加或管理助手…</option>
       </select>
     </label>
   ) : (

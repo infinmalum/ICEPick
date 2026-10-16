@@ -10,7 +10,7 @@ Profile 保存 MCP/Skills 选择；运行时与 LocalContext 本机授权取交�
 
 程序内置一个经 MCP 内存传输连接的本地服务，提供只读 `current_time` 和 `read_file`（文本文件，64 KiB 上限，受权限网关与审批约束）。模型看到的名称是 `local__current_time`、`local__read_file`；前缀用于区分不同 MCP 服务。
 
-外部 MCP 服务使用标准 **stdio 传输**。在用户 XDG 配置目录的 `ICEPick/config.json` 中显式添加 `mcpServers`，重启应用后登记，任务首次需要所选服务时连接：
+外部 MCP 服务使用标准 **stdio 传输**。在二进制旁的 `data/config.json` 中显式添加 `mcpServers`，重启应用后登记，任务首次需要所选服务时连接：
 
 ```json
 {
@@ -29,7 +29,7 @@ MCP 工具返回文本会交给模型继续推理，单条结果上限 16 KiB；
 
 ## Agent Skills
 
-把每个 Skill 放在用户 XDG 配置目录的 `ICEPick/skills/<skill-name>/SKILL.md`，例如：
+把每个 Skill 放在二进制旁的 `data/skills/<skill-name>/SKILL.md`，例如：
 
 ```markdown
 ---

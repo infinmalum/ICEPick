@@ -17,7 +17,10 @@ import (
 )
 
 func dataDir() (string, error) {
-	paths := config.UserPaths()
+	paths, err := config.DefaultPaths()
+	if err != nil {
+		return "", err
+	}
 	if err := config.EnsureDirs(paths); err != nil {
 		return "", fmt.Errorf("初始化数据目录失败: %w", err)
 	}

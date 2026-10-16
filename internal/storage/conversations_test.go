@@ -154,3 +154,31 @@ func TestComponentProjectionAndTemplateRestore(t *testing.T) {
 		t.Fatalf("revision history missing: %d %v", n, err)
 	}
 }
+
+// Every shipped template must survive the real persistence and conversation
+// selection path; the browser service double cannot validate this contract.
+func TestAllTemplatesCanBeCreatedAndSelected(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	for _, template := range ProfileTemplates() {
+		t.Run(template.ID, func(t *testing.T) {
+			profile, err := s.CreateTemplateProfile(ctx, template.ID, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if profile.Data.TemplateID != template.ID {
+				t.Fatalf("wrong template: %s", profile.Data.TemplateID)
+			}
+			conversation, err := s.CreateConversation(ctx, profile.ID, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if conversation.ProfileID != profile.ID {
+				t.Fatal("conversation selected wrong assistant")
+			}
+			if _, err := s.CreateTemplateProfile(ctx, template.ID, ""); err != nil {
+				t.Fatal("cannot add another copy", err)
+			}
+		})
+	}
+}
